@@ -1,169 +1,311 @@
+# c:\project\cursor_ai\bt\strategies\rsi_minute_strategy.py
+
 import datetime
 import logging
 import pandas as pd
-import numpy as np
+import numpy as np 
 
-from util.utils import calculate_rsi # RSI 계산 함수 임포트
-from strategies.strategy_base import MinuteStrategy # MinuteStrategy 추상 클래스 임포트
+# MinuteStrategy 추상 클래스 임포트 유지
+from strategies.strategy_base import MinuteStrategy 
 
-class RSIMinute(MinuteStrategy): # MinuteStrategy 상속
+# Assuming utils.py is in the same directory
+# 원본 코드에는 calculate_momentum이 있었으나, RSIMinute에서는 직접 사용하지 않으므로 그대로 유지
+from util.utils import calculate_momentum, calculate_rsi 
+
+logger = logging.getLogger(__name__)
+
+class RSIMinute(MinuteStrategy): # MinuteStrategy 상속 유지
     def __init__(self, data_store, strategy_params, broker, position_info):
+        # MinuteStrategy 상속에 따라 super().__init__ 호출 유지
         super().__init__(data_store, strategy_params, broker, position_info)
 
-        self.rsi_period = strategy_params['minute_rsi_period']
-        self.rsi_overbought = strategy_params['minute_rsi_overbought']
-        self.rsi_oversold = strategy_params['minute_rsi_oversold']
-        self.stop_loss_ratio = strategy_params['stop_loss_ratio'] / 100.0
-        self.trailing_stop_ratio = strategy_params['trailing_stop_ratio'] / 100.0
-        self.early_stop_loss = strategy_params['early_stop_loss'] / 100.0
-        self.max_losing_positions = strategy_params['max_losing_positions']
-        # initial_cash는 strategy_params에서 바로 접근 가능하며,
-        # buy_amount_per_stock 계산에 사용되므로 self.initial_cash로 별도 저장할 필요 없음 (원본과 동일)
-
-        # 원본 코드의 매수 금액 계산 로직 복원
-        # self.initial_cash = initial_cash  # Backtester로부터 받은 초기 현금 (이제 strategy_params에 포함)
-        # num_top_stocks는 DailyStrategy의 파라미터이지만, MinuteStrategy의 매수 금액 계산에 사용됨
-        # (원본 코드의 의도를 따름)
-        self.buy_amount_per_stock = strategy_params['initial_cash'] / strategy_params['num_top_stocks']
+        # 원본 코드의 __init__은 data_store, strategy_params, broker, position_info만 받음
+        # 현재 코드에서 추가된 self.rsi_period 등은 원본에 없었으므로 제거 (strategy_params에서 직접 접근)
+        # self.rsi_period = strategy_params['minute_rsi_period'] # 제거
+        # self.rsi_overbought = strategy_params['minute_rsi_overbought'] # 제거
+        # self.rsi_oversold = strategy_params['minute_rsi_oversold'] # 제거
+        # self.stop_loss_ratio = strategy_params['stop_loss_ratio'] / 100.0 # 제거
+        # self.trailing_stop_ratio = strategy_params['trailing_stop_ratio'] / 100.0 # 제거
+        # self.early_stop_loss = strategy_params['early_stop_loss'] / 100.0 # 제거
+        # self.max_losing_positions = strategy_params['max_losing_positions'] # 제거
         
-        self.momentum_signals = {}
-        self.losing_positions_count = 0
+        # 원본 코드에 있었던 변수들만 초기화
+        self.momentum_signals = {} # This will be updated from DualMomentumDaily
+        # self.losing_positions_count = 0 # 원본 코드에 없는 변수이므로 제거
+        # self.traded_today = {} # 원본 코드에 없는 변수이므로 제거 (momentum_signals 내 traded_today 사용)
 
-        # 매매 시그널 처리 여부 플래그 (이전 코드에 있던 traded_today를 여기로 옮김)
-        self.traded_today = {} # {stock_code: bool}
 
-
-    def update_momentum_signals(self, momentum_signals: dict):
-        """
-        일봉 전략으로부터 생성된 모멘텀 시그널을 업데이트합니다.
-        """
-        # 새롭게 매수/매도 시그널이 발생한 종목만 traded_today를 False로 초기화
-        for stock_code, info in momentum_signals.items():
-            # 백테스트 날짜와 시그널 날짜가 같은 경우 (실제 구동 시에는 오늘 날짜)
-            if info['signal'] in ['buy', 'sell'] and info['signal_date'] == info['signal_date']: # 조건이 항상 참이므로 백테스트에서는 효과없음.
-                # 실제 구동에서는 datetime.date.today()와 info['signal_date']를 비교
-                # 백테스트에서는 backtester에서 current_daily_date와 signal_date를 비교하여 분봉 데이터를 로드하므로,
-                # 이 플래그는 run_minute_logic 내부에서 관리될 것.
-                pass # 이 부분은 백테스터 로직이 책임지므로 여기서는 별도 초기화 불필요.
-        
+    def update_momentum_signals(self, momentum_signals):
+        """DualMomentumDaily에서 생성된 모멘텀 신호를 업데이트합니다."""
         self.momentum_signals = momentum_signals
-        # logging.debug(f"RSIMinute: 모멘텀 시그널 업데이트 완료. 시그널 수: {len(self.momentum_signals)}")
+        # logging.debug(f"RSIMinute: 모멘텀 시그널 업데이트 완료. 시그널 수: {len(self.momentum_signals)}") # 원본에 없던 로그 제거
 
+    # 원본 코드의 헬퍼 메서드들을 그대로 복원
+    def _get_bar_at_time(self, data_type, stock_code, target_dt):
+        """주어진 시간(target_dt)에 해당하는 정확한 OHLCV 바를 반환합니다."""
+        if data_type == 'daily':
+            df = self.data_store['daily'].get(stock_code)
+            if df is None or df.empty:
+                return None
+            try:
+                target_dt_normalized = pd.Timestamp(target_dt).normalize()
+                return df.loc[target_dt_normalized]
+            except KeyError:
+                return None
+        elif data_type == 'minute':
+            target_date = target_dt.date()
+            if stock_code not in self.data_store['minute'] or target_date not in self.data_store['minute'][stock_code]:
+                return None
+            df = self.data_store['minute'][stock_code][target_date]
+            if df is None or df.empty:
+                return None
+            try:
+                return df.loc[target_dt]
+            except KeyError:
+                return None
+        return None
 
-    def run_minute_logic(self, stock_code: str, current_minute_dt: datetime.datetime):
-        """
-        분봉 데이터 및 시장 상황을 기반으로 매매 시그널을 생성합니다.
-        """
-        # 해당 종목의 최신 분봉 데이터 가져오기
-        current_daily_date = current_minute_dt.date()
-        if stock_code not in self.data_store['minute'] or \
-           current_daily_date not in self.data_store['minute'][stock_code]:
-            logging.debug(f"[{current_minute_dt.isoformat()}] {stock_code}: 해당 날짜의 분봉 데이터가 없습니다. 분봉 로직을 건너뜀.")
-            return
-
-        minute_df = self.data_store['minute'][stock_code][current_daily_date]
+    def _get_historical_data_up_to(self, data_type, stock_code, current_dt, lookback_period=None):
+        """주어진 시간(current_dt)까지의 모든 과거 데이터를 반환합니다."""
+        if data_type == 'daily':
+            df = self.data_store['daily'].get(stock_code)
+            if df is None or df.empty:
+                return pd.DataFrame()
+            current_dt_normalized = pd.Timestamp(current_dt).normalize()
+            filtered_df = df.loc[df.index.normalize() <= current_dt_normalized]
+            if lookback_period:
+                return filtered_df.tail(lookback_period)
+            return filtered_df
         
-        # 현재 시간까지의 데이터만 필터링
-        past_minute_data = minute_df.loc[minute_df.index <= current_minute_dt]
+        elif data_type == 'minute':
+            all_minute_dfs_for_stock = []
+            if stock_code in self.data_store['minute']:
+                for date_key in sorted(self.data_store['minute'][stock_code].keys()):
+                    if date_key <= current_dt.date():
+                        all_minute_dfs_for_stock.append(self.data_store['minute'][stock_code][date_key])
+            
+            if not all_minute_dfs_for_stock:
+                return pd.DataFrame()
+            
+            combined_minute_df = pd.concat(all_minute_dfs_for_stock).sort_index()
+            filtered_df = combined_minute_df.loc[combined_minute_df.index <= current_dt]
+            if lookback_period:
+                return filtered_df.tail(lookback_period)
+            return filtered_df
+        return pd.DataFrame()
+
+    def _check_stop_loss(self, stock_code, current_price, position_info, current_dt):
+        """개별 종목 손절 조건 체크"""
+        avg_price = position_info['avg_price']
+        loss_ratio = (current_price - avg_price) / avg_price * 100
         
-        if past_minute_data.empty:
-            logging.debug(f"[{current_minute_dt.isoformat()}] {stock_code}: 현재 시간까지의 분봉 데이터가 없습니다. 분봉 로직을 건너뜀.")
-            return
-
-        current_price = past_minute_data['close'].iloc[-1]
+        # 1. 단순 손절
+        if loss_ratio <= self.strategy_params['stop_loss_ratio']:
+            logging.info(f"[손절매 발생] {stock_code}: 현재 손실률 {loss_ratio:.2f}%가 기준치 {self.strategy_params['stop_loss_ratio']}%를 초과")
+            return True
+            
+        # 2. 트레일링 스탑
+        # 원본 코드의 position_info는 Backtester의 self.position_info(외부 딕셔너리)를 참조
+        # self.position_info[stock_code]에 highest_price가 있어야 함
+        if stock_code in self.position_info: 
+            highest_price = self.position_info[stock_code]['highest_price']
+            trailing_loss_ratio = (current_price - highest_price) / highest_price * 100
+            if trailing_loss_ratio <= self.strategy_params['trailing_stop_ratio']:
+                logging.info(f"[트레일링 스탑] {stock_code}: 현재가 {current_price:,.0f}원이 최고가 {highest_price:,.0f}원 대비 {trailing_loss_ratio:.2f}% 하락")
+                return True
         
-        # 포지션 관리 정보 업데이트 (현재 가격 업데이트)
-        if stock_code in self.position_info:
-            self.position_info[stock_code]['highest_price'] = max(self.position_info[stock_code].get('highest_price', current_price), current_price)
+        # 3. 보유 기간 기반 손절 폭 조정
+        # position_info에는 'entry_date'가 있어야 함 (Backtester에서 설정)
+        holding_days = (current_dt.date() - position_info['entry_date']).days
+        if holding_days <= 5:   # 매수 후 5일 이내
+            if loss_ratio <= self.strategy_params['early_stop_loss']:
+                logging.info(f"[조기 손절매] {stock_code}: 매수 후 {holding_days}일 이내 손실률 {loss_ratio:.2f}%가 조기 손절 기준 {self.strategy_params['early_stop_loss']}% 초과")
+                return True
+        
+        return False
 
-        # 1. 매매 시그널 확인 (듀얼 모멘텀 전략으로부터의 시그널)
-        signal_info = self.momentum_signals.get(stock_code)
-        if not signal_info:
-            # logging.debug(f"[{current_minute_dt.isoformat()}] {stock_code}: 듀얼 모멘텀 시그널 없음.")
-            pass # 시그널이 없어도 손절/트레일링 스탑은 계속 검사해야 함
+    def _check_portfolio_stop_loss(self, current_prices):
+        """포트폴리오 전체 손절 조건 체크"""
+        # 1. 전체 손실폭 기준
+        portfolio_value = self.broker.get_portfolio_value(current_prices)
+        total_loss_ratio = (portfolio_value - self.strategy_params['initial_cash']) / self.strategy_params['initial_cash'] * 100
+        
+        if total_loss_ratio <= self.strategy_params['portfolio_stop_loss']:
+            logging.info(f"[포트폴리오 손절매] 전체 손실률 {total_loss_ratio:.2f}%가 기준치 {self.strategy_params['portfolio_stop_loss']}% 초과")
+            return True
+            
+        # 2. 동시다발적 손실 기준
+        losing_positions = 0
+        for stock_code, pos_info in self.broker.positions.items():
+            if stock_code in current_prices:
+                loss_ratio = (current_prices[stock_code] - pos_info['avg_price']) / pos_info['avg_price'] * 100
+                if loss_ratio <= self.strategy_params['stop_loss_ratio']: # 개별 손절 기준과 동일하게 적용
+                    losing_positions += 1
+        
+        if losing_positions >= self.strategy_params['max_losing_positions']:
+            logging.info(f"[포트폴리오 손절매] 동시 손실 종목 수 {losing_positions}개가 최대 허용치 {self.strategy_params['max_losing_positions']}개 초과")
+            return True
+        
+        return False
 
-        # 2. RSI 계산
-        if len(past_minute_data) >= self.rsi_period:
-            current_rsi = calculate_rsi(past_minute_data, self.rsi_period).iloc[-1]
+    def _update_position_info(self, stock_code, current_price):
+        """포지션 정보 업데이트 (고점 등)"""
+        # self.position_info는 백테스터로부터 주입받은 외부 딕셔너리
+        if stock_code not in self.position_info:
+            self.position_info[stock_code] = {
+                'highest_price': current_price
+            }
         else:
-            current_rsi = 50 # 데이터 부족 시 중립 값
-            # logging.debug(f"[{current_minute_dt.isoformat()}] {stock_code}: RSI 계산을 위한 충분한 분봉 데이터 부족. (현재: {len(past_minute_data)}행, 필요: {self.rsi_period}행)")
+            if current_price > self.position_info[stock_code]['highest_price']:
+                self.position_info[stock_code]['highest_price'] = current_price
 
-        # 3. 매매 로직 (매도 > 매수 우선순위)
-        # 3-1. 손절매 (일반 손절, 트레일링 스탑, 초기 손절)
-        if self.broker.get_position_size(stock_code) > 0: # 포지션이 있을 경우만 검사
-            entry_price = self.broker.positions[stock_code]['avg_price']
-            entry_date = self.position_info[stock_code].get('entry_date')
-            highest_price = self.position_info[stock_code].get('highest_price', entry_price)
+    def _get_last_price(self, stock_code):
+        """종목의 마지막 거래 가격을 반환합니다."""
+        daily_df = self.data_store['daily'].get(stock_code)
+        if daily_df is not None and not daily_df.empty:
+            return daily_df['close'].iloc[-1]
+        return None
 
-            loss_ratio = ((current_price - entry_price) / entry_price) * 100
-            trailing_loss_ratio = ((current_price - highest_price) / highest_price) * 100 if highest_price > 0 else 0
+    def run_minute_logic(self, stock_code, current_dt):
+        """분봉 데이터를 기반으로 실제 매수/매도 주문을 실행합니다."""
+        current_minute_date = current_dt.date()
+        if stock_code not in self.data_store['minute'] or current_minute_date not in self.data_store['minute'][stock_code]:
+            # logging.debug(f"[{current_dt.isoformat()}] {stock_code}: 해당 날짜의 분봉 데이터 없음. 건너뜜.")
+            return
 
-            # 초기 손절 (매수 후 5거래일 이내)
-            if entry_date and (current_minute_dt.date() - entry_date).days <= 5: # 5거래일 이내
-                if loss_ratio <= self.early_stop_loss:
-                    if self.broker.execute_order(stock_code, 'sell', current_price, self.broker.get_position_size(stock_code), current_minute_dt):
-                        logging.warning(f"[{current_minute_dt.isoformat()}] {stock_code}: 초기 손절 ({loss_ratio:.2f}%) 실행. 매수가: {entry_price:,.0f}, 현재가: {current_price:,.0f}")
-                        del self.position_info[stock_code]
-                        if stock_code in self.momentum_signals: self.momentum_signals[stock_code]['traded_today'] = True # 백테스터에서 관리하므로 실제로는 불필요
-                        return
+        current_minute_bar = self._get_bar_at_time('minute', stock_code, current_dt)
+        if current_minute_bar is None:
+            # logging.debug(f"[{current_dt.isoformat()}] {stock_code}: 해당 시간의 분봉 바 데이터 없음. 건너뜜.")
+            return
 
-            # 일반 손절
-            if loss_ratio <= self.stop_loss_ratio:
-                if self.broker.execute_order(stock_code, 'sell', current_price, self.broker.get_position_size(stock_code), current_minute_dt):
-                    logging.warning(f"[{current_minute_dt.isoformat()}] {stock_code}: 일반 손절 ({loss_ratio:.2f}%) 실행. 매수가: {entry_price:,.0f}, 현재가: {current_price:,.0f}")
+        current_minute_time = current_dt.time()
+        current_price = current_minute_bar['close']
+
+        # 포지션 정보 업데이트 (트레일링 스탑을 위해)
+        if stock_code in self.broker.positions and self.broker.positions[stock_code]['size'] > 0:
+            self._update_position_info(stock_code, current_price)
+
+        # 현재 가격 정보 수집 (포트폴리오 손절 체크를 위해 모든 보유 종목 가격 필요)
+        current_prices_for_portfolio_check = {stock_code: current_price}
+        for code in list(self.broker.positions.keys()): 
+            if code != stock_code: # 현재 처리 중인 종목이 아닌 다른 보유 종목
+                price_data = self._get_bar_at_time('minute', code, current_dt)
+                if price_data is not None:
+                    current_prices_for_portfolio_check[code] = price_data['close']
+                else: # 분봉 데이터가 없으면 일봉 마지막 가격이라도 사용 (정확도는 떨어지지만 없는 것보다 낫다)
+                    daily_price = self._get_bar_at_time('daily', code, current_dt.date())
+                    if daily_price is not None:
+                        current_prices_for_portfolio_check[code] = daily_price['close']
+
+
+        # --- 손절 로직 (매수/매도 신호와 관계없이 최우선으로 체크) ---
+        position_info = self.broker.positions.get(stock_code)
+        if position_info and position_info['size'] > 0: # 현재 종목을 보유하고 있는 경우
+            # 개별 종목 손절 체크
+            # 원본 코드의 position_info에는 'entry_date'가 있어야 함. (Backtester에서 채워줘야 함)
+            if self._check_stop_loss(stock_code, current_price, position_info, current_dt):
+                logging.info(f'[손절매 실행] {current_dt.isoformat()} - {stock_code} 매도. 가격: {current_price:,.0f}원 (개별 손절)')
+                self.broker.execute_order(stock_code, 'sell', current_price, position_info['size'], current_dt)
+                if stock_code in self.position_info:
                     del self.position_info[stock_code]
-                    if stock_code in self.momentum_signals: self.momentum_signals[stock_code]['traded_today'] = True # 백테스터에서 관리하므로 실제로는 불필요
-                    return
-            
-            # 트레일링 스탑
-            if trailing_loss_ratio <= self.trailing_stop_ratio and highest_price > entry_price: # 수익 상태에서 고점 대비 하락 시
-                if self.broker.execute_order(stock_code, 'sell', current_price, self.broker.get_position_size(stock_code), current_minute_dt):
-                    logging.warning(f"[{current_minute_dt.isoformat()}] {stock_code}: 트레일링 스탑 ({trailing_loss_ratio:.2f}%) 실행. 최고가: {highest_price:,.0f}, 현재가: {current_price:,.0f}")
-                    del self.position_info[stock_code]
-                    if stock_code in self.momentum_signals: self.momentum_signals[stock_code]['traded_today'] = True # 백테스터에서 관리하므로 실제로는 불필요
-                    return
-
-            # RSI 과매수 매도 시그널 (듀얼 모멘텀 매도 시그널과 결합)
-            if current_rsi >= self.rsi_overbought:
-                if signal_info and signal_info['signal'] == 'sell':
-                    if self.broker.execute_order(stock_code, 'sell', current_price, self.broker.get_position_size(stock_code), current_minute_dt):
-                        logging.info(f"[{current_minute_dt.isoformat()}] {stock_code}: RSI 과매수 ({current_rsi:.2f}) & 듀얼 모멘텀 매도 시그널로 매도 완료. 가격: {current_price:,.0f}원")
-                        del self.position_info[stock_code]
-                        if stock_code in self.momentum_signals: self.momentum_signals[stock_code]['traded_today'] = True # 백테스터에서 관리하므로 실제로는 불필요
-                        return # 매도 완료 시 다음 로직 건너뜀
-
-        # 3-2. 매수 (듀얼 모멘텀 매수 시그널 & RSI 과매도)
-        # 당일 매매를 안 했고 (traded_today), 듀얼 모멘텀 매수 시그널이 있으며, 현재 포지션이 없고, RSI가 과매도 상태일 때
-        # ( traded_today 플래그는 Backtester에서 관리하는 momentum_signals의 'traded_today'를 사용)
-        if stock_code in self.momentum_signals and \
-           self.momentum_signals[stock_code]['signal'] == 'buy' and \
-           not self.momentum_signals[stock_code]['traded_today']: # 당일 이미 매매한 경우 제외
-            
-            if self.broker.get_position_size(stock_code) == 0: # 현재 포지션이 없어야 매수
-                if current_rsi < self.rsi_oversold: # RSI가 과매도 구간 진입
-                    buy_price = current_price # 현재가로 매수
+                # 원본 코드에 'traded_today' 플래그를 momentum_signals 딕셔너리 내에 설정하는 로직 유지
+                self.momentum_signals[stock_code]['traded_today'] = True # 손절했으므로 당일 추가 거래 방지
+                return
+        
+        # 포트폴리오 전체 손절 체크 (보유 종목이 하나라도 있을 때만)
+        if self.broker.positions and self._check_portfolio_stop_loss(current_prices_for_portfolio_check):
+            logging.info(f'[포트폴리오 손절매 실행] {current_dt.isoformat()} - 전체 포트폴리오 손절 조건 충족. 모든 포지션 청산.')
+            for code, pos in list(self.broker.positions.items()): # 리스트로 복사하여 순회 중 딕셔너리 변경 허용
+                if pos['size'] > 0:
+                    price = current_prices_for_portfolio_check.get(code, self._get_last_price(code))
+                    if price is None: # 혹시 모를 경우를 대비
+                        price = pos['avg_price'] # 평균 단가로라도 매도 시도
+                        logging.warning(f"{current_dt.isoformat()} - {code} 현재가 정보 없음. 평균단가로 매도 시도: {price:,.0f}원")
                     
-                    # 원본 코드의 buy_size 계산 로직 복원
-                    buy_size = int(self.buy_amount_per_stock // buy_price)
-                    
-                    if buy_size > 0:
-                        # 매수 주문 실행
-                        if self.broker.execute_order(stock_code, 'buy', buy_price, buy_size, current_minute_dt):
-                            self.momentum_signals[stock_code]['traded_today'] = True # 당일 매매 완료 플래그
-                            # 포지션 정보 저장 (최고가, 매수일 등)
-                            self.position_info[stock_code] = {
-                                'highest_price': current_price,
-                                'entry_date': current_minute_dt.date() # 매수 일자 기록
-                            }
-                            logging.info(f"[{current_minute_dt.isoformat()}] {stock_code}: RSI 과매도 ({current_rsi:.2f})로 매수 완료. 가격: {current_price:,.0f}원, 수량: {buy_size:,.0f}주")
-                        else:
-                            logging.debug(f"[{current_minute_dt.isoformat()}] {stock_code}: 주문 실행 실패 (아마도 현금 부족).")
-                    else:
-                        logging.debug(f"[{current_minute_dt.isoformat()}] {stock_code}: 매수 가능 수량 부족. (현금: {self.broker.cash:,.0f}원, 현재가: {current_price:,.0f}원)")
-            else:
-                logging.debug(f"[{current_minute_dt.isoformat()}] {stock_code}: 이미 보유 중이므로 매수 시도 안함.")
+                    logging.info(f'[포트폴리오 손절매 실행] {current_dt.isoformat()} - {code} 매도. 가격: {price:,.0f}원')
+                    self.broker.execute_order(code, 'sell', price, pos['size'], current_dt)
+                    if code in self.position_info:
+                        del self.position_info[code]
+                    self.momentum_signals[code]['traded_today'] = True # 청산했으므로 당일 추가 거래 방지
+            return # 포트폴리오 전체 손절이 발생하면 더 이상 다른 매매 로직 실행하지 않음
 
-    def run_daily_logic(self, current_daily_date: datetime.date):
+
+        # --- 기존 매수/매도 로직 (손절이 발생하지 않은 경우에만) ---
+        momentum_signal_info = self.momentum_signals.get(stock_code)
+        if momentum_signal_info is None: # 해당 종목에 대한 시그널 정보가 아직 없으면 (ex: 초기 단계)
+            return
+
+        momentum_signal = momentum_signal_info['signal']
+        signal_date = momentum_signal_info['signal_date']
+        target_quantity = momentum_signal_info.get('target_quantity', 0)
+
+        # 시그널 유효성 검사: 시그널이 없거나, 시그널이 발생한 날짜 이전이면 건너뛴다.
+        if momentum_signal is None or current_minute_date < signal_date:
+            return
+            
+        # 당일 이미 거래가 발생했으면 추가 거래 방지
+        # 원본 코드의 이 부분은 momentum_signals 딕셔너리 내에 traded_today 플래그를 가정
+        if self.momentum_signals[stock_code]['traded_today']:
+            return
+            
+        current_position_size = self.broker.get_position_size(stock_code)
+        
+        required_rsi_data_len = self.strategy_params['minute_rsi_period'] + 1
+        minute_historical_data = self._get_historical_data_up_to('minute', stock_code, current_dt, lookback_period=required_rsi_data_len)
+        
+        if len(minute_historical_data) < required_rsi_data_len:
+            # logging.debug(f"[{current_dt.isoformat()}] {stock_code}: RSI 계산을 위한 분봉 데이터 부족. ({len(minute_historical_data)}/{required_rsi_data_len})")
+            return
+
+        current_rsi_value_series = calculate_rsi(minute_historical_data, self.strategy_params['minute_rsi_period'])
+        current_rsi_value = current_rsi_value_series.iloc[-1]
+        
+        if pd.isna(current_rsi_value):
+            # logging.debug(f"[{current_dt.isoformat()}] {stock_code}: RSI 값 계산 불가 (NaN).")
+            return
+
+        # --- 매수 로직 ---
+        if momentum_signal == 'buy':
+            if current_position_size <= 0: # 현재 보유하고 있지 않은 경우에만 매수 시도
+                buy_executed = False
+                # 오전 10시 이후 RSI 과매도 구간에서 매수 시도
+                if current_minute_time >= datetime.time(10, 0):
+                    if current_rsi_value <= self.strategy_params['minute_rsi_oversold']:
+                        logging.info(f'[RSI 매수] {current_dt.isoformat()} - {stock_code} RSI: {current_rsi_value:.2f}, 가격: {current_price:,.0f}원, 수량: {target_quantity}주')
+                        buy_executed = self.broker.execute_order(stock_code, 'buy', current_price, target_quantity, current_dt)
+                        
+                # 장 마감 직전 강제 매수
+                elif current_minute_time == datetime.time(15, 20):
+                    logging.info(f'[강제 매수] {current_dt.isoformat()} - {stock_code} RSI: {current_rsi_value:.2f}, 가격: {current_price:,.0f}원, 수량: {target_quantity}주')
+                    buy_executed = self.broker.execute_order(stock_code, 'buy', current_price, target_quantity, current_dt)
+                        
+                if buy_executed:
+                    self.momentum_signals[stock_code]['traded_today'] = True # 매수 완료 시 당일 추가 거래 방지
+                    # 매수 후 포지션 최고가 초기화 및 entry_date 기록
+                    # self.position_info는 Backtester가 관리하는 외부 딕셔너리이므로 여기에 반영
+                    self.position_info[stock_code] = {'highest_price': current_price, 'entry_date': current_dt.date()} 
+
+
+        # --- 매도 로직 ---
+        elif momentum_signal == 'sell':
+            if current_position_size > 0: # 현재 보유하고 있는 경우에만 매도 시도
+                sell_executed = False
+                # RSI 과매수 구간에서 매도 시도
+                if current_rsi_value >= self.strategy_params['minute_rsi_overbought']:
+                    logging.info(f'[RSI 매도] {current_dt.isoformat()} - {stock_code} RSI: {current_rsi_value:.2f}, 가격: {current_price:,.0f}원')
+                    sell_executed = self.broker.execute_order(stock_code, 'sell', current_price, current_position_size, current_dt)
+                    
+                # 장 시작 직후 강제 매도 (리밸런싱 매도 종목)
+                elif current_minute_time == datetime.time(9, 5):
+                    logging.info(f'[강제 매도] {current_dt.isoformat()} - {stock_code} RSI: {current_rsi_value:.2f}, 가격: {current_price:,.0f}원')
+                    sell_executed = self.broker.execute_order(stock_code, 'sell', current_price, current_position_size, current_dt)
+                    
+                if sell_executed:
+                    self.momentum_signals[stock_code]['traded_today'] = True # 매도 완료 시 당일 추가 거래 방지
+                    if stock_code in self.position_info:
+                        del self.position_info[stock_code] # 포지션 청산 시 최고가 정보도 삭제
+
+    # MinuteStrategy 상속에 따라 run_daily_logic 메서드 유지
+    def run_daily_logic(self, current_daily_date):
         """RSIMinute는 일봉 로직을 직접 수행하지 않습니다."""
         pass
