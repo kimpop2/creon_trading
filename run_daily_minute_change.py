@@ -114,31 +114,20 @@ if __name__ == '__main__':
 
     # --- 전략 파라미터 정의 (여기에 직접 설정) ---
     strategy_params = {
-        # 'momentum_period': 20, # <-- 이 값을 여기서 직접 변경 가능
-        # 'rebalance_weekday': 4, # 0:월, 1:화, 2:수, 3:목, 4:금
-        # 'num_top_stocks': 5,
-        # 'safe_asset_code': 'A439870',  # KODEX 국고채30년 액티브
-        # 'initial_cash': 10_000_000,
-        # 'minute_rsi_period': 14,
-        # 'minute_rsi_overbought': 70,
-        # 'minute_rsi_oversold': 30,
-        # 'stop_loss_ratio': -5, # -5% 손실 시 손절
-        # 'trailing_stop_ratio': -2, # 최고가 대비 -2% 하락 시 트레일링 스탑
-        # 'early_stop_loss': -1, # 매수 후 5거래일 이내 -1% 손실 시 초기 손절
-        # 'max_losing_positions': 3 # 최대 허용 손실 포지션 수 (현재 사용되지 않음)
-            'momentum_period': 20,         # 모멘텀 계산 기간 (거래일)
-            'rebalance_weekday': 4,        # 리밸런싱 요일 (0: 월요일, 4: 금요일)
-            'num_top_stocks': 7,           # 상위 N종목 선택
-            'safe_asset_code': 'A439870',  # 안전자산 코드 (국고채 ETF)
-            'minute_rsi_period': 45,       # 분봉 RSI 기간 (60분 → 45분)
-            'minute_rsi_overbought': 65,   # RSI 과매수 기준 (70 → 65)
-            'minute_rsi_oversold': 35,     # RSI 과매도 기준 (30 → 35)
-            'stop_loss_ratio': -5.0,       # 기본 손절 비율
-            'trailing_stop_ratio': -3.0,   # 트레일링 스탑 비율
-            'portfolio_stop_loss': -10.0,  # 포트폴리오 전체 손절 비율
-            'early_stop_loss': -3.0,       # 초기 손절 비율 (5일 이내)
-            'max_losing_positions': 3,     # 동시 손실 허용 종목 수
-            'initial_cash': 10_000_000     # 포트폴리오 손절 계산을 위해 추가
+
+        'momentum_period': 5,         # 모멘텀 계산 기간 (거래일)
+        'rebalance_weekday': 4,        # 리밸런싱 요일 (0: 월요일, 4: 금요일)
+        'num_top_stocks': 10,           # 상위 N종목 선택
+        'safe_asset_code': 'A439870',  # 안전자산 코드 (국고채 ETF)
+        'minute_rsi_period': 45,       # 분봉 RSI 기간 (60분 → 45분)
+        'minute_rsi_overbought': 65,   # RSI 과매수 기준 (70 → 65)
+        'minute_rsi_oversold': 35,     # RSI 과매도 기준 (30 → 35)
+        'stop_loss_ratio': -5.0,       # 기본 손절 비율
+        'trailing_stop_ratio': -3.0,   # 트레일링 스탑 비율
+        'portfolio_stop_loss': -10.0,  # 포트폴리오 전체 손절 비율
+        'early_stop_loss': -3.0,       # 초기 손절 비율 (5일 이내)
+        'max_losing_positions': 5,     # 동시 손실 허용 종목 수
+        'initial_cash': 10_000_000     # 포트폴리오 손절 계산을 위해 추가
     }
     # --- 전략 파라미터 정의 끝 ---
     sma_strategy_params = {
@@ -171,7 +160,7 @@ if __name__ == '__main__':
 
     # Backtester에 전략 인스턴스 설정 (Dependency Injection)
     backtester_instance.set_strategies(
-        daily_strategy=sma_daily, # dual_momentum_daily
+        daily_strategy=dual_momentum_daily, # dual_momentum_daily
         minute_strategy=rsi_minute
     )
     # --- 전략 인스턴스 주입 끝 ---

@@ -266,6 +266,11 @@ class RSIMinute(MinuteStrategy): # MinuteStrategy 상속 유지
 
         # --- 매수 로직 ---
         if momentum_signal == 'buy':
+            
+            if target_quantity <= 0:
+                logging.warning(f"[{current_dt.isoformat()}] {stock_code}: 매수 시그널이나, DualMomentumDaily에서 계산된 목표 수량(target_quantity)이 0입니다. 매수 시도 건너뜜.")
+                return # 0주 매수 시도 방지
+            
             if current_position_size <= 0: # 현재 보유하고 있지 않은 경우에만 매수 시도
                 buy_executed = False
                 # 오전 10시 이후 RSI 과매도 구간에서 매수 시도

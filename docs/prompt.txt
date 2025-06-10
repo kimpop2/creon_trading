@@ -39,7 +39,7 @@
 - Backtester에 set_strategies 메서드를 추가 
 - DailyStrategy와 MinuteStrategy 타입의 전략 리스트 또는 딕셔너리를 파라미터로 받을 수 있도록 변경합니다.
 - 인자 daily_strategies: DailyStrategy, minute_strategies: MinuteStrategy
-- run 메서드 내에서 전략을 직접 생성하는 대신, 전달받은 전략 인스턴스들을 순회하며 각 전략의 로직을 호출
+- run 메서드 내에서 전략을 직접 생성하는 대신, 전달받은 전략 인스턴스의 로직을 호출
 - 전략 간 데이터 공유: Backtester는 data_store, broker, position_info와 같은 핵심 공유 객체들을 계속 소유하고, 
   전략 인스턴스 초기화 시 이 객체들을 전달해줍니다. 
 - 일봉 전략에서 생성된 시그널(momentum_signals)이 분봉 전략으로 전달되는 기존의 update_momentum_signals와 같은 메커니즘은 유지

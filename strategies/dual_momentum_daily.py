@@ -167,21 +167,22 @@ class DualMomentumDaily(DailyStrategy): # DailyStrategy 상속
             })
 
             if stock_code in buy_candidates:
-                if stock_code in current_positions:
-                    # 이미 보유 중인 종목은 홀딩
-                    self.momentum_signals[stock_code]['signal'] = 'hold'
-                    logging.info(f'홀딩 신호 - {stock_code}: 순위 {rank}위, 모멘텀 {score:.2f} (기존 보유 종목)')
-                else:
-                    # 새로 매수할 종목
-                    current_price_daily = self._get_historical_data_up_to('daily', stock_code, current_daily_date, lookback_period=1)['close'].iloc[-1]
-                    target_quantity = self._calculate_target_quantity(stock_code, current_price_daily)
-                    
-                    self.momentum_signals[stock_code].update({
-                        'signal': 'buy',
-                        'target_amount': self.broker.cash / self.strategy_params['num_top_stocks'],
-                        'target_quantity': target_quantity
-                    })
-                    logging.info(f'매수 신호 - {stock_code}: 순위 {rank}위, 모멘텀 {score:.2f}, 목표수량 {target_quantity}주')
+                # --- 여기에서 target_quantity가 0인지 체크하는 로직 추가 ---
+                # 새로 매수할 종목
+                current_price_daily = self._get_historical_data_up_to('daily', stock_code, current_daily_date, lookback_period=1)['close'].iloc[-1]
+                target_quantity = self._calculate_target_quantity(stock_code, current_price_daily)
+                if target_quantity > 0: # 매수 수량이 1주 이상일 경우에만 'buy' 신호 생성
+                    if stock_code in current_positions:
+                        # 이미 보유 중인 종목은 홀딩
+                        self.momentum_signals[stock_code]['signal'] = 'hold'
+                        logging.info(f'홀딩 신호 - {stock_code}: 순위 {rank}위, 모멘텀 {score:.2f} (기존 보유 종목)')
+                    else:
+                        self.momentum_signals[stock_code].update({
+                            'signal': 'buy',
+                            'target_amount': self.broker.cash / self.strategy_params['num_top_stocks'],
+                            'target_quantity': target_quantity
+                        })
+                        logging.info(f'매수 신호 - {stock_code}: 순위 {rank}위, 모멘텀 {score:.2f}, 목표수량 {target_quantity}주')
             else:
                 self.momentum_signals[stock_code]['signal'] = 'sell'
                 if stock_code in current_positions:
