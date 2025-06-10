@@ -1,41 +1,81 @@
-from abc import ABC, abstractmethod
+import abc # Abstract Base Class
 import pandas as pd
 import datetime
-class Strategy(ABC):
-    """
-    모든 백테스팅 전략의 기본 인터페이스를 정의하는 추상 클래스.
-    각 전략은 이 클래스를 상속받아 구체적인 로직을 구현해야 합니다.
-    """
-    def __init__(self, data_store: dict, strategy_params: dict, broker): # <--- 이 부분을 수정!
-            """
-            모든 전략의 기본 생성자입니다.
-            Args:
-                data_store (dict): 시장 데이터(일봉, 분봉 등)를 담고 있는 딕셔너리.
-                strategy_params (dict): 전략별 매개변수 딕셔너리.
-                broker: 거래 실행을 위한 Broker 인스턴스.
-            """
-            self.data_store = data_store
-            self.strategy_params = strategy_params
-            self.broker = broker
-            # 공통적으로 필요한 다른 속성들도 여기서 초기화할 수 있습니다.
-            self.positions = self.broker.positions # 현재 포지션에 접근
-            self.last_rebalance_date = None # 일봉 전략에서 사용할 수 있음
-            
-    @abstractmethod
-    def generate_signals(self, market_data: dict, current_date: datetime.date, **kwargs) -> dict:
-        """
-        주어진 시장 데이터(일봉 또는 분봉)를 기반으로 거래 신호를 생성합니다.
-        이 메서드는 각 전략 클래스에서 반드시 구현되어야 합니다.
 
-        Args:
-            market_data (dict): 전략 분석에 필요한 시장 데이터.
-                                일봉 전략의 경우 {stock_code: pd.DataFrame(daily_data)} 형태,
-                                분봉 전략의 경우 {stock_code: pd.DataFrame(minute_data)} 형태가 될 수 있습니다.
-            current_date (datetime.date): 현재 백테스팅 날짜 (일봉 전략용).
-            **kwargs: 전략 실행에 필요한 추가적인 정보 (예: current_portfolio_positions 등).
+class BaseStrategy(abc.ABC):
+    """모든 전략의 기반이 되는 추상 클래스."""
+    def __init__(self, data_store, strategy_params, broker, position_info=None):
+        self.data_store = data_store
+        self.strategy_params = strategy_params
+        self.broker = broker
+        # position_info는 분봉 전략에서만 주로 사용될 수 있지만, BaseStrategy에서 모든 전략이 공통적으로
+        # 참조할 수 있도록 초기화 시 받도록 유도합니다.
+        self.position_info = position_info if position_info is not None else {}
 
-        Returns:
-            dict: { '종목코드': {'signal': 'BUY' | 'SELL' | 'HOLD', 'quantity': int, ...} } 형태의 거래 신호 딕셔너리.
-                  예: {'005930': {'signal': 'BUY', 'quantity': 10}}
+    @abc.abstractmethod
+    def run_daily_logic(self, current_date):
+        """일봉 데이터를 기반으로 전략 로직을 실행하는 추상 메서드.
+        (일봉 전략에서 주로 사용하며, 분봉 전략에서는 pass로 구현될 수 있습니다.)
         """
+        pass
+
+    @abc.abstractmethod
+    def run_minute_logic(self, stock_code, current_minute_dt):
+        """분봉 데이터를 기반으로 전략 로직을 실행하는 추상 메서드.
+        (분봉 전략에서 주로 사용하며, 일봉 전략에서는 pass로 구현될 수 있습니다.)
+        """
+        pass
+
+    @abc.abstractmethod
+    def update_momentum_signals(self, momentum_signals):
+        """다른 전략 (예: 일봉 전략)으로부터 시그널을 업데이트받는 추상 메서드.
+        (분봉 전략에서 주로 사용하며, 일봉 전략에서는 pass로 구현될 수 있습니다.)
+        """
+        pass
+
+
+class DailyStrategy(BaseStrategy):
+    """일봉 전략을 위한 추상 클래스."""
+    def __init__(self, data_store, strategy_params, broker, position_info=None):
+        super().__init__(data_store, strategy_params, broker, position_info)
+
+    @abc.abstractmethod
+    def run_daily_logic(self, current_date):
+        """일봉 데이터를 기반으로 전략 로직을 실행하고 매매 의도를 반환합니다.
+        예: 듀얼 모멘텀의 매수/매도 종목 선정
+        """
+        pass
+    
+    # DailyStrategy는 분봉 로직을 직접 처리하지 않으므로, 추상 메서드를 구체적으로 구현합니다.
+    def run_minute_logic(self, stock_code, current_minute_dt):
+        """일봉 전략은 분봉 로직을 직접 수행하지 않으므로 이 메서드는 비워둡니다."""
+        pass 
+
+    # DailyStrategy는 주로 시그널을 생성하므로, 외부 시그널을 업데이트 받을 필요가 없을 수 있습니다.
+    def update_momentum_signals(self, momentum_signals):
+        """일봉 전략은 외부 시그널을 업데이트 받을 필요가 없을 수 있으므로 이 메서드는 비워둡니다."""
+        pass
+
+
+class MinuteStrategy(BaseStrategy):
+    """분봉 전략을 위한 추상 클래스."""
+    def __init__(self, data_store, strategy_params, broker, position_info=None):
+        super().__init__(data_store, strategy_params, broker, position_info)
+        self.momentum_signals = {} # 일봉 전략으로부터 받을 시그널을 저장할 속성
+
+    # MinuteStrategy는 일봉 로직을 직접 처리하지 않으므로, 추상 메서드를 구체적으로 구현합니다.
+    def run_daily_logic(self, current_date):
+        """분봉 전략은 일봉 로직을 직접 수행하지 않으므로 이 메서드는 비워둡니다."""
+        pass 
+
+    @abc.abstractmethod
+    def run_minute_logic(self, stock_code, current_minute_dt):
+        """분봉 데이터를 기반으로 매매 의도에 따라 실제 매매 주문을 실행합니다.
+        예: RSI 기반의 실제 매수/매도 주문 실행
+        """
+        pass
+
+    @abc.abstractmethod
+    def update_momentum_signals(self, momentum_signals):
+        """일봉 전략으로부터 받은 매매 시그널을 업데이트합니다."""
         pass
