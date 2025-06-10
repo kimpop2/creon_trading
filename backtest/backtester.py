@@ -17,22 +17,6 @@ class Backtester:
         self.position_info = {} # {stock_code: {'highest_price': float, 'entry_date': datetime.date}}
         self.portfolio_values = [] # (datetime, value) 튜플 저장
         self.initial_cash = initial_cash
-
-        self.strategy_params = {
-            'momentum_period': 60, # 60일 모멘텀
-            'rebalance_weekday': 4, # 0:월, 4:금 (주간 리밸런싱)
-            'num_top_stocks': 5, # 상위 5개 종목
-            'safe_asset_code': 'A439870',  # 안전자산 코드 (국고채 ETF) # KODEX 200 (코스피200 ETF) 또는 KODEX 인버스 (경기 침체 시)
-            #'equal_weight_amount': 2_000_000, # 종목당 2백만원 균등 배분
-            'minute_rsi_period': 14, # 분봉 RSI 기간
-            'minute_rsi_overbought': 70, # 과매수 기준
-            'minute_rsi_oversold': 30, # 과매도 기준
-            'stop_loss_ratio': -5, # 일반 손절 -5%
-            'trailing_stop_ratio': -3, # 트레일링 스탑 -3% (고점 대비)
-            'early_stop_loss': -2, # 매수 후 5거래일 이내 -2% 손절
-            'max_losing_positions': 3, # 최대 손실 허용 포지션 개수 (미사용)
-            'initial_cash': initial_cash # RSI 전략에서 포트폴리오 손절 계산을 위함 (현재는 사용 안함)
-        }
         
         # 단일 전략 인스턴스를 저장하도록 변경
         self.daily_strategy: DailyStrategy = None
