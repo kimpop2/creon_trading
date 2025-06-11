@@ -6,8 +6,7 @@ import time
 
 from backtest.broker import Broker
 from util.utils import calculate_performance_metrics, get_next_weekday 
-# 전략 추상 클래스 임포트
-from strategies.strategy_base import DailyStrategy, MinuteStrategy 
+from strategies.strategy import DailyStrategy, MinuteStrategy 
 
 class Backtester:
     def __init__(self, api_client, initial_cash):
@@ -18,12 +17,10 @@ class Backtester:
         self.portfolio_values = [] # (datetime, value) 튜플 저장
         self.initial_cash = initial_cash
         
-        # 단일 전략 인스턴스를 저장하도록 변경
         self.daily_strategy: DailyStrategy = None
         self.minute_strategy: MinuteStrategy = None
 
         logging.info(f"백테스터 초기화 완료. 초기 현금: {self.initial_cash:,.0f}원")
-
 
     def set_strategies(self, daily_strategy: DailyStrategy = None, minute_strategy: MinuteStrategy = None):
         """
@@ -34,6 +31,10 @@ class Backtester:
             if not isinstance(daily_strategy, DailyStrategy):
                 raise TypeError("daily_strategy는 DailyStrategy 타입의 인스턴스여야 합니다.")
             self.daily_strategy = daily_strategy
+            # DualMomentumDaily의 __init__에서 초기화되도록 변경했으므로,
+            # 모든 종목이 추가된 후 일괄 초기화하는 것이 더 맞을 수 있으나,
+            # 여기서는 전략에 주입된 data_store를 사용하므로
+            # add_daily_data에서 개별 종목 추가 시마다 신호를 갱신하는 것이 더 적절합니다.
             logging.info(f"일봉 전략 '{daily_strategy.__class__.__name__}'이(가) 설정되었습니다.")
 
         if minute_strategy:
@@ -45,12 +46,14 @@ class Backtester:
         if not self.daily_strategy and not self.minute_strategy:
             logging.warning("설정된 일봉 또는 분봉 전략이 없습니다. 백테스트가 제대로 동작하지 않을 수 있습니다.")
 
-
     def add_daily_data(self, stock_code, daily_df):
         """백테스터에 종목별 일봉 데이터를 추가합니다."""
         self.data_store['daily'][stock_code] = daily_df
-        # 새로운 종목이 추가될 때마다 모멘텀 시그널도 초기화 (DualMomentumDaily 내부에서 처리)
-        self.daily_strategy._initialize_signals_for_all_stocks()
+        # DualMomentumDaily 내에서 모든 종목을 순회하며 초기화하는 로직이 있으므로,
+        # 새로운 종목이 추가될 때마다 전략의 신호 딕셔너리를 업데이트하도록 호출합니다.
+        # (이전에 제거했던 이 부분을 다시 추가합니다.)
+        if self.daily_strategy:
+            self.daily_strategy._initialize_signals_for_all_stocks() # 이 부분을 다시 추가
 
     def get_next_business_day(self, date):
         """일봉 데이터를 기반으로 다음 거래일을 찾습니다."""
@@ -59,7 +62,6 @@ class Backtester:
         
         while max_attempts > 0:
             has_data = False
-            # 모든 종목의 일봉 데이터를 확인하여 해당 날짜가 거래일인지 판단
             for stock_code in self.data_store['daily']:
                 daily_df = self.data_store['daily'][stock_code]
                 if not daily_df.empty:
@@ -78,11 +80,6 @@ class Backtester:
         return None
 
     def _get_minute_data_for_signal_dates(self, stock_code, signal_date):
-        # """
-        # 일봉 전략 시그널 발생일의 다음 거래일 분봉 데이터를 미리 로드합니다.
-        # trade_date에 해당하는 분봉 데이터만 로드하여 self.data_store['minute']에 저장.
-        # signal_dates_and_codes: {stock_code: [signal_date1, signal_date2, ...]}
-        # """
         """
         매수/매도 시그널이 발생한 날짜와 다음 거래일의 분봉 데이터를 조회합니다.
         크레온 API 호출을 통해 데이터를 가져와 data_store에 저장하고 반환합니다.
@@ -94,8 +91,6 @@ class Backtester:
             return pd.DataFrame()
             
         # 시그널 발생일과 다음 거래일의 분봉 데이터 로드
-        # 주의: 여기서는 실제 백테스팅 시점에 필요한 날짜의 분봉 데이터를 불러옵니다.
-        # 실제 환경에서는 실시간 데이터 피드를 사용해야 합니다.
         dates_to_load = [signal_date, next_trading_day]
         
         dfs_to_concat = []
@@ -111,7 +106,7 @@ class Backtester:
             daily_df = self.data_store['daily'].get(stock_code)
             if daily_df is not None and not daily_df.empty and pd.Timestamp(date).normalize() in daily_df.index:
                 minute_df_day = self.api_client.get_minute_ohlcv(stock_code, date_str, date_str, interval=1)
-                time.sleep(0.3)  # API 호출 제한 방지를 위한 대기
+                time.sleep(0.3)   # API 호출 제한 방지를 위한 대기
                 
                 if not minute_df_day.empty:
                     if stock_code not in self.data_store['minute']:
@@ -128,17 +123,14 @@ class Backtester:
         return pd.DataFrame()
 
     def run(self, start_date, end_date):
-        # 포트폴리오 가치 기록을 위한 리스트
         portfolio_values = []
         dates = []
         
-        # 모든 종목의 일봉 데이터를 합쳐서 전체 거래일 목록을 생성
         all_daily_dates = pd.DatetimeIndex([])
         for stock_code, daily_df in self.data_store['daily'].items():
             if not daily_df.empty:
                 all_daily_dates = all_daily_dates.union(pd.DatetimeIndex(daily_df.index).normalize())
 
-        # 백테스트 기간 내의 거래일만 필터링하고 정렬
         daily_dates_to_process = all_daily_dates[
             (all_daily_dates >= pd.Timestamp( start_date).normalize()) & \
             (all_daily_dates <= pd.Timestamp(end_date).normalize())
@@ -146,55 +138,60 @@ class Backtester:
 
         if daily_dates_to_process.empty:
             logging.error("지정된 백테스트 기간 내에 일봉 데이터가 없습니다. 종료합니다.")
-            return pd.Series(), {} # 빈 Series와 dict 반환
+            return pd.Series(), {} 
 
-        # 백테스트 진행 루프 (매일 단위로 진행)
         for current_daily_date_full in daily_dates_to_process:
             current_daily_date = current_daily_date_full.date()
             logging.info(f"\n--- 처리 중인 날짜: {current_daily_date.isoformat()} ---")
 
             # 매일 시작 시 모든 종목의 'traded_today' 플래그 초기화
-            for stock_code in self.daily_strategy.signals:
-                self.daily_strategy.signals[stock_code]['traded_today'] = False
+            if self.daily_strategy:
+                # signals 딕셔너리가 비어있을 수 있으므로 안전하게 처리
+                # DualMomentumDaily의 _initialize_signals_for_all_stocks()가 add_daily_data에서 호출되므로,
+                # 이 시점에는 signals가 채워져 있을 것으로 예상.
+                for stock_code in list(self.daily_strategy.signals.keys()): # 순회 중 딕셔너리 변경 방지를 위해 list()로 감싸기
+                    self.daily_strategy.signals[stock_code]['traded_today'] = False
 
-            # 주간 모멘텀 로직 실행 (DualMomentumDaily 클래스에서)
-            self.daily_strategy.run_weekly_momentum_logic(current_daily_date)
+            # 일봉 전략 로직 실행
+            if self.daily_strategy:
+                self.daily_strategy.run_daily_logic(current_daily_date)
             
-            # RSI 분봉 트레이더에 최신 모멘텀 시그널 업데이트
-            self.minute_strategy.update_signals(self.daily_strategy.signals)
+            # 분봉 전략에 최신 시그널 업데이트
+            if self.daily_strategy and self.minute_strategy:
+                self.minute_strategy.update_signals(self.daily_strategy.signals)
 
             # 매수/매도 시그널이 있는 종목들에 대해서만 분봉 데이터 처리
-            # (시그널 발생일의 다음 거래일부터 매매 시도)
-            for stock_code, signal_info in self.daily_strategy.signals.items():
-                # 이미 오늘 거래가 이루어졌다면 다음 종목으로 넘어감 (손절 등으로)
-                if signal_info.get('traded_today', False):
-                    continue
+            if self.daily_strategy and self.minute_strategy:
+                # self.daily_strategy.signals가 비어있지 않은지 확인
+                if not self.daily_strategy.signals:
+                    logging.debug(f"[{current_daily_date.isoformat()}] 일봉 전략에서 생성된 시그널이 없어 분봉 로직을 건너뜜.")
+                
+                for stock_code, signal_info in self.daily_strategy.signals.items():
+                    if signal_info.get('traded_today', False):
+                        continue
 
-                if signal_info['signal'] in ['buy', 'sell']:
-                    signal_date = signal_info['signal_date']
-                    
-                    # 시그널 발생일의 다음 거래일이 현재 처리 중인 일봉 날짜와 같은 경우에만 분봉 로직 실행
-                    next_trading_day_for_signal = self.get_next_business_day(signal_date)
-                    if next_trading_day_for_signal and next_trading_day_for_signal == current_daily_date:
-                        # 매도 시그널인데 보유 종목이 없으면 건너뛰기
-                        if signal_info['signal'] == 'sell' and self.broker.get_position_size(stock_code) <= 0:
-                            continue
+                    if signal_info['signal'] in ['buy', 'sell']:
+                        signal_date = signal_info['signal_date']
+                        
+                        next_trading_day_for_signal = self.get_next_business_day(signal_date)
+                        if next_trading_day_for_signal and next_trading_day_for_signal == current_daily_date:
+                            if signal_info['signal'] == 'sell' and self.broker.get_position_size(stock_code) <= 0:
+                                continue
 
-                        minute_data = self._get_minute_data_for_signal_dates(stock_code, signal_date) # API 호출로 분봉 데이터 로드
-                        if not minute_data.empty:
-                            # 해당 일자의 분봉 데이터만 필터링하여 순회
-                            minute_data_today = minute_data.loc[minute_data.index.normalize() == pd.Timestamp(current_daily_date).normalize()]
-                            for minute_dt in minute_data_today.index:
-                                if minute_dt > end_date: # 백테스트 종료 시간을 넘어서면 중단
-                                    break
-                                # RSI 분봉 트레이더를 통해 실제 매수/매도 실행
-                                self.minute_strategy.run_minute_logic(stock_code, minute_dt)
-                                if self.daily_strategy.signals[stock_code]['traded_today']:
-                                    # 해당 종목에 대해 오늘 거래가 완료되었으면 (매수 또는 매도) 다음 종목으로 넘어감
-                                    break
-                        else:
-                            logging.warning(f"[{current_daily_date.isoformat()}] {stock_code}: 시그널({signal_info['signal']})이 있으나 분봉 데이터가 없어 매매를 시도할 수 없습니다.")
-
+                            minute_data = self._get_minute_data_for_signal_dates(stock_code, signal_date) # API 호출로 분봉 데이터 로드
+                            if not minute_data.empty:
+                                minute_data_today = minute_data.loc[minute_data.index.normalize() == pd.Timestamp(current_daily_date).normalize()]
+                                for minute_dt in minute_data_today.index:
+                                    if minute_dt > end_date: 
+                                        break
+                                    # RSI 분봉 트레이더를 통해 실제 매수/매도 실행
+                                    self.minute_strategy.run_minute_logic(stock_code, minute_dt)
+                                    # 매수/매도가 완료되면 해당 종목의 분봉 루프는 중단
+                                    # (traded_today 플래그가 True가 되면 다음 종목으로 넘어감)
+                                    if self.daily_strategy.signals[stock_code]['traded_today']:
+                                        break
+                            else:
+                                logging.warning(f"[{current_daily_date.isoformat()}] {stock_code}: 시그널({signal_info['signal']})이 있으나 분봉 데이터가 없어 매매를 시도할 수 없습니다.")
 
             # 일별 종료 시 포트폴리오 가치 계산 및 기록
             current_prices = {}
@@ -203,8 +200,7 @@ class Backtester:
                 if not daily_bar.empty:
                     current_prices[stock_code] = daily_bar['close'].iloc[0]
                 else:
-                    # 해당 날짜에 데이터가 없으면, 전날 마지막 가격으로 대체 시도 (정확도는 떨어짐)
-                    # 실제 백테스트에서는 데이터가 없는 날짜는 건너뛰거나 미리 처리해야 함
+                    # 해당 날짜에 데이터가 없으면, 전날 마지막 가격으로 대체 시도
                     last_valid_idx = self.data_store['daily'][stock_code].index.normalize() <= current_daily_date_full.normalize()
                     if last_valid_idx.any():
                         current_prices[stock_code] = self.data_store['daily'][stock_code].loc[last_valid_idx]['close'].iloc[-1]
@@ -215,13 +211,9 @@ class Backtester:
             portfolio_values.append(portfolio_value)
             dates.append(current_daily_date_full)
 
-        # 포트폴리오 가치 시계열 데이터 생성
         portfolio_value_series = pd.Series(portfolio_values, index=dates)
+        metrics = calculate_performance_metrics(portfolio_value_series, risk_free_rate=0.03)
         
-        # 성과 지표 계산
-        metrics = calculate_performance_metrics(portfolio_value_series, risk_free_rate=0.03) # 무위험 수익률은 필요에 따라 조정
-        
-        # 최종 결과 출력
         logging.info("\n=== 백테스트 결과 ===")
         logging.info(f"시작일: { start_date.date().isoformat()}")
         logging.info(f"종료일: {end_date.date().isoformat()}")
@@ -235,7 +227,6 @@ class Backtester:
         logging.info(f"승률: {metrics['win_rate']*100:.2f}%")
         logging.info(f"수익비 (Profit Factor): {metrics['profit_factor']:.2f}")
         
-        # 최종 포지션 정보 출력
         logging.info("\n--- 최종 포지션 현황 ---")
         if self.broker.positions:
             for stock_code, pos_info in self.broker.positions.items():
