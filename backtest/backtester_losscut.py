@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 import time
 
-from backtest.broker import Broker
+from backtest.broker_losscut import Broker
 from util.utils import calculate_performance_metrics, get_next_weekday 
 from strategies.strategy import DailyStrategy, MinuteStrategy 
 
@@ -82,7 +82,7 @@ class Backtester:
     def _get_minute_data_for_signal_dates(self, stock_code, signal_date):
         """
         매수/매도 시그널이 발생한 날짜와 다음 거래일의 분봉 데이터를 조회합니다.
-        크레온 API 호출을 통해 데이터를 가져와 data_store에 저장하고 반환합니다.
+        (손절이 일봉 기준이므로, 보유 종목의 분봉은 여기서 로드하지 않음)
         """
         # 다음 거래일 찾기
         next_trading_day = self.get_next_business_day(signal_date)
@@ -121,9 +121,7 @@ class Backtester:
             full_df = pd.concat(dfs_to_concat).sort_index()
             return full_df
         return pd.DataFrame()
-    
 
-    
     def run(self, start_date, end_date):
         portfolio_values = []
         dates = []
@@ -134,7 +132,7 @@ class Backtester:
                 all_daily_dates = all_daily_dates.union(pd.DatetimeIndex(daily_df.index).normalize())
 
         daily_dates_to_process = all_daily_dates[
-            (all_daily_dates >= pd.Timestamp( start_date).normalize()) & \
+            (all_daily_dates >= pd.Timestamp(start_date).normalize()) & \
             (all_daily_dates <= pd.Timestamp(end_date).normalize())
         ].sort_values()
 
@@ -142,16 +140,16 @@ class Backtester:
             logging.error("지정된 백테스트 기간 내에 일봉 데이터가 없습니다. 종료합니다.")
             return pd.Series(), {} 
 
+        # Broker의 초기 포트폴리오 가치 설정 (포트폴리오 손절을 위해)
+        self.broker.initial_portfolio_value = self.initial_cash 
+
         for current_daily_date_full in daily_dates_to_process:
             current_daily_date = current_daily_date_full.date()
             logging.info(f"\n--- 처리 중인 날짜: {current_daily_date.isoformat()} ---")
 
             # 매일 시작 시 모든 종목의 'traded_today' 플래그 초기화
             if self.daily_strategy:
-                # signals 딕셔너리가 비어있을 수 있으므로 안전하게 처리
-                # DualMomentumDaily의 _initialize_signals_for_all_stocks()가 add_daily_data에서 호출되므로,
-                # 이 시점에는 signals가 채워져 있을 것으로 예상.
-                for stock_code in list(self.daily_strategy.signals.keys()): # 순회 중 딕셔너리 변경 방지를 위해 list()로 감싸기
+                for stock_code in list(self.daily_strategy.signals.keys()):
                     self.daily_strategy.signals[stock_code]['traded_today'] = False
 
             # 일봉 전략 로직 실행
@@ -195,21 +193,42 @@ class Backtester:
                             else:
                                 logging.warning(f"[{current_daily_date.isoformat()}] {stock_code}: 시그널({signal_info['signal']})이 있으나 분봉 데이터가 없어 매매를 시도할 수 없습니다.")
 
-            # 일별 종료 시 포트폴리오 가치 계산 및 기록
-            current_prices = {}
+                        
+            # --- 일별 종료 시점: 일봉 종가 기반 손절매 로직 실행 ---
+            current_daily_close_prices = {} # 그날의 모든 종목의 일봉 종가
             for stock_code in self.data_store['daily']:
                 daily_bar = self.data_store['daily'][stock_code].loc[self.data_store['daily'][stock_code].index.normalize() == current_daily_date_full.normalize()]
                 if not daily_bar.empty:
-                    current_prices[stock_code] = daily_bar['close'].iloc[0]
+                    current_daily_close_prices[stock_code] = daily_bar['close'].iloc[0]
                 else:
                     # 해당 날짜에 데이터가 없으면, 전날 마지막 가격으로 대체 시도
                     last_valid_idx = self.data_store['daily'][stock_code].index.normalize() <= current_daily_date_full.normalize()
                     if last_valid_idx.any():
-                        current_prices[stock_code] = self.data_store['daily'][stock_code].loc[last_valid_idx]['close'].iloc[-1]
+                        current_daily_close_prices[stock_code] = self.data_store['daily'][stock_code].loc[last_valid_idx]['close'].iloc[-1]
                     else:
-                        current_prices[stock_code] = 0 # 데이터 없으면 0으로 간주 (포트폴리오 가치에 영향)
+                        current_daily_close_prices[stock_code] = 0 # 데이터 없으면 0으로 간주
 
-            portfolio_value = self.broker.get_portfolio_value(current_prices)
+            # 1. 포트폴리오 최고가 업데이트 (일봉 종가 기준)
+            for stock_code, pos_info in list(self.broker.positions.items()):
+                if stock_code in current_daily_close_prices and pos_info['size'] > 0:
+                    self.broker.update_daily_highest_price(stock_code, current_daily_close_prices[stock_code])
+
+            # 2. 포트폴리오 전체 손절 체크 (일봉 종가 기준)
+            # 포트폴리오 손절이 발생하면 모든 포지션 청산 후 다음 날짜로 넘어감
+            if self.broker.check_and_execute_portfolio_stop_loss(current_daily_close_prices, current_daily_date_full):
+                # 모든 포지션이 청산되었으므로, 해당 날짜의 남은 개별 종목 손절은 건너뜀
+                logging.info(f"[{current_daily_date.isoformat()}] 포트폴리오 전체 손절매 발생으로 남은 개별 종목 손절 체크 건너뜜.")
+            else:
+                # 3. 개별 종목 손절 체크 (일봉 종가 기준)
+                # 현재 보유 중인 모든 종목에 대해 손절 체크
+                for stock_code, pos_info in list(self.broker.positions.items()):
+                    if stock_code in current_daily_close_prices and pos_info['size'] > 0:
+                        daily_close = current_daily_close_prices[stock_code]
+                        self.broker.check_and_execute_stop_loss(stock_code, daily_close, current_daily_date_full)
+
+
+            # 일별 종료 시 포트폴리오 가치 계산 및 기록
+            portfolio_value = self.broker.get_portfolio_value(current_daily_close_prices)
             portfolio_values.append(portfolio_value)
             dates.append(current_daily_date_full)
 
@@ -217,7 +236,7 @@ class Backtester:
         metrics = calculate_performance_metrics(portfolio_value_series, risk_free_rate=0.03)
         
         logging.info("\n=== 백테스트 결과 ===")
-        logging.info(f"시작일: { start_date.date().isoformat()}")
+        logging.info(f"시작일: {start_date.date().isoformat()}")
         logging.info(f"종료일: {end_date.date().isoformat()}")
         logging.info(f"초기자금: {self.initial_cash:,.0f}원")
         logging.info(f"최종 포트폴리오 가치: {portfolio_values[-1]:,.0f}원")

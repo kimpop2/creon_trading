@@ -16,10 +16,10 @@ import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from api.creon_api import CreonAPIClient
-from backtest.backtester import Backtester
-from backtest.broker import Broker
+from backtest.backtester_losscut import Backtester
+from backtest.broker_losscut import Broker
 from strategies.dual_momentum_daily import DualMomentumDaily
-from strategies.rsi_minute import RSIMinute
+from strategies.rsi_minute_losscut import RSIMinute
 
 # --- 로깅 설정 ---
 logging.basicConfig(level=logging.INFO,
@@ -146,7 +146,6 @@ if __name__ == '__main__':
         'early_stop_loss': -5.0,       # 초기 손절 비율 (5일 이내)
         'max_losing_positions': 5,     # 동시 손실 허용 종목 수
     }
-    stop_loss_params = None #손절하지 않기
     backtester_instance.set_broker_stop_loss_params(stop_loss_params)
 
     # 모든 종목을 하나의 리스트로 변환

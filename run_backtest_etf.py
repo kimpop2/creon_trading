@@ -1,5 +1,5 @@
 """
-파일명: run_daily_minute.py
+파일명: run_backtest_etf.py
 설명: 듀얼 모멘텀 + RSI 전략 백테스팅 (전략 패턴 적용)
 작성일: 2024-03-19 (업데이트: 2025-06-09)
 """
@@ -16,10 +16,10 @@ import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from api.creon_api import CreonAPIClient
-from backtest.backtester import Backtester
-from backtest.broker import Broker
-from strategies.dual_momentum_daily import DualMomentumDaily
-from strategies.rsi_minute import RSIMinute
+from backtest.backtester_etf import Backtester
+from backtest.broker_etf import Broker
+from strategies.dual_momentum_daily_etf import DualMomentumDaily
+from strategies.rsi_minute_etf import RSIMinute
 
 # --- 로깅 설정 ---
 logging.basicConfig(level=logging.INFO,
@@ -40,59 +40,59 @@ if __name__ == '__main__':
             ('삼성전자', 'IT'), ('SK하이닉스', 'IT'), ('DB하이텍', 'IT'),
             ('네패스아크', 'IT'), ('와이아이케이', 'IT')
         ],
-        '2차전지': [
-            ('LG에너지솔루션', '2차전지'), ('삼성SDI', '2차전지'), ('SK이노베이션', '2차전지'),
-            ('에코프로비엠', '2차전지'), ('포스코퓨처엠', '2차전지'), ('LG화학', '2차전지'),
-            ('일진머티리얼즈', '2차전지'), ('엘앤에프', '2차전지')
-        ],
-        '바이오': [
-            ('삼성바이오로직스', '바이오'), ('셀트리온', '바이오'), ('SK바이오사이언스', '바이오'),
-            ('유한양행', '바이오'), ('한미약품', '바이오')
-        ],
-        '플랫폼/인터넷': [
-            ('NAVER', 'IT'), ('카카오', 'IT'), ('크래프톤', 'IT'),
-            ('엔씨소프트', 'IT'), ('넷마블', 'IT')
-        ],
-        '자동차': [
-            ('현대차', '자동차'), ('기아', '자동차'), ('현대모비스', '자동차'),
-            ('만도', '자동차'), ('한온시스템', '자동차')
-        ],
-        '철강/화학': [
-            ('POSCO홀딩스', '철강'), ('고려아연', '철강'), ('롯데케미칼', '화학'),
-            ('금호석유', '화학'), ('효성첨단소재', '화학')
-        ],
-        '금융': [
-            ('KB금융', '금융'), ('신한지주', '금융'), ('하나금융지주', '금융'),
-            ('우리금융지주', '금융'), ('메리츠금융지주', '금융')
-        ],
-        '통신': [
-            ('SK텔레콤', '통신'), ('KT', '통신'), ('LG유플러스', '통신'),
-            ('SK스퀘어', '통신')
-        ],
-        '유통/소비재': [
-            ('CJ제일제당', '소비재'), ('오리온', '소비재'), ('롯데쇼핑', '유통'),
-            ('이마트', '유통'), ('BGF리테일', '유통')
-        ],
-        '건설/기계': [
-            ('현대건설', '건설'), ('대우건설', '건설'), ('GS건설', '건설'),
-            ('두산에너빌리티', '기계'), ('두산밥캣', '기계')
-        ],
-        '조선/항공': [
-            ('한국조선해양', '조선'), ('삼성중공업', '조선'), ('대한항공', '항공'),
-            ('현대미포조선', '조선')
-        ],
-        '에너지': [
-            ('한국전력', '에너지'), ('한국가스공사', '에너지'), ('두산퓨얼셀', '에너지'),
-            ('에스디바이오센서', '에너지')
-        ],
-        '반도체장비': [
-            ('원익IPS', 'IT'), ('피에스케이', 'IT'), ('주성엔지니어링', 'IT'),
-            ('테스', 'IT'), ('에이피티씨', 'IT')
-        ],
-        '디스플레이': [
-            ('LG디스플레이', 'IT'), ('덕산네오룩스', 'IT'), ('동운아나텍', 'IT'),
-            ('매크로젠', 'IT')
-        ],
+        # '2차전지': [
+        #     ('LG에너지솔루션', '2차전지'), ('삼성SDI', '2차전지'), ('SK이노베이션', '2차전지'),
+        #     ('에코프로비엠', '2차전지'), ('포스코퓨처엠', '2차전지'), ('LG화학', '2차전지'),
+        #     ('일진머티리얼즈', '2차전지'), ('엘앤에프', '2차전지')
+        # ],
+        # '바이오': [
+        #     ('삼성바이오로직스', '바이오'), ('셀트리온', '바이오'), ('SK바이오사이언스', '바이오'),
+        #     ('유한양행', '바이오'), ('한미약품', '바이오')
+        # ],
+        # '플랫폼/인터넷': [
+        #     ('NAVER', 'IT'), ('카카오', 'IT'), ('크래프톤', 'IT'),
+        #     ('엔씨소프트', 'IT'), ('넷마블', 'IT')
+        # ],
+        # '자동차': [
+        #     ('현대차', '자동차'), ('기아', '자동차'), ('현대모비스', '자동차'),
+        #     ('만도', '자동차'), ('한온시스템', '자동차')
+        # ],
+        # '철강/화학': [
+        #     ('POSCO홀딩스', '철강'), ('고려아연', '철강'), ('롯데케미칼', '화학'),
+        #     ('금호석유', '화학'), ('효성첨단소재', '화학')
+        # ],
+        # '금융': [
+        #     ('KB금융', '금융'), ('신한지주', '금융'), ('하나금융지주', '금융'),
+        #     ('우리금융지주', '금융'), ('메리츠금융지주', '금융')
+        # ],
+        # '통신': [
+        #     ('SK텔레콤', '통신'), ('KT', '통신'), ('LG유플러스', '통신'),
+        #     ('SK스퀘어', '통신')
+        # ],
+        # '유통/소비재': [
+        #     ('CJ제일제당', '소비재'), ('오리온', '소비재'), ('롯데쇼핑', '유통'),
+        #     ('이마트', '유통'), ('BGF리테일', '유통')
+        # ],
+        # '건설/기계': [
+        #     ('현대건설', '건설'), ('대우건설', '건설'), ('GS건설', '건설'),
+        #     ('두산에너빌리티', '기계'), ('두산밥캣', '기계')
+        # ],
+        # '조선/항공': [
+        #     ('한국조선해양', '조선'), ('삼성중공업', '조선'), ('대한항공', '항공'),
+        #     ('현대미포조선', '조선')
+        # ],
+        # '에너지': [
+        #     ('한국전력', '에너지'), ('한국가스공사', '에너지'), ('두산퓨얼셀', '에너지'),
+        #     ('에스디바이오센서', '에너지')
+        # ],
+        # '반도체장비': [
+        #     ('원익IPS', 'IT'), ('피에스케이', 'IT'), ('주성엔지니어링', 'IT'),
+        #     ('테스', 'IT'), ('에이피티씨', 'IT')
+        # ],
+        # '디스플레이': [
+        #     ('LG디스플레이', 'IT'), ('덕산네오룩스', 'IT'), ('동운아나텍', 'IT'),
+        #     ('매크로젠', 'IT')
+        # ],
         '방산': [
             ('한화에어로스페이스', '방산'), ('LIG넥스원', '방산'), ('한화시스템', '방산'),
             ('현대로템', '방산')
@@ -100,9 +100,9 @@ if __name__ == '__main__':
     }
     
     # 백테스트 기간 설정
-    daily_data_fetch_start = '20250301' 
-    backtest_start_date = datetime.datetime(2025, 4, 1, 9, 0, 0)
-    backtest_end_date = datetime.datetime(2025, 6, 4, 3, 30, 0)
+    daily_data_fetch_start = '20241101' 
+    backtest_start_date = datetime.datetime(2024, 12, 1, 9, 0, 0)
+    backtest_end_date = datetime.datetime(2025, 3, 4, 3, 30, 0)
 
     creon_api = CreonAPIClient()
     if not creon_api.connected:
@@ -114,12 +114,15 @@ if __name__ == '__main__':
 
     # 듀얼 모멘텀 전략 설정 (DualMomentumDaily 인스턴스 생성 및 Backtester에 주입)
     daily_strategy = DualMomentumDaily(
-        data_store=backtester_instance.data_store,
+        data_store=backtester_instance.data_store, # <-- Backtester의 data_store를 직접 전달
         strategy_params={
             'momentum_period': 5,          # 모멘텀 계산 기간 (거래일)
             'rebalance_weekday': 3,        # 리밸런싱 요일 (0: 월요일, 4: 금요일)
             'num_top_stocks': 10,           # 상위 N종목 선택
             'safe_asset_code': 'A439870',  # 안전자산 코드 (국고채 ETF)
+            'market_index_code': 'A069500', # KOSPI 200 추종 ETF 코드 (예: KODEX 200) - 실제 ETF 코드 확인
+            'inverse_etf_code': 'A114800', # KODEX 인버스 ETF 코드 (예: KODEX 인버스) - 실제 ETF 코드 확인
+            'risk_free_rate': 0.0   # 무위험 수익률 (0.0은 0%, 0.01은 1%)
         },
         broker=backtester_instance.broker # Broker 인스턴스 전달
     )
@@ -156,19 +159,36 @@ if __name__ == '__main__':
             stock_names.append(stock_name)
 
     # 종목 코드 확인 및 일봉 데이터 로딩
-    # 안전자산 코드도 미리 추가
+    # 안전자산 주가 미리 추가
     safe_asset_code = daily_strategy.strategy_params['safe_asset_code'] # <-- 여기서 직접 정의한 strategy_params에서 가져옴
-
     logging.info(f"'안전자산' (코드: {safe_asset_code}) 안전자산 일봉 데이터 로딩 중... (기간: {daily_data_fetch_start} ~ {backtest_end_date.strftime('%Y%m%d')})")
-    
     daily_df = creon_api.get_daily_ohlcv(safe_asset_code, daily_data_fetch_start, backtest_end_date.strftime('%Y%m%d'))
     backtester_instance.add_daily_data(safe_asset_code, daily_df)
     if daily_df.empty:
         logging.warning(f"'안전자산' (코드: {safe_asset_code}) 종목의 일봉 데이터를 가져올 수 없습니다. 종료합니다다.")
         exit(1)
     logging.info(f"'안전자산' (코드: {safe_asset_code}) 종목의 일봉 데이터 로드 완료. 데이터 수: {len(daily_df)}행")
-    
 
+    # 시장대표지수(KODEX 200) ETF 주가 추가
+    market_index_code = daily_strategy.strategy_params['market_index_code'] # <-- 여기서 직접 정의한 strategy_params에서 가져옴
+    logging.info(f"'시장대표지수' (코드: {market_index_code}) 시장대표지수 일봉 데이터 로딩 중... (기간: {daily_data_fetch_start} ~ {backtest_end_date.strftime('%Y%m%d')})")
+    daily_df = creon_api.get_daily_ohlcv(market_index_code, daily_data_fetch_start, backtest_end_date.strftime('%Y%m%d'))
+    backtester_instance.add_daily_data(market_index_code, daily_df)
+    if daily_df.empty:
+        logging.warning(f"'시장대표지수' (코드: {market_index_code}) 종목의 일봉 데이터를 가져올 수 없습니다. 종료합니다다.")
+        exit(1)
+    logging.info(f"'시장대표지수' (코드: {market_index_code}) 종목의 일봉 데이터 로드 완료. 데이터 수: {len(daily_df)}행")
+    
+    # KODEX 인버스 ETF 주가 추가
+    inverse_etf_code = daily_strategy.strategy_params['inverse_etf_code'] # <-- 여기서 직접 정의한 strategy_params에서 가져옴
+    logging.info(f"'KODEX 인버스' (코드: {inverse_etf_code}) KODEX 인버스 일봉 데이터 로딩 중... (기간: {daily_data_fetch_start} ~ {backtest_end_date.strftime('%Y%m%d')})")
+    daily_df = creon_api.get_daily_ohlcv(inverse_etf_code, daily_data_fetch_start, backtest_end_date.strftime('%Y%m%d'))
+    backtester_instance.add_daily_data(inverse_etf_code, daily_df)
+    if daily_df.empty:
+        logging.warning(f"'KODEX 인버스' (코드: {inverse_etf_code}) 종목의 일봉 데이터를 가져올 수 없습니다. 종료합니다다.")
+        exit(1)
+    logging.info(f"'KODEX 인버스' (코드: {inverse_etf_code}) 종목의 일봉 데이터 로드 완료. 데이터 수: {len(daily_df)}행")
+    
     all_target_stock_names = stock_names
     for name in all_target_stock_names:
         code = creon_api.get_stock_code(name)

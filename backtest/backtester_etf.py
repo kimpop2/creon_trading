@@ -1,21 +1,22 @@
+# backtester/backtester_etf.py (수정 또는 추가 필요 부분)
+
+import pandas as pd
 import datetime
 import logging
-import pandas as pd
 import numpy as np
-import time
 
-from backtest.broker import Broker
-from util.utils import calculate_performance_metrics, get_next_weekday 
+from backtest.broker_etf import Broker  # 브로커 클래스 임포트
 from strategies.strategy import DailyStrategy, MinuteStrategy 
+#from util.data_store import DataStore # 데이터 스토어 임포트 (가정)
+from util.utils import calculate_performance_metrics # 성능 지표 계산 함수 임포트
 
 class Backtester:
     def __init__(self, api_client, initial_cash):
-        self.api_client = api_client
+        self.initial_cash = initial_cash
         self.broker = Broker(initial_cash, commission_rate=0.0003) # 수수료 0.03%
         self.data_store = {'daily': {}, 'minute': {}} # {stock_code: DataFrame}
         self.portfolio_values = [] # (datetime, value) 튜플 저장
-        self.initial_cash = initial_cash
-        
+        self.transaction_log = [] # 거래 내역을 저장할 리스트
         self.daily_strategy: DailyStrategy = None
         self.minute_strategy: MinuteStrategy = None
 
@@ -41,7 +42,7 @@ class Backtester:
 
         if not self.daily_strategy and not self.minute_strategy:
             logging.warning("설정된 일봉 또는 분봉 전략이 없습니다. 백테스트가 제대로 동작하지 않을 수 있습니다.")
-
+    
     def set_broker_stop_loss_params(self, params):
         """Broker의 손절매 파라미터를 설정합니다."""
         if self.broker:
@@ -121,8 +122,6 @@ class Backtester:
             full_df = pd.concat(dfs_to_concat).sort_index()
             return full_df
         return pd.DataFrame()
-    
-
     
     def run(self, start_date, end_date):
         portfolio_values = []
@@ -237,3 +236,30 @@ class Backtester:
             logging.info("보유 중인 종목 없음")
         
         return portfolio_value_series, metrics
+
+
+    def _update_daily_portfolio_value(self, current_date):
+        """
+        일별 포트폴리오 가치를 업데이트합니다.
+        """
+        # 현재 보유 종목의 최신 가격을 가져와 평가
+        portfolio_value = self.broker.get_cash()
+        for stock_code, quantity in self.broker.get_positions().items():
+            # 당일 종가를 사용하거나, 당일 마지막 분봉 데이터를 사용
+            # 여기서는 당일의 마지막 분봉 데이터의 종가를 사용하는 것이 현실적
+            daily_data = self.data_store.get_historical_data('minute', stock_code, current_date)
+            if not daily_data.empty:
+                current_price = daily_data['close'].iloc[-1] # 당일 마지막 분봉 종가
+                portfolio_value += quantity * current_price
+            else:
+                # 데이터가 없는 경우 전날 종가나 직전 유효 가격을 사용하거나 로깅
+                logging.warning(f"[{current_date.isoformat()}] {stock_code}의 분봉 데이터가 없어 포트폴리오 가치 계산에 어려움.")
+                # 대안: 전날 종가를 사용하거나, 해당 종목 평가를 스킵하고 현금만 반영
+                # 여기서는 편의상 해당 종목의 전날 평가액을 유지한다고 가정하거나,
+                # 0으로 처리하여 보수적으로 평가. 실제로는 더 정교한 로직 필요.
+                # 임시: 그냥 현재 수량 * 직전 유효 가격을 사용하거나, 0으로 평가 (현금만 반영)
+                # 여기서는 간단하게, 데이터가 없으면 해당 종목은 평가액에 반영하지 않음
+                pass # 해당 종목 평가액에 더하지 않음. 즉, 이미 팔렸다고 가정하거나, 일단 제외
+
+        self.portfolio_values[current_date] = portfolio_value
+        logging.debug(f"[{current_date.isoformat()}] 일별 포트폴리오 가치: {portfolio_value:.2f}")

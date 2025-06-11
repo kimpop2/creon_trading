@@ -4,6 +4,7 @@ import logging
 class Broker:
     def __init__(self, initial_cash, commission_rate=0.0003, slippage_rate=0.0):
         self.cash = initial_cash
+        # positions 딕셔너리 구조 변경: highest_price와 entry_date는 이제 Broker가 관리
         self.positions = {}  # {stock_code: {'size': int, 'avg_price': float, 'entry_date': datetime.date, 'highest_price': float}}
         self.transaction_log = [] # (date, stock_code, type, price, quantity, commission, net_amount)
         self.commission_rate = commission_rate
@@ -22,7 +23,6 @@ class Broker:
         """손절매 관련 파라미터를 설정합니다."""
         if params is None:
             return
-        
         self.stop_loss_ratio = params.get('stop_loss_ratio')
         self.trailing_stop_ratio = params.get('trailing_stop_ratio')
         self.early_stop_loss = params.get('early_stop_loss')
@@ -51,6 +51,8 @@ class Broker:
                     self.positions[stock_code]['size'] = new_size
                     self.positions[stock_code]['avg_price'] = new_avg_price
                     # 매수 시점에 최고가도 현재가로 초기화 (트레일링 스탑을 위해)
+                    # 일봉 종가 손절에서는 highest_price 업데이트가 일봉 종가 시점에 이루어져야 함
+                    # 여기서는 일단 매수 가격으로 초기화
                     self.positions[stock_code]['highest_price'] = effective_price
                 else:
                     self.positions[stock_code] = {
@@ -104,71 +106,69 @@ class Broker:
 
         return self.cash + holdings_value
 
-    def _update_highest_price(self, stock_code, current_price):
-        """포지션의 최고가를 업데이트합니다 (트레일링 스탑을 위해)."""
-        if stock_code in self.positions: # Broker의 positions를 직접 사용
-            if current_price > self.positions[stock_code]['highest_price']:
-                self.positions[stock_code]['highest_price'] = current_price
+    def update_daily_highest_price(self, stock_code, daily_close_price):
+        """매일 일봉 종가를 기반으로 포지션의 최고가를 업데이트합니다."""
+        if stock_code in self.positions:
+            if daily_close_price is not None and daily_close_price > self.positions[stock_code]['highest_price']:
+                self.positions[stock_code]['highest_price'] = daily_close_price
 
-    def check_and_execute_stop_loss(self, stock_code, current_price, current_dt):
+    def check_and_execute_stop_loss(self, stock_code, daily_close_price, current_dt):
         """
-        개별 종목에 대한 손절 조건을 체크하고, 조건 충족 시 매도 주문을 실행합니다.
-        (RSIMinute 원본 로직으로 복원)
+        개별 종목에 대한 손절 조건을 일봉 종가 기준으로 체크하고, 조건 충족 시 매도 주문을 실행합니다.
         """
         if stock_code not in self.positions or self.positions[stock_code]['size'] <= 0:
             return False # 보유하고 있지 않으면 손절 체크할 필요 없음
+        if daily_close_price is None:
+            logging.warning(f"[{current_dt.isoformat()}] {stock_code}: 일봉 종가 데이터가 없어 개별 손절 체크를 건너뜜.")
+            return False
 
         pos_info = self.positions[stock_code]
         avg_price = pos_info['avg_price']
-        
-        # 1. 포지션의 최고가 업데이트 (매 분봉마다 호출되므로 여기서 업데이트)
-        self._update_highest_price(stock_code, current_price)
-        highest_price = pos_info['highest_price'] # Broker의 positions에 저장된 highest_price 사용
+        highest_price = pos_info['highest_price'] # 이미 update_daily_highest_price로 업데이트됨
 
-        loss_ratio = (current_price - avg_price) / avg_price * 100
+        loss_ratio = (daily_close_price - avg_price) / avg_price * 100
         
         # 1. 단순 손절 (stop_loss_ratio)
         if self.stop_loss_ratio is not None and loss_ratio <= self.stop_loss_ratio:
-            logging.info(f"[개별 손절매 발생] {stock_code}: 현재 손실률 {loss_ratio:.2f}%가 기준치 {self.stop_loss_ratio}%를 초과. {current_dt.isoformat()}")
-            self.execute_order(stock_code, 'sell', current_price, pos_info['size'], current_dt)
+            logging.info(f"[개별 손절매 발생] {stock_code}: 일봉 종가 {daily_close_price:,.0f}원. 현재 손실률 {loss_ratio:.2f}%가 기준치 {self.stop_loss_ratio}%를 초과. {current_dt.isoformat()}")
+            self.execute_order(stock_code, 'sell', daily_close_price, pos_info['size'], current_dt)
             return True
             
         # 2. 트레일링 스탑 (trailing_stop_ratio)
         if self.trailing_stop_ratio is not None and highest_price > 0: # highest_price가 초기화되지 않은 경우 방지
-            trailing_loss_ratio = (current_price - highest_price) / highest_price * 100
+            trailing_loss_ratio = (daily_close_price - highest_price) / highest_price * 100
             if trailing_loss_ratio <= self.trailing_stop_ratio:
-                logging.info(f"[트레일링 스탑 발생] {stock_code}: 현재가 {current_price:,.0f}원이 최고가 {highest_price:,.0f}원 대비 {trailing_loss_ratio:.2f}% 하락. {current_dt.isoformat()}")
-                self.execute_order(stock_code, 'sell', current_price, pos_info['size'], current_dt)
+                logging.info(f"[트레일링 스탑 발생] {stock_code}: 일봉 종가 {daily_close_price:,.0f}원이 최고가 {highest_price:,.0f}원 대비 {trailing_loss_ratio:.2f}% 하락. {current_dt.isoformat()}")
+                self.execute_order(stock_code, 'sell', daily_close_price, pos_info['size'], current_dt)
                 return True
         
         # 3. 보유 기간 기반 손절 폭 조정 (early_stop_loss)
         if self.early_stop_loss is not None and pos_info['entry_date'] is not None:
             holding_days = (current_dt.date() - pos_info['entry_date']).days
             if holding_days <= 5 and loss_ratio <= self.early_stop_loss: # 매수 후 5일 이내
-                logging.info(f"[조기 손절매 발생] {stock_code}: 매수 후 {holding_days}일 이내 손실률 {loss_ratio:.2f}%가 조기 손절 기준 {self.early_stop_loss}% 초과. {current_dt.isoformat()}")
-                self.execute_order(stock_code, 'sell', current_price, pos_info['size'], current_dt)
+                logging.info(f"[조기 손절매 발생] {stock_code}: 매수 후 {holding_days}일 이내 일봉 손실률 {loss_ratio:.2f}%가 조기 손절 기준 {self.early_stop_loss}% 초과. {current_dt.isoformat()}")
+                self.execute_order(stock_code, 'sell', daily_close_price, pos_info['size'], current_dt)
                 return True
         
         return False
 
-    def check_and_execute_portfolio_stop_loss(self, current_prices, current_dt):
+    def check_and_execute_portfolio_stop_loss(self, daily_close_prices, current_dt):
         """
-        포트폴리오 전체 손절 조건을 체크하고, 조건 충족 시 모든 포지션을 청산합니다.
-        (RSIMinute 원본 로직으로 복원)
+        포트폴리오 전체 손절 조건을 일봉 종가 기준으로 체크하고, 조건 충족 시 모든 포지션을 청산합니다.
         """
         if not self.positions: # 보유 종목이 없으면 체크할 필요 없음
             return False
 
         # 1. 전체 손실폭 기준 (portfolio_stop_loss)
         if self.portfolio_stop_loss is not None:
-            portfolio_value = self.get_portfolio_value(current_prices)
+            portfolio_value = self.get_portfolio_value(daily_close_prices) # 일봉 종가로 계산
             total_loss_ratio = (portfolio_value - self.initial_portfolio_value) / self.initial_portfolio_value * 100
             
             if total_loss_ratio <= self.portfolio_stop_loss:
                 logging.info(f"[포트폴리오 손절매 발생] 전체 손실률 {total_loss_ratio:.2f}%가 기준치 {self.portfolio_stop_loss}% 초과. 모든 포지션 청산. {current_dt.isoformat()}")
-                for stock_code, pos in list(self.positions.items()): # 순회 중 딕셔너리 변경 방지를 위해 list()로 복사
+                for stock_code, pos in list(self.positions.items()): 
                     if pos['size'] > 0:
-                        price = current_prices.get(stock_code, pos['avg_price']) # 현재가 없으면 평균단가로 매도 시도
+                        price = daily_close_prices.get(stock_code, pos['avg_price']) # 현재가 없으면 평균단가로 매도 시도
                         logging.info(f"[포트폴리오 손절매 실행] {current_dt.isoformat()} - {stock_code} 매도. 가격: {price:,.0f}원")
                         self.execute_order(stock_code, 'sell', price, pos['size'], current_dt)
                 return True
@@ -182,8 +182,8 @@ class Broker:
                 return False
 
             for stock_code, pos_info in self.positions.items():
-                if stock_code in current_prices and pos_info['size'] > 0:
-                    loss_ratio = (current_prices[stock_code] - pos_info['avg_price']) / pos_info['avg_price'] * 100
+                if stock_code in daily_close_prices and pos_info['size'] > 0:
+                    loss_ratio = (daily_close_prices[stock_code] - pos_info['avg_price']) / pos_info['avg_price'] * 100
                     if loss_ratio <= self.stop_loss_ratio: # 개별 손절 기준과 동일하게 적용
                         losing_positions_count += 1
             
@@ -191,7 +191,7 @@ class Broker:
                 logging.info(f"[포트폴리오 손절매 발생] 동시 손실 종목 수 {losing_positions_count}개가 최대 허용치 {self.max_losing_positions}개 초과. 모든 포지션 청산. {current_dt.isoformat()}")
                 for stock_code, pos in list(self.positions.items()):
                     if pos['size'] > 0:
-                        price = current_prices.get(stock_code, pos['avg_price'])
+                        price = daily_close_prices.get(stock_code, pos['avg_price'])
                         logging.info(f"[포트폴리오 손절매 실행] {current_dt.isoformat()} - {stock_code} 매도. 가격: {price:,.0f}원")
                         self.execute_order(stock_code, 'sell', price, pos['size'], current_dt)
                 return True
