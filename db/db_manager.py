@@ -1,3 +1,4 @@
+
 # backtesting/db/db_manager.py
 
 import pymysql
@@ -6,15 +7,34 @@ import pandas as pd
 from datetime import datetime, date, timedelta
 import os
 import sys
+import json # JSON 직렬화를 위해 추가
+import re
+# --- 로거 설정 (스크립트 최상단에서 설정하여 항상 보이도록 함) ---
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO) # 테스트 시 DEBUG로 설정하여 모든 로그 출력
 
+# 콘솔 핸들러 추가 (이미 핸들러가 등록되어 있지 않다면)
+if not logger.handlers:
+    console_handler = logging.StreamHandler(sys.stdout)
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+# -----------------------------------------------------------
 # sys.path에 프로젝트 루트 추가 (settings.py 임포트를 위함)
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+# 이 스크립트의 위치는 creon_trading/db/db_manager.py 이므로,
+# project_root는 creon_trading 디렉토리가 되어야 합니다.
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..')) 
 sys.path.insert(0, project_root)
+logger.debug(f"Project root added to sys.path: {project_root}")
 
 from config.settings import DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
-
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO) # 기본 로그 레벨 설정
+logger.info("config/settings.py에서 DB 설정을 성공적으로 로드했습니다.")
+# SQLAlchemy는 필요할 때 임포트 (Python 3.9 환경 호환성 고려)
+try:
+    from sqlalchemy import create_engine
+except ImportError:
+    create_engine = None
+    logger.warning("SQLAlchemy가 설치되지 않았습니다. 'pip install sqlalchemy'를 실행해야 insert_df_to_db 메서드를 사용할 수 있습니다.")
 
 class DBManager:
     def __init__(self):
@@ -25,6 +45,8 @@ class DBManager:
         self.db_name = DB_NAME
         self.conn = None
         self._connect()
+        # SQLAlchemy Engine은 필요할 때 생성하도록 초기화 시점에는 생성하지 않음
+        self._engine = None 
 
     def _connect(self):
         """데이터베이스에 연결합니다."""
@@ -55,60 +77,486 @@ class DBManager:
         if self.conn and self.conn.open:
             self.conn.close()
             logger.info("데이터베이스 연결이 닫혔습니다.")
+        # SQLAlchemy Engine도 함께 닫아주는 것이 좋습니다.
+        if self._engine:
+            self._engine.dispose()
+            logger.info("SQLAlchemy Engine이 닫혔습니다.")
 
-    def create_all_tables(self):
-        """schema.sql 파일의 SQL 쿼리를 실행하여 모든 테이블을 생성합니다."""
+    def _get_db_engine(self):
+        """SQLAlchemy Engine을 생성하거나 반환합니다."""
+        if self._engine is None:
+            try:
+                db_url = f"mysql+pymysql://{self.user}:{self.password}@{self.host}:{self.port}/{self.db_name}"
+                self._engine = create_engine(db_url, echo=False) # echo=True는 SQL 쿼리 로깅
+                logger.info(f"SQLAlchemy Engine 생성 완료: {db_url.split('@')[1]}")
+            except Exception as e:
+                logger.error(f"SQLAlchemy Engine 생성 실패: {e}", exc_info=True)
+                self._engine = None
+        return self._engine
+
+    def check_table_exist(self, table_name):
+        """MariaDB에서 테이블 존재 여부를 확인하는 메서드"""
+        table_name = table_name.lower() # 테이블 이름을 소문자로 변환하여 비교
         conn = self.get_db_connection()
         if not conn:
-            logger.error("DB 연결이 없어 테이블을 생성할 수 없습니다.")
-            return
+            logger.error("DB 연결이 없어 테이블 존재 여부를 확인할 수 없습니다.")
+            return False
+        
+        try:
+            with conn.cursor() as cur:
+                sql = "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = %s AND table_name = %s"
+                cur.execute(sql, (self.db_name, table_name))
+                result = cur.fetchone()
+                exists = result['COUNT(*)'] > 0
+                logger.debug(f"테이블 '{table_name}' 존재 여부 확인 결과: {exists}")
+                return exists
+        except pymysql.MySQLError as e:
+            logger.error(f"MariaDB Error during table existence check for '{table_name}': {e}", exc_info=True)
+            return False
+        except Exception as e:
+            logger.error(f"An unexpected error occurred during table existence check for '{table_name}': {e}", exc_info=True)
+            return False
 
-        schema_path = os.path.join(os.path.dirname(__file__), 'schema.sql')
+    def execute_script(self, sql_script):
+        """SQL 스크립트를 실행하여 모든 테이블을 생성합니다."""
+        conn = self.get_db_connection()
+        if not conn:
+            logger.error("DB 연결이 없어 SQL 스크립트를 실행할 수 없습니다.")
+            return False
+
+        cur_command = ''
+        try:
+            # Step 1: Remove all SQL comments (single-line -- and multi-line /* */)
+            # This is a more robust approach to clean the script before splitting.
+            cleaned_script = re.sub(r'--.*$', '', sql_script, flags=re.MULTILINE) # Remove single-line comments
+            cleaned_script = re.sub(r'/\*.*?\*/', '', cleaned_script, flags=re.DOTALL) # Remove multi-line comments
+
+            # Step 2: Split by semicolon and filter out empty strings and purely whitespace strings
+            sql_commands = [
+                cmd.strip() for cmd in cleaned_script.split(';') if cmd.strip()
+            ]
+            
+            logger.debug(f"Parsed SQL commands ({len(sql_commands)} found):")
+            for i, cmd in enumerate(sql_commands):
+                logger.debug(f"  Command {i+1} (first 300 chars): {cmd[:300]}...") 
+
+            if not sql_commands:
+                logger.warning("SQL 스크립트에서 실행할 유효한 명령어를 찾을 수 없습니다. (스크립트가 비어있거나 모든 내용이 주석 처리되었나요?)")
+                return False 
+
+            with conn.cursor() as cursor:
+                for i, command in enumerate(sql_commands):
+                    cur_command = command
+                    logger.debug(f"Executing SQL command {i+1}/{len(sql_commands)}: {cur_command[:100]}...") 
+                    cursor.execute(cur_command)
+            conn.commit()
+            logger.info(f"SQL 스크립트 ({len(sql_commands)}개의 명령)가 정상적으로 실행되었습니다.")
+            return True
+        except Exception as e:
+            logger.error(f"SQL 스크립트 실행 오류 발생: {e}", exc_info=True)
+            logger.error(f"오류가 발생한 명령어: {cur_command}") 
+            conn.rollback()
+            return False
+
+    def execute_sql_file(self, file_name):
+        """특정 SQL 파일을 읽어 SQL 쿼리를 실행합니다."""
+        # 이 스크립트 파일의 디렉토리를 기준으로 'sql' 하위 디렉토리를 찾습니다.
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        sql_dir = os.path.join(script_dir, 'sql') 
+        schema_path = os.path.join(sql_dir, file_name + '.sql')
+
+        logger.info(f"SQL 파일 로드 및 실행 시도: {schema_path}")
+        if not os.path.exists(schema_path): 
+            logger.error(f"SQL 파일 '{schema_path}'을(를) 찾을 수 없습니다. 경로를 확인해주세요.")
+            return False
+
+        sql_script = ''
         try:
             with open(schema_path, 'r', encoding='utf-8') as f:
                 sql_script = f.read()
-
-            sql_commands = sql_script.split(';')
-            with conn.cursor() as cursor:
-                for command in sql_commands:
-                    command = command.strip()
-                    if command: # 빈 문자열이 아니면 실행
-                        cursor.execute(command)
-            conn.commit()
-            logger.info("모든 테이블이 성공적으로 생성되었거나 이미 존재합니다.")
-        except FileNotFoundError:
-            logger.error(f"스키마 파일 '{schema_path}'을 찾을 수 없습니다.")
+            return self.execute_script(sql_script)
         except Exception as e:
-            logger.error(f"테이블 생성 중 오류 발생: {e}", exc_info=True)
-            conn.rollback()
+            logger.error(f"SQL 파일 읽기 또는 실행 오류 발생: {e}", exc_info=True)
+            return False
+        
 
-    def drop_all_tables(self):
-        """모든 테이블을 삭제합니다."""
+    def insert_df_to_db(self, table_name, df, option="append", is_index=False): # 기본값 append로 변경, index=False로 변경
+        """DataFrame을 MariaDB에 삽입하는 메서드 (SQLAlchemy 사용)
+        :param table_name: 데이터를 삽입할 테이블 이름
+        :param df: 삽입할 데이터가 담긴 Pandas DataFrame
+        :param option: 테이블 존재 시 처리 방식 ('append', 'replace', 'fail')
+        :param is_index: DataFrame의 인덱스를 DB 컬럼으로 저장할지 여부
+        """
+        table_name = table_name.lower()
+        if not isinstance(df, pd.DataFrame):
+            logger.error("insert_df_to_db: 입력 데이터가 pandas DataFrame이 아닙니다.")
+            return False
+
+        if option not in ["replace", "append", "fail"]:
+            logger.error(f"insert_df_to_db: option must be 'replace', 'append', or 'fail', but got '{option}'.")
+            return False
+
+        engine = self._get_db_engine()
+        if not engine:
+            logger.error("insert_df_to_db: DB 엔진 생성에 실패했습니다.")
+            return False
+
+        try:
+            # index_label은 is_index가 True일 때만 의미가 있습니다.
+            df.to_sql(table_name, con=engine, if_exists=option, index=is_index, 
+                      index_label=df.index.name if is_index and df.index.name else None)
+            logger.info(f"DataFrame 데이터 {len(df)}행을 테이블 '{table_name}'에 '{option}' 모드로 성공적으로 삽입했습니다.")
+            return True
+        except Exception as e:
+            logger.error(f"DataFrame 데이터를 테이블 '{table_name}'에 삽입 중 오류 발생: {e}", exc_info=True)
+            return False
+
+    def execute_sql(self, sql, param=None):
+        """MariaDB에서 SQL 쿼리를 실행하고 커밋하는 메서드 (SELECT, INSERT, UPDATE, DELETE 등)
+        :param sql: 실행할 SQL 쿼리 문자열
+        :param param: SQL 쿼리에 바인딩할 파라미터 (단일 튜플/딕셔너리 또는 executemany를 위한 리스트)
+        :return: 쿼리 결과를 담은 커서 객체 (SELECT의 경우) 또는 None (오류 발생 시)
+        """
         conn = self.get_db_connection()
         if not conn:
-            logger.error("DB 연결이 없어 테이블을 삭제할 수 없습니다.")
-            return
+            logger.error("DB 연결이 없어 SQL 쿼리를 실행할 수 없습니다.")
+            return None
 
-        # 외래 키 제약 조건이 있는 테이블부터 먼저 삭제
-        tables_to_drop = ['minute_stock_data', 'daily_stock_data', 'stock_info'] # stock_finance 제거
         try:
-            with conn.cursor() as cursor:
-                for table_name in tables_to_drop:
-                    cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
-                    logger.info(f"테이블 '{table_name}' 삭제 완료.")
-            conn.commit()
-            logger.info("모든 테이블이 성공적으로 삭제되었습니다.")
-        except Exception as e:
-            logger.error(f"테이블 삭제 중 오류 발생: {e}", exc_info=True)
-            conn.rollback()
+            with conn.cursor() as cur:
+                if param:
+                    logger.debug(f"SQL 실행: {sql} with params: {param}")
+                    if isinstance(param, list): # 여러 개의 파라미터 리스트면 executemany
+                        cur.executemany(sql, param)
+                    else: # 단일 파라미터면 execute
+                        cur.execute(sql, param)
+                else: # 파라미터 없으면 execute
+                    logger.debug(f"SQL 실행: {sql}")
+                    cur.execute(sql)
 
-    def save_stock_info(self, stock_info_list):
+                conn.commit()
+                logger.debug("SQL 커밋 완료.")
+
+                return cur # SELECT 쿼리의 경우 결과를 fetch하기 위해 커서 반환
+        except pymysql.MySQLError as e:
+            logger.error(f"MariaDB Error during SQL execution: {e}. SQL: {sql}, Params: {param}", exc_info=True)
+            conn.rollback() 
+            return None
+        except Exception as e:
+            logger.error(f"An unexpected error occurred during SQL execution: {e}. SQL: {sql}, Params: {param}", exc_info=True)
+            conn.rollback()
+            return None
+
+    # ----------------------------------------------------------------------------
+    # 백테스트 관리 테이블
+    # ----------------------------------------------------------------------------
+    def create_backtest_tables(self):
+        return self.execute_sql_file('create_backtest_tables')
+
+    def drop_backtest_tables(self):
+        return self.execute_sql_file('drop_backtest_tables')
+
+    # --- backtest_run 테이블 관련 메서드 ---
+    def save_backtest_run(self, run_info: dict):
         """
-        종목 기본 정보 및 최신 재무 데이터를 DB의 stock_info 테이블에 저장하거나 업데이트합니다.
-        :param stock_info_list: [{'stock_code': 'A005930', 'stock_name': '삼성전자', 'per': 10.5, ...}, ...]
+        백테스트 실행 정보를 DB의 backtest_run 테이블에 저장하거나 업데이트합니다.
+        :param run_info: 백테스트 실행 정보 딕셔너리
+                         (run_id가 None이면 AUTO_INCREMENT, 있으면 해당 ID로 업데이트 시도)
+        :return: 새로 삽입된 run_id (int) 또는 업데이트 성공 시 run_id (int), 실패 시 False
         """
         conn = self.get_db_connection()
         if not conn: return False
+        
+        sql = """
+        INSERT INTO backtest_run
+        (run_id, start_date, end_date, initial_capital, final_capital, total_profit_loss, 
+         cumulative_return, max_drawdown, strategy_daily, strategy_minute, params_json_daily, params_json_minute)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            start_date=VALUES(start_date),
+            end_date=VALUES(end_date),
+            initial_capital=VALUES(initial_capital),
+            final_capital=VALUES(final_capital),
+            total_profit_loss=VALUES(total_profit_loss),
+            cumulative_return=VALUES(cumulative_return),
+            max_drawdown=VALUES(max_drawdown),
+            strategy_daily=VALUES(strategy_daily),
+            strategy_minute=VALUES(strategy_minute),
+            params_json_daily=VALUES(params_json_daily),
+            params_json_minute=VALUES(params_json_minute)
+        """
+        
+        run_id_param = run_info.get('run_id') if run_info.get('run_id') is not None else None
+        
+        params = (
+            run_id_param, 
+            run_info.get('start_date'),
+            run_info.get('end_date'),
+            run_info.get('initial_capital'),
+            run_info.get('final_capital'),
+            run_info.get('total_profit_loss'),
+            run_info.get('cumulative_return'),
+            run_info.get('max_drawdown'),
+            run_info.get('strategy_daily'),
+            run_info.get('strategy_minute'),
+            # --- 변경 부분: dict를 JSON 문자열로 직렬화 ---
+            json.dumps(run_info.get('params_json_daily')) if run_info.get('params_json_daily') is not None else None, 
+            json.dumps(run_info.get('params_json_minute')) if run_info.get('params_json_minute') is not None else None 
+            # -----------------------------------------------
+        )
+        
+        try:
+            cursor = self.execute_sql(sql, params)
+            if cursor:
+                new_run_id = cursor.lastrowid if run_id_param is None else run_id_param
+                logger.info(f"백테스트 실행 정보 저장/업데이트 성공. run_id: {new_run_id}")
+                return new_run_id
+            else:
+                return False
+        except Exception as e:
+            logger.error(f"백테스트 실행 정보 저장/업데이트 오류: {e}", exc_info=True)
+            return False
+
+    def fetch_backtest_run(self, run_id: int = None, start_date: date = None, end_date: date = None):
+        """
+        DB에서 백테스트 실행 정보를 조회합니다.
+        :param run_id: 조회할 백테스트 실행 ID
+        :param start_date: 백테스트 시작일 필터링 (이상)
+        :param end_date: 백테스트 종료일 필터링 (이하)
+        :return: Pandas DataFrame
+        """
+        conn = self.get_db_connection()
+        if not conn: return pd.DataFrame()
+        
+        sql = """
+        SELECT run_id, start_date, end_date, initial_capital, final_capital, total_profit_loss, 
+               cumulative_return, max_drawdown, strategy_daily, strategy_minute, 
+               params_json_daily, params_json_minute, created_at
+        FROM backtest_run
+        WHERE 1=1
+        """
+        params = []
+        if run_id is not None:
+            sql += " AND run_id = %s"
+            params.append(run_id)
+        if start_date:
+            sql += " AND start_date >= %s"
+            params.append(start_date)
+        if end_date:
+            sql += " AND end_date <= %s"
+            params.append(end_date)
+        sql += " ORDER BY created_at DESC"
+
+        try:
+            cursor = self.execute_sql(sql, tuple(params) if params else None)
+            if cursor:
+                result = cursor.fetchall()
+                return pd.DataFrame(result)
+            else:
+                return pd.DataFrame()
+        except Exception as e:
+            logger.error(f"백테스트 실행 정보 조회 오류 (run_id: {run_id}): {e}", exc_info=True)
+            return pd.DataFrame()
+
+    # --- backtest_trade 테이블 관련 메서드 ---
+    def save_backtest_trade(self, trade_data_list: list):
+        """
+        백테스트 개별 거래 내역을 DB의 backtest_trade 테이블에 저장하거나 업데이트합니다.
+        trade_id는 AUTO_INCREMENT이므로, 삽입 시에는 trade_id를 제외하고, 
+        ON DUPLICATE KEY UPDATE 시에는 run_id, stock_code, trade_datetime UNIQUE KEY를 사용합니다.
+        :param trade_data_list: [{'run_id': 1, 'stock_code': 'A005930', ...}, ...]
+        :return: 성공 시 True, 실패 시 False
+        """
+        conn = self.get_db_connection()
+        if not conn: return False
+        
+        # trade_id는 AUTO_INCREMENT이므로, INSERT 컬럼 리스트에서 제외
+        sql = """
+        INSERT INTO backtest_trade
+        (run_id, stock_code, trade_type, trade_price, trade_quantity, trade_amount, 
+         trade_datetime, commission, tax, realized_profit_loss, entry_trade_id)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            trade_type=VALUES(trade_type),
+            trade_price=VALUES(trade_price),
+            trade_quantity=VALUES(trade_quantity),
+            trade_amount=VALUES(trade_amount),
+            commission=VALUES(commission),
+            tax=VALUES(tax),
+            realized_profit_loss=VALUES(realized_profit_loss),
+            entry_trade_id=VALUES(entry_trade_id)
+        """
+        data = []
+        for trade in trade_data_list:
+            data.append((
+                trade['run_id'],
+                trade['stock_code'],
+                trade['trade_type'],
+                trade['trade_price'],
+                trade['trade_quantity'],
+                trade['trade_amount'],
+                trade['trade_datetime'],
+                trade.get('commission'),
+                trade.get('tax'),
+                trade.get('realized_profit_loss'),
+                trade.get('entry_trade_id')
+            ))
+        
+        try:
+            cursor = self.execute_sql(sql, data) # executemany를 위해 리스트 전달
+            if cursor:
+                logger.info(f"{len(trade_data_list)}개의 백테스트 거래 내역을 저장/업데이트했습니다.")
+                return True
+            else:
+                return False
+        except Exception as e:
+            logger.error(f"백테스트 거래 내역 저장/업데이트 오류: {e}", exc_info=True)
+            return False
+
+    def fetch_backtest_trade(self, run_id: int, stock_code: str = None, start_datetime: datetime = None, end_datetime: datetime = None):
+        """
+        DB에서 백테스트 개별 거래 내역을 조회합니다.
+        :param run_id: 조회할 백테스트 실행 ID (필수)
+        :param stock_code: 조회할 종목 코드 (선택)
+        :param start_datetime: 거래 시작 시각 (선택)
+        :param end_datetime: 거래 종료 시각 (선택)
+        :return: Pandas DataFrame
+        """
+        conn = self.get_db_connection()
+        if not conn: return pd.DataFrame()
+        
+        sql = """
+        SELECT trade_id, run_id, stock_code, trade_type, trade_price, trade_quantity, trade_amount, 
+               trade_datetime, commission, tax, realized_profit_loss, entry_trade_id
+        FROM backtest_trade
+        WHERE run_id = %s
+        """
+        params = [run_id]
+        if stock_code:
+            sql += " AND stock_code = %s"
+            params.append(stock_code)
+        if start_datetime:
+            sql += " AND trade_datetime >= %s"
+            params.append(start_datetime)
+        if end_datetime:
+            sql += " AND trade_datetime <= %s"
+            params.append(end_datetime)
+        sql += " ORDER BY trade_datetime ASC"
+
+        try:
+            cursor = self.execute_sql(sql, tuple(params))
+            if cursor:
+                result = cursor.fetchall()
+                return pd.DataFrame(result)
+            else:
+                return pd.DataFrame()
+        except Exception as e:
+            logger.error(f"백테스트 거래 내역 조회 오류 (run_id: {run_id}, stock_code: {stock_code}): {e}", exc_info=True)
+            return pd.DataFrame()
+
+    # --- backtest_performance 테이블 관련 메서드 ---
+    def save_backtest_performance(self, performance_data_list: list):
+        """
+        백테스트 일별/기간별 성능 지표를 DB의 backtest_performance 테이블에 저장하거나 업데이트합니다.
+        performance_id는 AUTO_INCREMENT이므로, 삽입 시에는 performance_id를 제외하고, 
+        ON DUPLICATE KEY UPDATE 시에는 run_id, date UNIQUE KEY를 사용합니다.
+        :param performance_data_list: [{'run_id': 1, 'date': '2023-01-02', ...}, ...]
+        :return: 성공 시 True, 실패 시 False
+        """
+        conn = self.get_db_connection()
+        if not conn: return False
+        
+        sql = """
+        INSERT INTO backtest_performance
+        (run_id, date, end_capital, daily_return, daily_profit_loss, cumulative_return, drawdown)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            end_capital=VALUES(end_capital),
+            daily_return=VALUES(daily_return),
+            daily_profit_loss=VALUES(daily_profit_loss),
+            cumulative_return=VALUES(cumulative_return),
+            drawdown=VALUES(drawdown)
+        """
+        data = []
+        for perf in performance_data_list:
+            data.append((
+                perf['run_id'],
+                perf['date'],
+                perf['end_capital'],
+                perf.get('daily_return'),
+                perf.get('daily_profit_loss'),
+                perf.get('cumulative_return'),
+                perf.get('drawdown')
+            ))
+        
+        try:
+            cursor = self.execute_sql(sql, data) # executemany를 위해 리스트 전달
+            if cursor:
+                logger.info(f"{len(performance_data_list)}개의 백테스트 성능 지표를 저장/업데이트했습니다.")
+                return True
+            else:
+                return False
+        except Exception as e:
+            logger.error(f"백테스트 성능 지표 저장/업데이트 오류: {e}", exc_info=True)
+            return False
+
+    def fetch_backtest_performance(self, run_id: int, start_date: date = None, end_date: date = None):
+        """
+        DB에서 백테스트 일별/기간별 성능 지표를 조회합니다.
+        :param run_id: 조회할 백테스트 실행 ID (필수)
+        :param start_date: 성능 기록 시작 날짜 (선택)
+        :param end_date: 성능 기록 종료 날짜 (선택)
+        :return: Pandas DataFrame
+        """
+        conn = self.get_db_connection()
+        if not conn: return pd.DataFrame()
+        
+        sql = """
+        SELECT performance_id, run_id, date, end_capital, daily_return, daily_profit_loss, 
+               cumulative_return, drawdown
+        FROM backtest_performance
+        WHERE run_id = %s
+        """
+        params = [run_id]
+        if start_date:
+            sql += " AND date >= %s"
+            params.append(start_date)
+        if end_date:
+            sql += " AND date <= %s"
+            params.append(end_date)
+        sql += " ORDER BY date ASC"
+
+        try:
+            cursor = self.execute_sql(sql, tuple(params))
+            if cursor:
+                result = cursor.fetchall()
+                return pd.DataFrame(result)
+            else:
+                return pd.DataFrame()
+        except Exception as e:
+            logger.error(f"백테스트 성능 지표 조회 오류 (run_id: {run_id}): {e}", exc_info=True)
+            return pd.DataFrame()
+
+
+    # ----------------------------------------------------------------------------
+    # 종목/주가 관리 테이블
+    # ----------------------------------------------------------------------------
+    def create_stock_tables(self):
+        return self.execute_sql_file('create_stock_tables')
+
+    def drop_stock_tables(self):
+        return self.execute_sql_file('drop_stock_tables')
+
+    # --- stock_info 테이블 관련 메서드 ---
+    def save_stock_info(self, stock_info_list: list):
+        """
+        종목 기본 정보 및 최신 재무 데이터를 DB의 stock_info 테이블에 저장하거나 업데이트합니다.
+        :param stock_info_list: [{'stock_code': 'A005930', 'stock_name': '삼성전자', 'per': 10.5, ...}, ...]
+        :return: 성공 시 True, 실패 시 False
+        """
+        conn = self.get_db_connection()
+        if not conn: return False
+        
         sql = """
         INSERT INTO stock_info
         (stock_code, stock_name, market_type, sector, per, pbr, eps, roe, debt_ratio, sales, operating_profit, net_profit, recent_financial_date)
@@ -126,43 +574,42 @@ class DBManager:
             operating_profit=VALUES(operating_profit),
             net_profit=VALUES(net_profit),
             recent_financial_date=VALUES(recent_financial_date),
-            upd_date=CURRENT_TIMESTAMP
+            upd_date=CURRENT_TIMESTAMP() 
         """
         try:
-            with conn.cursor() as cursor:
-                data = []
-                for info in stock_info_list:
-                    # pbr은 Creon MarketEye에서 직접 제공되지 않을 수 있으므로, 기본값 0 또는 None
-                    # schema.sql에 pbr 컬럼이 있으므로, 값을 넣어주거나 NULL 허용해야 함
-                    pbr_value = info.get('pbr') # MarketEye에서 PBR 필드를 요청하지 않았다면 None이 될 것
-                    if pbr_value is None: # 또는 0.0으로 초기화
-                        pbr_value = 0.0 # 스키마가 DECIMAL(10,2)이고 NOT NULL이 아니므로 NULL도 가능
+            data = []
+            for info in stock_info_list:
+                pbr_value = info.get('pbr') 
+                if pbr_value is None:
+                    pbr_value = 0.0 
 
-                    data.append((
-                        info['stock_code'],
-                        info['stock_name'],
-                        info.get('market_type'),
-                        info.get('sector'),
-                        info.get('per'),
-                        pbr_value, # pbr 값 처리
-                        info.get('eps'),
-                        info.get('roe'),
-                        info.get('debt_ratio'),
-                        info.get('sales'),
-                        info.get('operating_profit'),
-                        info.get('net_profit'),
-                        info.get('recent_financial_date') # 새로운 재무 기준일 컬럼
-                    ))
-                cursor.executemany(sql, data)
-            conn.commit()
-            logger.debug(f"{len(stock_info_list)}개의 종목 정보를 저장/업데이트했습니다.")
-            return True
+                data.append((
+                    info['stock_code'],
+                    info['stock_name'],
+                    info.get('market_type'),
+                    info.get('sector'),
+                    info.get('per'),
+                    pbr_value,
+                    info.get('eps'),
+                    info.get('roe'),
+                    info.get('debt_ratio'),
+                    info.get('sales'),
+                    info.get('operating_profit'),
+                    info.get('net_profit'),
+                    info.get('recent_financial_date')
+                ))
+            
+            cursor = self.execute_sql(sql, data)
+            if cursor:
+                logger.info(f"{len(stock_info_list)}개의 종목 정보를 저장/업데이트했습니다.")
+                return True
+            else:
+                return False
         except Exception as e:
-            logger.error(f"종목 정보 저장/업데이트 오류: {e}", exc_info=True)
-            conn.rollback()
+            logger.error(f"save_stock_info 처리 중 예외 발생: {e}", exc_info=True)
             return False
 
-    def fetch_stock_info(self, stock_codes=None):
+    def fetch_stock_info(self, stock_codes: list = None):
         """
         DB에서 종목 기본 정보 및 최신 재무 데이터를 조회합니다.
         :param stock_codes: 조회할 종목 코드 리스트 (없으면 전체 조회)
@@ -171,60 +618,66 @@ class DBManager:
         conn = self.get_db_connection()
         if not conn: return pd.DataFrame()
         sql = """
-        SELECT stock_code, stock_name, market_type, sector, per, pbr, eps, roe, debt_ratio, sales, operating_profit, net_profit, recent_financial_date
+        SELECT stock_code, stock_name, market_type, sector, per, pbr, eps, roe, debt_ratio, sales, operating_profit, net_profit, recent_financial_date, upd_date
         FROM stock_info
         """
+        params = []
         if stock_codes:
             placeholders = ','.join(['%s'] * len(stock_codes))
             sql += f" WHERE stock_code IN ({placeholders})"
+            params = stock_codes
+        
         try:
-            with conn.cursor() as cursor:
-                if stock_codes:
-                    cursor.execute(sql, stock_codes)
-                else:
-                    cursor.execute(sql)
+            cursor = self.execute_sql(sql, tuple(params) if params else None)
+            if cursor:
                 result = cursor.fetchall()
                 return pd.DataFrame(result)
+            else:
+                return pd.DataFrame()
         except Exception as e:
-            logger.error(f"종목 정보 조회 오류: {e}", exc_info=True)
+            logger.error(f"fetch_stock_info 처리 중 예외 발생: {e}", exc_info=True)
             return pd.DataFrame()
 
-    def save_daily_data(self, daily_data_list):
+    # --- stock_price 테이블 관련 메서드 ---
+    def save_stock_price(self, stock_price_list: list):
         """
-        일봉 데이터를 DB에 저장하거나 업데이트합니다.
-        :param daily_data_list: [{'stock_code': 'A005930', 'date': '2023-01-02', ...}, ...]
+        일봉 데이터를 DB의 stock_price 테이블에 저장하거나 업데이트합니다.
+        :param stock_price_list: [{'stock_code': 'A005930', 'date': '2023-01-02', 'open': ..., ...}, ...]
+        :return: 성공 시 True, 실패 시 False
         """
         conn = self.get_db_connection()
         if not conn: return False
+        
         sql = """
-        INSERT INTO daily_stock_data
-        (stock_code, date, open_price, high_price, low_price, close_price, volume, change_rate, trading_value)
+        INSERT INTO stock_price
+        (stock_code, date, open, high, low, close, volume, change_rate, trading_value)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
-            open_price=VALUES(open_price),
-            high_price=VALUES(high_price),
-            low_price=VALUES(low_price),
-            close_price=VALUES(close_price),
+            open=VALUES(open),
+            high=VALUES(high),
+            low=VALUES(low),
+            close=VALUES(close),
             volume=VALUES(volume),
             change_rate=VALUES(change_rate),
             trading_value=VALUES(trading_value)
         """
         try:
-            with conn.cursor() as cursor:
-                data = [(d['stock_code'], d['date'], d['open_price'], d['high_price'],
-                         d['low_price'], d['close_price'], d['volume'],
-                         d.get('change_rate'), d.get('trading_value'))
-                        for d in daily_data_list]
-                cursor.executemany(sql, data)
-            conn.commit()
-            logger.debug(f"{len(daily_data_list)}개의 일봉 데이터를 저장/업데이트했습니다.")
-            return True
+            data = [(d['stock_code'], d['date'], d['open'], d['high'],
+                     d['low'], d['close'], d['volume'],
+                     d.get('change_rate'), d.get('trading_value'))
+                    for d in stock_price_list]
+            
+            cursor = self.execute_sql(sql, data)
+            if cursor:
+                logger.info(f"{len(stock_price_list)}개의 일봉 데이터를 저장/업데이트했습니다.")
+                return True
+            else:
+                return False
         except Exception as e:
-            logger.error(f"일봉 데이터 저장/업데이트 오류: {e}", exc_info=True)
-            conn.rollback()
+            logger.error(f"save_stock_price 처리 중 예외 발생: {e}", exc_info=True)
             return False
 
-    def fetch_daily_data(self, stock_code, start_date=None, end_date=None):
+    def fetch_stock_price(self, stock_code: str, start_date: date = None, end_date: date = None):
         """
         DB에서 특정 종목의 일봉 데이터를 조회합니다.
         :param stock_code: 조회할 종목 코드
@@ -234,9 +687,10 @@ class DBManager:
         """
         conn = self.get_db_connection()
         if not conn: return pd.DataFrame()
+        
         sql = """
-        SELECT stock_code, date, open_price, high_price, low_price, close_price, volume, change_rate, trading_value
-        FROM daily_stock_data
+        SELECT stock_code, date, open, high, low, close, volume, change_rate, trading_value
+        FROM stock_price
         WHERE stock_code = %s
         """
         params = [stock_code]
@@ -246,18 +700,20 @@ class DBManager:
         if end_date:
             sql += " AND date <= %s"
             params.append(end_date)
-        sql += " ORDER BY date ASC" # 오래된 순서대로 정렬
+        sql += " ORDER BY date ASC" 
 
         try:
-            with conn.cursor() as cursor:
-                cursor.execute(sql, tuple(params))
+            cursor = self.execute_sql(sql, tuple(params))
+            if cursor:
                 result = cursor.fetchall()
                 return pd.DataFrame(result)
+            else:
+                return pd.DataFrame()
         except Exception as e:
-            logger.error(f"일봉 데이터 조회 오류 ({stock_code}, {start_date}~{end_date}): {e}", exc_info=True)
+            logger.error(f"fetch_stock_price 처리 중 예외 발생: {e}", exc_info=True)
             return pd.DataFrame()
 
-    def get_latest_daily_data_date(self, stock_code):
+    def get_latest_stock_price_date(self, stock_code: str):
         """
         특정 종목의 DB에 저장된 최신 일봉 데이터 날짜를 조회합니다.
         :param stock_code: 종목 코드
@@ -265,115 +721,374 @@ class DBManager:
         """
         conn = self.get_db_connection()
         if not conn: return None
-        sql = "SELECT MAX(date) AS latest_date FROM daily_stock_data WHERE stock_code = %s"
+        sql = "SELECT MAX(date) AS latest_date FROM stock_price WHERE stock_code = %s"
         try:
-            with conn.cursor() as cursor:
-                cursor.execute(sql, (stock_code,))
+            cursor = self.execute_sql(sql, (stock_code,))
+            if cursor:
                 result = cursor.fetchone()
                 return result['latest_date'] if result and result['latest_date'] else None
+            else:
+                return None
         except Exception as e:
-            logger.error(f"최신 일봉 날짜 조회 오류 ({stock_code}): {e}", exc_info=True)
+            logger.error(f"get_latest_stock_price_date 처리 중 예외 발생: {e}", exc_info=True)
             return None
 
-    def save_minute_data(self, minute_data_list):
+    # --- stock_info 관련 추가 메서드 ---
+    def fetch_stock_codes_by_criteria(self, market_type: str = None, sector: str = None, per_max: float = None, 
+                                     pbr_max: float = None, eps_min: float = None, roe_min: float = None, 
+                                     debt_ratio_max: float = None, sales_min: int = None, 
+                                     operating_profit_min: int = None, net_profit_min: int = None):
         """
-        분봉 데이터를 DB에 저장하거나 업데이트합니다.
-        :param minute_data_list: [{'stock_code': 'A005930', 'datetime': '2023-01-02 09:00', ...}, ...]
-        """
-        conn = self.get_db_connection()
-        if not conn: return False
-        sql = """
-        INSERT INTO minute_stock_data
-        (stock_code, datetime, open_price, high_price, low_price, close_price, volume)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-        ON DUPLICATE KEY UPDATE
-            open_price=VALUES(open_price),
-            high_price=VALUES(high_price),
-            low_price=VALUES(low_price),
-            close_price=VALUES(close_price),
-            volume=VALUES(volume)
-        """
-        try:
-            with conn.cursor() as cursor:
-                data = [(d['stock_code'], d['datetime'], d['open_price'], d['high_price'],
-                         d['low_price'], d['close_price'], d['volume'])
-                        for d in minute_data_list]
-                cursor.executemany(sql, data)
-            conn.commit()
-            logger.debug(f"{len(minute_data_list)}개의 분봉 데이터를 저장/업데이트했습니다.")
-            return True
-        except Exception as e:
-            logger.error(f"분봉 데이터 저장/업데이트 오류: {e}", exc_info=True)
-            conn.rollback()
-            return False
-
-    def fetch_minute_data(self, stock_code, date=None, start_datetime=None, end_datetime=None):
-        """
-        DB에서 특정 종목의 분봉 데이터를 조회합니다.
-        :param stock_code: 조회할 종목 코드
-        :param date: 특정 날짜의 데이터만 조회 (datetime.date 객체)
-        :param start_datetime: 시작 시간 (datetime.datetime 객체)
-        :param end_datetime: 종료 시간 (datetime.datetime 객체)
-        :return: Pandas DataFrame
+        주어진 재무 지표 및 시장/섹터 조건에 따라 종목 코드를 조회합니다.
+        :return: 조건에 맞는 종목 코드 리스트 (list[str])
         """
         conn = self.get_db_connection()
-        if not conn: return pd.DataFrame()
-        sql = """
-        SELECT stock_code, datetime, open_price, high_price, low_price, close_price, volume
-        FROM minute_stock_data
-        WHERE stock_code = %s
-        """
-        params = [stock_code]
-        if date:
-            sql += " AND DATE(datetime) = %s"
-            params.append(date)
-        if start_datetime:
-            sql += " AND datetime >= %s"
-            params.append(start_datetime)
-        if end_datetime:
-            sql += " AND datetime <= %s"
-            params.append(end_datetime)
-        sql += " ORDER BY datetime ASC" # 오래된 순서대로 정렬
+        if not conn: return []
+
+        sql = "SELECT stock_code FROM stock_info WHERE 1=1"
+        params = []
+
+        if market_type:
+            sql += " AND market_type = %s"
+            params.append(market_type)
+        if sector:
+            sql += " AND sector = %s"
+            params.append(sector)
+        if per_max is not None:
+            sql += " AND per <= %s"
+            params.append(per_max)
+        if pbr_max is not None:
+            sql += " AND pbr <= %s"
+            params.append(pbr_max)
+        if eps_min is not None:
+            sql += " AND eps >= %s"
+            params.append(eps_min)
+        if roe_min is not None:
+            sql += " AND roe >= %s"
+            params.append(roe_min)
+        if debt_ratio_max is not None:
+            sql += " AND debt_ratio <= %s"
+            params.append(debt_ratio_max)
+        if sales_min is not None:
+            sql += " AND sales >= %s"
+            params.append(sales_min)
+        if operating_profit_min is not None:
+            sql += " AND operating_profit >= %s"
+            params.append(operating_profit_min)
+        if net_profit_min is not None:
+            sql += " AND net_profit >= %s"
+            params.append(net_profit_min)
+        
+        sql += " ORDER BY stock_code"
 
         try:
-            with conn.cursor() as cursor:
-                cursor.execute(sql, tuple(params))
-                result = cursor.fetchall()
-                return pd.DataFrame(result)
+            cursor = self.execute_sql(sql, tuple(params) if params else None)
+            if cursor:
+                results = cursor.fetchall()
+                return [row['stock_code'] for row in results]
+            else:
+                return []
         except Exception as e:
-            logger.error(f"분봉 데이터 조회 오류 ({stock_code}, {date}~{start_datetime}~{end_datetime}): {e}", exc_info=True)
-            return pd.DataFrame()
-
-    def get_latest_minute_data_datetime(self, stock_code):
-        """
-        특정 종목의 DB에 저장된 최신 분봉 데이터 시각을 조회합니다.
-        :param stock_code: 종목 코드
-        :return: datetime.datetime 객체 또는 None
-        """
-        conn = self.get_db_connection()
-        if not conn: return None
-        sql = "SELECT MAX(datetime) AS latest_datetime FROM minute_stock_data WHERE stock_code = %s"
-        try:
-            with conn.cursor() as cursor:
-                cursor.execute(sql, (stock_code,))
-                result = cursor.fetchone()
-                return result['latest_datetime'] if result and result['latest_datetime'] else None
-        except Exception as e:
-            logger.error(f"최신 분봉 시각 조회 오류 ({stock_code}): {e}", exc_info=True)
-            return None
+            logger.error(f"조건부 종목 코드 조회 오류: {e}", exc_info=True)
+            return []
 
     def get_all_stock_codes(self):
         """
         DB에 저장된 모든 종목 코드를 리스트로 반환합니다.
+        :return: 모든 종목 코드 리스트 (list[str])
         """
         conn = self.get_db_connection()
         if not conn: return []
         sql = "SELECT stock_code FROM stock_info ORDER BY stock_code"
         try:
-            with conn.cursor() as cursor:
-                cursor.execute(sql)
+            cursor = self.execute_sql(sql)
+            if cursor:
                 results = cursor.fetchall()
                 return [row['stock_code'] for row in results]
+            else:
+                return []
         except Exception as e:
             logger.error(f"모든 종목 코드 조회 오류: {e}", exc_info=True)
             return []
+
+
+
+    # ----------------------------------------------------------------------------
+    # 자동매매 관리 테이블
+    # ----------------------------------------------------------------------------
+    def create_trade_tables(self):
+        return self.execute_sql_file('create_trade_tables')
+
+    def drop_trade_tables(self):
+        return self.execute_sql_file('drop_trade_tables')
+
+# --- 테스트 코드 ---
+if __name__ == "__main__":
+    # 로깅 레벨을 DEBUG로 설정하여 SQL 실행 로그 확인
+    logger.setLevel(logging.DEBUG) 
+    
+    db_manager = DBManager()
+
+    # --- 1. 종목 및 주가 관련 테이블 테스트 ---
+    logger.info("--- 종목 및 주가 관련 테이블 테스트 시작 ---")
+    
+    # 1.1 테이블 삭제 및 재생성 (stock_info, stock_price)
+    logger.info("기존 stock_tables 삭제 중...")
+    if not db_manager.drop_stock_tables(): # <-- 반환값 확인
+        logger.error("stock_tables 삭제 실패! 존재하지 않을 수 있음")
+        
+    logger.info("stock_tables 생성 중...")
+    if not db_manager.create_stock_tables(): # <-- 반환값 확인
+        logger.error("stock_tables 생성 실패! 테스트를 중단합니다. SQL 파일 경로 또는 SQL 문법을 확인하세요.")
+        sys.exit(1) # 테스트 중단
+    logger.info("stock_tables 생성 완료.")
+
+  
+    # 1.2 save_stock_info 테스트
+    logger.info("save_stock_info 테스트 시작...")
+    test_stock_info_data = [
+        {
+            'stock_code': 'A005930', 'stock_name': '삼성전자', 'market_type': 'KOSPI', 'sector': '반도체 및 반도체 장비',
+            'per': 15.20, 'pbr': 1.60, 'eps': 5000.00, 'roe': 10.50, 'debt_ratio': 25.30,
+            'sales': 280000000, 'operating_profit': 4000000, 'net_profit': 3000000,
+            'recent_financial_date': date(2024, 3, 31)
+        },
+        {
+            'stock_code': 'A000660', 'stock_name': 'SK하이닉스', 'market_type': 'KOSPI', 'sector': '반도체 및 반도체 장비',
+            'per': 20.10, 'pbr': 2.50, 'eps': 3500.00, 'roe': 12.00, 'debt_ratio': 35.00,
+            'sales': 35000000, 'operating_profit': 500000, 'net_profit': 400000,
+            'recent_financial_date': date(2024, 3, 31)
+        },
+        {
+            'stock_code': 'A035420', 'stock_name': 'NAVER', 'market_type': 'KOSPI', 'sector': '소프트웨어',
+            'per': 30.50, 'pbr': 3.00, 'eps': 2000.00, 'roe': 8.00, 'debt_ratio': 15.00,
+            'sales': 900000, 'operating_profit': 150000, 'net_profit': 100000,
+            'recent_financial_date': date(2024, 3, 31)
+        }
+    ]
+    db_manager.save_stock_info(test_stock_info_data)
+    logger.info("save_stock_info 테스트 완료.")
+
+    # 1.3 fetch_stock_info 테스트
+    logger.info("fetch_stock_info 테스트 시작 (전체 조회)...")
+    fetched_stock_info = db_manager.fetch_stock_info()
+    logger.info(f"조회된 stock_info 데이터:\n{fetched_stock_info}")
+
+    logger.info("fetch_stock_info 테스트 시작 (특정 종목 조회)...")
+    fetched_specific_stock_info = db_manager.fetch_stock_info(stock_codes=['A005930'])
+    logger.info(f"조회된 특정 종목 stock_info 데이터 (A005930):\n{fetched_specific_stock_info}")
+    logger.info("fetch_stock_info 테스트 완료.")
+
+    # 1.4 get_all_stock_codes 테스트
+    logger.info("get_all_stock_codes 테스트 시작...")
+    all_codes = db_manager.get_all_stock_codes()
+    logger.info(f"모든 종목 코드:\n{all_codes}")
+    logger.info("get_all_stock_codes 테스트 완료.")
+
+    # 1.5 fetch_stock_codes_by_criteria 테스트
+    logger.info("fetch_stock_codes_by_criteria 테스트 시작 (EPS 3000 이상)...")
+    filtered_codes = db_manager.fetch_stock_codes_by_criteria(eps_min=3000)
+    logger.info(f"EPS 3000 이상 종목 코드:\n{filtered_codes}")
+
+    logger.info("fetch_stock_codes_by_criteria 테스트 시작 (PBR 2.0 이하, ROE 10.0 이상)...")
+    filtered_codes_complex = db_manager.fetch_stock_codes_by_criteria(pbr_max=2.0, roe_min=10.0)
+    logger.info(f"PBR 2.0 이하, ROE 10.0 이상 종목 코드:\n{filtered_codes_complex}")
+    logger.info("fetch_stock_codes_by_criteria 테스트 완료.")
+
+    # 1.6 save_stock_price 테스트
+    logger.info("save_stock_price 테스트 시작...")
+    test_stock_price_data = [
+        {
+            'stock_code': 'A005930', 'date': date(2024, 6, 1), 'open': 78000.0, 'high': 78500.0,
+            'low': 77500.0, 'close': 78200.0, 'volume': 10000000, 'trading_value': 782000000000, 'change_rate': 0.25
+        },
+        {
+            'stock_code': 'A005930', 'date': date(2024, 6, 3), 'open': 78300.0, 'high': 79000.0,
+            'low': 78000.0, 'close': 78800.0, 'volume': 12000000, 'trading_value': 945600000000, 'change_rate': 0.77
+        },
+        {
+            'stock_code': 'A000660', 'date': date(2024, 6, 1), 'open': 180000.0, 'high': 181000.0,
+            'low': 179000.0, 'close': 180500.0, 'volume': 5000000, 'trading_value': 902500000000, 'change_rate': 0.50
+        }
+    ]
+    db_manager.save_stock_price(test_stock_price_data)
+    logger.info("save_stock_price 테스트 완료.")
+
+    # 1.7 fetch_stock_price 테스트
+    logger.info("fetch_stock_price 테스트 시작 (A005930, 전체 기간)...")
+    fetched_price_data = db_manager.fetch_stock_price(stock_code='A005930')
+    logger.info(f"조회된 stock_price 데이터 (A005930):\n{fetched_price_data}")
+
+    logger.info("fetch_stock_price 테스트 시작 (A005930, 특정 기간)...")
+    fetched_price_data_period = db_manager.fetch_stock_price(
+        stock_code='A005930', 
+        start_date=date(2024, 6, 1), 
+        end_date=date(2024, 6, 2) # 6월 2일 데이터는 없으므로 6월 1일만 조회됨
+    )
+    logger.info(f"조회된 stock_price 데이터 (A005930, 2024-06-01~2024-06-02):\n{fetched_price_data_period}")
+    logger.info("fetch_stock_price 테스트 완료.")
+
+    # 1.8 get_latest_stock_price_date 테스트
+    logger.info("get_latest_stock_price_date 테스트 시작 (A005930)...")
+    latest_date_5930 = db_manager.get_latest_stock_price_date('A005930')
+    logger.info(f"A005930 최신 일봉 날짜: {latest_date_5930}")
+
+    logger.info("get_latest_stock_price_date 테스트 시작 (A000660)...")
+    latest_date_660 = db_manager.get_latest_stock_price_date('A000660')
+    logger.info(f"A000660 최신 일봉 날짜: {latest_date_660}")
+    logger.info("get_latest_stock_price_date 테스트 완료.")
+
+    logger.info("--- 종목 및 주가 관련 테이블 테스트 완료 ---")
+
+    # --- 2. 백테스팅 관련 테이블 테스트 ---
+    logger.info("--- 백테스팅 관련 테이블 테스트 시작 ---")
+
+    # 2.1 테이블 삭제 및 재생성 (backtest_run, backtest_trade, backtest_performance)
+    logger.info("기존 backtest_tables 삭제 중...")
+    if not db_manager.drop_backtest_tables(): # <-- 반환값 확인
+        logger.error("backtest_tables 삭제 실패! 테스트를 중단합니다. SQL 파일 경로 또는 권한을 확인하세요.")
+        sys.exit(1) # 테스트 중단
+    logger.info("backtest_tables 삭제 완료.")
+
+    logger.info("backtest_tables 생성 중...")
+    if not db_manager.create_backtest_tables(): # <-- 반환값 확인
+        logger.error("backtest_tables 생성 실패! 테스트를 중단합니다. SQL 파일 경로 또는 SQL 문법을 확인하세요.")
+        sys.exit(1) # 테스트 중단
+    logger.info("backtest_tables 생성 완료.")
+
+    # 2.2 save_backtest_run 테스트
+    logger.info("save_backtest_run 테스트 시작...")
+    test_run_info = {
+        'start_date': date(2023, 1, 1),
+        'end_date': date(2023, 12, 31),
+        'initial_capital': 10000000.00,
+        'final_capital': 12000000.00,
+        'total_profit_loss': 2000000.00,
+        'cumulative_return': 0.20,
+        'max_drawdown': 0.05,
+        'strategy_daily': 'DualMomentumDaily',
+        'strategy_minute': 'RSIMinute',
+        'params_json_daily': {'lookback_period': 12, 'num_top_stocks': 5},
+        'params_json_minute': {'rsi_period': 14, 'buy_signal': 30, 'sell_signal': 70}
+    }
+    # 새로운 run_id 생성 및 저장
+    run_id = db_manager.save_backtest_run(test_run_info)
+    if run_id:
+        logger.info(f"새로운 backtest_run 저장 완료. run_id: {run_id}")
+    else:
+        logger.error("backtest_run 저장 실패!")
+        run_id = 999999 # 테스트를 위해 임의의 ID 할당 (실패 시에도 계속 진행 위함)
+
+    # 기존 run_id로 업데이트 테스트
+    logger.info(f"기존 backtest_run 업데이트 테스트 (run_id: {run_id})...")
+    update_run_info = test_run_info.copy()
+    update_run_info['run_id'] = run_id
+    update_run_info['final_capital'] = 12500000.00
+    update_run_info['total_profit_loss'] = 2500000.00
+    update_run_info['cumulative_return'] = 0.25
+    db_manager.save_backtest_run(update_run_info)
+    logger.info("save_backtest_run 테스트 완료.")
+
+    # 2.3 fetch_backtest_run 테스트
+    logger.info(f"fetch_backtest_run 테스트 시작 (run_id: {run_id})...")
+    fetched_run_data = db_manager.fetch_backtest_run(run_id=run_id)
+    logger.info(f"조회된 backtest_run 데이터:\n{fetched_run_data}")
+
+    logger.info("fetch_backtest_run 테스트 시작 (기간 조회)...")
+    fetched_run_data_period = db_manager.fetch_backtest_run(
+        start_date=date(2023, 1, 1), 
+        end_date=date(2023, 12, 31)
+    )
+    logger.info(f"조회된 backtest_run 데이터 (2023년):\n{fetched_run_data_period}")
+    logger.info("fetch_backtest_run 테스트 완료.")
+
+    # 2.4 save_backtest_trade 테스트
+    logger.info("save_backtest_trade 테스트 시작...")
+    test_trade_data = [
+        {
+            'run_id': run_id, 'stock_code': 'A005930', 'trade_type': 'BUY', 'trade_price': 70000.0,
+            'trade_quantity': 10, 'trade_amount': 700000.0, 'trade_datetime': datetime(2023, 1, 5, 9, 30, 0),
+            'commission': 500.0, 'tax': 0.0, 'realized_profit_loss': 0.0, 'entry_trade_id': None
+        },
+        {
+            'run_id': run_id, 'stock_code': 'A000660', 'trade_type': 'BUY', 'trade_price': 100000.0,
+            'trade_quantity': 5, 'trade_amount': 500000.0, 'trade_datetime': datetime(2023, 1, 5, 10, 0, 0),
+            'commission': 300.0, 'tax': 0.0, 'realized_profit_loss': 0.0, 'entry_trade_id': None
+        }
+    ]
+    db_manager.save_backtest_trade(test_trade_data)
+
+    # 매도 거래 추가 (entry_trade_id를 위해 첫 번째 매수 거래의 trade_id가 필요)
+    # 실제 시스템에서는 매수 거래 저장 후 trade_id를 받아와 사용해야 하지만, 여기서는 임의로 가정
+    # 또는 fetch_backtest_trade로 매수 거래를 조회하여 trade_id를 얻어야 합니다.
+    # 테스트 편의를 위해 임의의 trade_id 사용 또는 DB에서 조회 후 사용
+    fetched_trades_for_entry_id = db_manager.fetch_backtest_trade(run_id=run_id, stock_code='A005930', start_datetime=datetime(2023,1,5,9,29,0), end_datetime=datetime(2023,1,5,9,31,0))
+    entry_trade_id = fetched_trades_for_entry_id['trade_id'].iloc[0] if not fetched_trades_for_entry_id.empty else None
+
+    test_trade_sell_data = [
+        {
+            'run_id': run_id, 'stock_code': 'A005930', 'trade_type': 'SELL', 'trade_price': 75000.0,
+            'trade_quantity': 10, 'trade_amount': 750000.0, 'trade_datetime': datetime(2023, 1, 10, 15, 0, 0),
+            'commission': 500.0, 'tax': 75.0, 'realized_profit_loss': 49925.0, # (75000-70000)*10 - 500 - 75
+            'entry_trade_id': entry_trade_id 
+        }
+    ]
+    db_manager.save_backtest_trade(test_trade_sell_data)
+    logger.info("save_backtest_trade 테스트 완료.")
+
+    # 2.5 fetch_backtest_trade 테스트
+    logger.info(f"fetch_backtest_trade 테스트 시작 (run_id: {run_id})...")
+    fetched_trade_data = db_manager.fetch_backtest_trade(run_id=run_id)
+    logger.info(f"조회된 backtest_trade 데이터:\n{fetched_trade_data}")
+
+    logger.info(f"fetch_backtest_trade 테스트 시작 (run_id: {run_id}, 특정 종목 A005930)...")
+    fetched_trade_data_stock = db_manager.fetch_backtest_trade(run_id=run_id, stock_code='A005930')
+    logger.info(f"조회된 backtest_trade 데이터 (A005930):\n{fetched_trade_data_stock}")
+    logger.info("fetch_backtest_trade 테스트 완료.")
+
+    # 2.6 save_backtest_performance 테스트
+    logger.info("save_backtest_performance 테스트 시작...")
+    test_performance_data = [
+        {
+            'run_id': run_id, 'date': date(2023, 1, 1), 'end_capital': 10000000.0,
+            'daily_return': 0.0, 'daily_profit_loss': 0.0, 'cumulative_return': 0.0, 'drawdown': 0.0
+        },
+        {
+            'run_id': run_id, 'date': date(2023, 1, 2), 'end_capital': 10050000.0,
+            'daily_return': 0.005, 'daily_profit_loss': 50000.0, 'cumulative_return': 0.005, 'drawdown': 0.0
+        },
+        {
+            'run_id': run_id, 'date': date(2023, 1, 3), 'end_capital': 9900000.0,
+            'daily_return': -0.0149, 'daily_profit_loss': -150000.0, 'cumulative_return': -0.01, 'drawdown': 0.015
+        }
+    ]
+    db_manager.save_backtest_performance(test_performance_data)
+    logger.info("save_backtest_performance 테스트 완료.")
+
+    # 2.7 fetch_backtest_performance 테스트
+    logger.info(f"fetch_backtest_performance 테스트 시작 (run_id: {run_id})...")
+    fetched_performance_data = db_manager.fetch_backtest_performance(run_id=run_id)
+    logger.info(f"조회된 backtest_performance 데이터:\n{fetched_performance_data}")
+
+    logger.info(f"fetch_backtest_performance 테스트 시작 (run_id: {run_id}, 특정 기간)...")
+    fetched_performance_data_period = db_manager.fetch_backtest_performance(
+        run_id=run_id, 
+        start_date=date(2023, 1, 1), 
+        end_date=date(2023, 1, 2)
+    )
+    logger.info(f"조회된 backtest_performance 데이터 (2023-01-01~2023-01-02):\n{fetched_performance_data_period}")
+    logger.info("fetch_backtest_performance 테스트 완료.")
+
+    logger.info("--- 백테스팅 관련 테이블 테스트 완료 ---")
+
+    # --- 클린업 ---
+    logger.info("--- 모든 테이블 삭제 시작 ---")
+    logger.info("backtest_tables 삭제 중...")
+    #db_manager.drop_backtest_tables()
+    logger.info("stock_tables 삭제 중...")
+    #db_manager.drop_stock_tables()
+    logger.info("--- 모든 테이블 삭제 완료 ---")
+
+    db_manager.close()
+    logger.info("DB 연결 종료.")
+    logger.info("모든 테스트 완료.")

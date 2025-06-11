@@ -27,7 +27,7 @@ class BaseStrategy(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def update_momentum_signals(self, momentum_signals):
+    def update_signals(self, signals):
         """다른 전략 (예: 일봉 전략)으로부터 시그널을 업데이트받는 추상 메서드.
         (분봉 전략에서 주로 사용하며, 일봉 전략에서는 pass로 구현될 수 있습니다.)
         """
@@ -52,7 +52,7 @@ class DailyStrategy(BaseStrategy):
         pass 
 
     # DailyStrategy는 주로 시그널을 생성하므로, 외부 시그널을 업데이트 받을 필요가 없을 수 있습니다.
-    def update_momentum_signals(self, momentum_signals):
+    def update_signals(self, signals):
         """일봉 전략은 외부 시그널을 업데이트 받을 필요가 없을 수 있으므로 이 메서드는 비워둡니다."""
         pass
 
@@ -61,7 +61,7 @@ class MinuteStrategy(BaseStrategy):
     """분봉 전략을 위한 추상 클래스."""
     def __init__(self, data_store, strategy_params, broker, position_info=None):
         super().__init__(data_store, strategy_params, broker, position_info)
-        self.momentum_signals = {} # 일봉 전략으로부터 받을 시그널을 저장할 속성
+        self.signals = {} # 일봉 전략으로부터 받을 시그널을 저장할 속성
 
     # MinuteStrategy는 일봉 로직을 직접 처리하지 않으므로, 추상 메서드를 구체적으로 구현합니다.
     def run_daily_logic(self, current_date):
@@ -76,6 +76,6 @@ class MinuteStrategy(BaseStrategy):
         pass
 
     @abc.abstractmethod
-    def update_momentum_signals(self, momentum_signals):
+    def update_signals(self, signals):
         """일봉 전략으로부터 받은 매매 시그널을 업데이트합니다."""
         pass

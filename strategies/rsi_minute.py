@@ -30,15 +30,15 @@ class RSIMinute(MinuteStrategy): # MinuteStrategy 상속 유지
         # self.max_losing_positions = strategy_params['max_losing_positions'] # 제거
         
         # 원본 코드에 있었던 변수들만 초기화
-        self.momentum_signals = {} # This will be updated from DualMomentumDaily
+        self.signals = {} # This will be updated from DualMomentumDaily
         # self.losing_positions_count = 0 # 원본 코드에 없는 변수이므로 제거
-        # self.traded_today = {} # 원본 코드에 없는 변수이므로 제거 (momentum_signals 내 traded_today 사용)
+        # self.traded_today = {} # 원본 코드에 없는 변수이므로 제거 (signals 내 traded_today 사용)
 
 
-    def update_momentum_signals(self, momentum_signals):
+    def update_signals(self, signals):
         """DualMomentumDaily에서 생성된 모멘텀 신호를 업데이트합니다."""
-        self.momentum_signals = momentum_signals
-        # logging.debug(f"RSIMinute: 모멘텀 시그널 업데이트 완료. 시그널 수: {len(self.momentum_signals)}") # 원본에 없던 로그 제거
+        self.signals = signals
+        # logging.debug(f"RSIMinute: 모멘텀 시그널 업데이트 완료. 시그널 수: {len(self.signals)}") # 원본에 없던 로그 제거
 
     # 원본 코드의 헬퍼 메서드들을 그대로 복원
     def _get_bar_at_time(self, data_type, stock_code, target_dt):
@@ -208,8 +208,8 @@ class RSIMinute(MinuteStrategy): # MinuteStrategy 상속 유지
                 self.broker.execute_order(stock_code, 'sell', current_price, position_info['size'], current_dt)
                 if stock_code in self.position_info:
                     del self.position_info[stock_code]
-                # 원본 코드에 'traded_today' 플래그를 momentum_signals 딕셔너리 내에 설정하는 로직 유지
-                self.momentum_signals[stock_code]['traded_today'] = True # 손절했으므로 당일 추가 거래 방지
+                # 원본 코드에 'traded_today' 플래그를 signals 딕셔너리 내에 설정하는 로직 유지
+                self.signals[stock_code]['traded_today'] = True # 손절했으므로 당일 추가 거래 방지
                 return
         
         # 포트폴리오 전체 손절 체크 (보유 종목이 하나라도 있을 때만)
@@ -226,12 +226,12 @@ class RSIMinute(MinuteStrategy): # MinuteStrategy 상속 유지
                     self.broker.execute_order(code, 'sell', price, pos['size'], current_dt)
                     if code in self.position_info:
                         del self.position_info[code]
-                    self.momentum_signals[code]['traded_today'] = True # 청산했으므로 당일 추가 거래 방지
+                    self.signals[code]['traded_today'] = True # 청산했으므로 당일 추가 거래 방지
             return # 포트폴리오 전체 손절이 발생하면 더 이상 다른 매매 로직 실행하지 않음
 
 
         # --- 기존 매수/매도 로직 (손절이 발생하지 않은 경우에만) ---
-        momentum_signal_info = self.momentum_signals.get(stock_code)
+        momentum_signal_info = self.signals.get(stock_code)
         if momentum_signal_info is None: # 해당 종목에 대한 시그널 정보가 아직 없으면 (ex: 초기 단계)
             return
 
@@ -244,8 +244,8 @@ class RSIMinute(MinuteStrategy): # MinuteStrategy 상속 유지
             return
             
         # 당일 이미 거래가 발생했으면 추가 거래 방지
-        # 원본 코드의 이 부분은 momentum_signals 딕셔너리 내에 traded_today 플래그를 가정
-        if self.momentum_signals[stock_code]['traded_today']:
+        # 원본 코드의 이 부분은 signals 딕셔너리 내에 traded_today 플래그를 가정
+        if self.signals[stock_code]['traded_today']:
             return
             
         current_position_size = self.broker.get_position_size(stock_code)
@@ -270,7 +270,7 @@ class RSIMinute(MinuteStrategy): # MinuteStrategy 상속 유지
             if target_quantity <= 0:
                 logging.warning(f"[{current_dt.isoformat()}] {stock_code}: 매수 시그널이나, DualMomentumDaily에서 계산된 목표 수량(target_quantity)이 0입니다. 매수 시도 건너뜜.")
                 return # 0주 매수 시도 방지
-            
+
             if current_position_size <= 0: # 현재 보유하고 있지 않은 경우에만 매수 시도
                 buy_executed = False
                 # 오전 10시 이후 RSI 과매도 구간에서 매수 시도
@@ -285,7 +285,7 @@ class RSIMinute(MinuteStrategy): # MinuteStrategy 상속 유지
                     buy_executed = self.broker.execute_order(stock_code, 'buy', current_price, target_quantity, current_dt)
                         
                 if buy_executed:
-                    self.momentum_signals[stock_code]['traded_today'] = True # 매수 완료 시 당일 추가 거래 방지
+                    self.signals[stock_code]['traded_today'] = True # 매수 완료 시 당일 추가 거래 방지
                     # 매수 후 포지션 최고가 초기화 및 entry_date 기록
                     # self.position_info는 Backtester가 관리하는 외부 딕셔너리이므로 여기에 반영
                     self.position_info[stock_code] = {'highest_price': current_price, 'entry_date': current_dt.date()} 
@@ -306,7 +306,7 @@ class RSIMinute(MinuteStrategy): # MinuteStrategy 상속 유지
                     sell_executed = self.broker.execute_order(stock_code, 'sell', current_price, current_position_size, current_dt)
                     
                 if sell_executed:
-                    self.momentum_signals[stock_code]['traded_today'] = True # 매도 완료 시 당일 추가 거래 방지
+                    self.signals[stock_code]['traded_today'] = True # 매도 완료 시 당일 추가 거래 방지
                     if stock_code in self.position_info:
                         del self.position_info[stock_code] # 포지션 청산 시 최고가 정보도 삭제
 

@@ -50,7 +50,7 @@ class Backtester:
         """백테스터에 종목별 일봉 데이터를 추가합니다."""
         self.data_store['daily'][stock_code] = daily_df
         # 새로운 종목이 추가될 때마다 모멘텀 시그널도 초기화 (DualMomentumDaily 내부에서 처리)
-        self.daily_strategy._initialize_momentum_signals_for_all_stocks()
+        self.daily_strategy._initialize_signals_for_all_stocks()
 
     def get_next_business_day(self, date):
         """일봉 데이터를 기반으로 다음 거래일을 찾습니다."""
@@ -154,18 +154,18 @@ class Backtester:
             logging.info(f"\n--- 처리 중인 날짜: {current_daily_date.isoformat()} ---")
 
             # 매일 시작 시 모든 종목의 'traded_today' 플래그 초기화
-            for stock_code in self.daily_strategy.momentum_signals:
-                self.daily_strategy.momentum_signals[stock_code]['traded_today'] = False
+            for stock_code in self.daily_strategy.signals:
+                self.daily_strategy.signals[stock_code]['traded_today'] = False
 
             # 주간 모멘텀 로직 실행 (DualMomentumDaily 클래스에서)
             self.daily_strategy.run_weekly_momentum_logic(current_daily_date)
             
             # RSI 분봉 트레이더에 최신 모멘텀 시그널 업데이트
-            self.minute_strategy.update_momentum_signals(self.daily_strategy.momentum_signals)
+            self.minute_strategy.update_signals(self.daily_strategy.signals)
 
             # 매수/매도 시그널이 있는 종목들에 대해서만 분봉 데이터 처리
             # (시그널 발생일의 다음 거래일부터 매매 시도)
-            for stock_code, signal_info in self.daily_strategy.momentum_signals.items():
+            for stock_code, signal_info in self.daily_strategy.signals.items():
                 # 이미 오늘 거래가 이루어졌다면 다음 종목으로 넘어감 (손절 등으로)
                 if signal_info.get('traded_today', False):
                     continue
@@ -189,7 +189,7 @@ class Backtester:
                                     break
                                 # RSI 분봉 트레이더를 통해 실제 매수/매도 실행
                                 self.minute_strategy.run_minute_logic(stock_code, minute_dt)
-                                if self.daily_strategy.momentum_signals[stock_code]['traded_today']:
+                                if self.daily_strategy.signals[stock_code]['traded_today']:
                                     # 해당 종목에 대해 오늘 거래가 완료되었으면 (매수 또는 매도) 다음 종목으로 넘어감
                                     break
                         else:

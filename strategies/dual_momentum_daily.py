@@ -15,16 +15,16 @@ class DualMomentumDaily(DailyStrategy): # DailyStrategy 상속
         self.data_store = data_store # Reference to Backtester's data_store
         self.strategy_params = strategy_params # Reference to Backtester's strategy_params
         self.broker = broker # Reference to Backtester's broker
-        self.momentum_signals = {} # {stock_code: {'momentum_score', 'rank', 'signal', 'signal_date', 'traded_today', 'target_amount', 'target_quantity'}}
+        self.signals = {} # {stock_code: {'momentum_score', 'rank', 'signal', 'signal_date', 'traded_today', 'target_amount', 'target_quantity'}}
         self.last_rebalance_date = None
 
-        self._initialize_momentum_signals_for_all_stocks()
+        self._initialize_signals_for_all_stocks()
 
-    def _initialize_momentum_signals_for_all_stocks(self):
+    def _initialize_signals_for_all_stocks(self):
         """백테스터에 추가된 모든 종목에 대해 모멘텀 시그널을 초기화합니다."""
         for stock_code in self.data_store['daily']:
-            if stock_code not in self.momentum_signals:
-                self.momentum_signals[stock_code] = {
+            if stock_code not in self.signals:
+                self.signals[stock_code] = {
                     'momentum_score': 0,
                     'rank': 0,
                     'signal': None,
@@ -159,7 +159,7 @@ class DualMomentumDaily(DailyStrategy): # DailyStrategy 상속
         # 신호 생성 및 업데이트
         for rank, (stock_code, score) in enumerate(sorted_stocks, 1):
             # 먼저 모든 종목에 대해 기본 정보 업데이트
-            self.momentum_signals[stock_code].update({
+            self.signals[stock_code].update({
                 'momentum_score': score,
                 'rank': rank,
                 'signal_date': current_daily_date,
@@ -174,17 +174,17 @@ class DualMomentumDaily(DailyStrategy): # DailyStrategy 상속
                 if target_quantity > 0: # 매수 수량이 1주 이상일 경우에만 'buy' 신호 생성
                     if stock_code in current_positions:
                         # 이미 보유 중인 종목은 홀딩
-                        self.momentum_signals[stock_code]['signal'] = 'hold'
+                        self.signals[stock_code]['signal'] = 'hold'
                         logging.info(f'홀딩 신호 - {stock_code}: 순위 {rank}위, 모멘텀 {score:.2f} (기존 보유 종목)')
                     else:
-                        self.momentum_signals[stock_code].update({
+                        self.signals[stock_code].update({
                             'signal': 'buy',
                             'target_amount': self.broker.cash / self.strategy_params['num_top_stocks'],
                             'target_quantity': target_quantity
                         })
                         logging.info(f'매수 신호 - {stock_code}: 순위 {rank}위, 모멘텀 {score:.2f}, 목표수량 {target_quantity}주')
             else:
-                self.momentum_signals[stock_code]['signal'] = 'sell'
+                self.signals[stock_code]['signal'] = 'sell'
                 if stock_code in current_positions:
                     logging.info(f'매도 신호 - {stock_code} (보유중): 순위 {rank}위, 모멘텀 {score:.2f}')
                 else:
@@ -202,7 +202,7 @@ class DualMomentumDaily(DailyStrategy): # DailyStrategy 상속
         total_holdings_value = sum(value for _, value in current_holdings)
         
         # 매수 계획 계산
-        new_buys = [(code, self.momentum_signals[code]['target_quantity'] * current_prices_for_summary[code]) 
+        new_buys = [(code, self.signals[code]['target_quantity'] * current_prices_for_summary[code]) 
                     for code in buy_candidates if code not in current_positions and code in current_prices_for_summary]
         total_buy_amount = sum(amount for _, amount in new_buys)
         
@@ -234,9 +234,9 @@ class DualMomentumDaily(DailyStrategy): # DailyStrategy 상속
         pass
 
     # DailyStrategy의 추상 메서드이지만 DailyStrategy에서는 필요 없는 메서드 구현
-    def update_momentum_signals(self, momentum_signals):
+    def update_signals(self, signals):
         """
         DailyStrategy는 외부에서 모멘텀 시그널을 업데이트 받지 않습니다.
-        Backtester가 DualMomentumDaily의 momentum_signals를 직접 참조하여 MinuteStrategy로 전달하도록 설계되어야 합니다.
+        Backtester가 DualMomentumDaily의 signals를 직접 참조하여 MinuteStrategy로 전달하도록 설계되어야 합니다.
         """
         pass
