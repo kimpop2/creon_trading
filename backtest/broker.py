@@ -11,25 +11,26 @@ class Broker:
         logging.info(f"브로커 초기화: 초기 현금 {self.cash:,.0f}원, 수수료율 {self.commission_rate*100:.2f}%")
 
         # 손절매 관련 파라미터
-        self.stop_loss_ratio = None
-        self.trailing_stop_ratio = None
-        self.early_stop_loss = None
-        self.portfolio_stop_loss = None
-        self.max_losing_positions = None
-        self.initial_portfolio_value = initial_cash # 포트폴리오 손절을 위한 초기값
+        # self.stop_loss_ratio = None
+        # self.trailing_stop_ratio = None
+        # self.early_stop_loss = None
+        # self.portfolio_stop_loss = None
+        # self.max_losing_positions = None
+        # self.initial_portfolio_value = initial_cash # 포트폴리오 손절을 위한 초기값
 
     def set_stop_loss_params(self, params):
         """손절매 관련 파라미터를 설정합니다."""
-        if params is None:
-            return
+        # if params is None:
+        #     return
         
-        self.stop_loss_ratio = params.get('stop_loss_ratio')
-        self.trailing_stop_ratio = params.get('trailing_stop_ratio')
-        self.early_stop_loss = params.get('early_stop_loss')
-        self.portfolio_stop_loss = params.get('portfolio_stop_loss')
-        self.max_losing_positions = params.get('max_losing_positions')
-        logging.info(f"브로커 손절매 파라미터 설정 완료: {params}")
-
+        # self.stop_loss_ratio = params.get('stop_loss_ratio')
+        # self.trailing_stop_ratio = params.get('trailing_stop_ratio')
+        # self.early_stop_loss = params.get('early_stop_loss')
+        # self.portfolio_stop_loss = params.get('portfolio_stop_loss')
+        # self.max_losing_positions = params.get('max_losing_positions')
+        # logging.info(f"브로커 손절매 파라미터 설정 완료: {params}")
+        pass
+    
     def execute_order(self, stock_code, order_type, price, quantity, current_dt):
         """매매 주문을 실행합니다."""
         if quantity <= 0:

@@ -44,11 +44,12 @@ class Backtester:
 
     def set_broker_stop_loss_params(self, params):
         """Broker의 손절매 파라미터를 설정합니다."""
-        if self.broker:
-            self.broker.set_stop_loss_params(params)
-        else:
-            logging.warning("Broker가 초기화되지 않아 손절매 파라미터를 설정할 수 없습니다.")
-
+        # if self.broker:
+        #     self.broker.set_stop_loss_params(params)
+        # else:
+        #     logging.warning("Broker가 초기화되지 않아 손절매 파라미터를 설정할 수 없습니다.")
+        pass
+    
     def add_daily_data(self, stock_code, daily_df):
         """백테스터에 종목별 일봉 데이터를 추가합니다."""
         self.data_store['daily'][stock_code] = daily_df

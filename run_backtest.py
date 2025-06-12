@@ -147,7 +147,7 @@ if __name__ == '__main__':
         'max_losing_positions': 5,     # 동시 손실 허용 종목 수
     }
     stop_loss_params = None #손절하지 않기
-    backtester_instance.set_broker_stop_loss_params(stop_loss_params)
+    #backtester_instance.set_broker_stop_loss_params(stop_loss_params)
 
     # 모든 종목을 하나의 리스트로 변환
     stock_names = []

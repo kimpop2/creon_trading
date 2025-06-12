@@ -47,31 +47,31 @@ class RSIMinute(MinuteStrategy): # MinuteStrategy 상속 유지
         # --- 손절 로직 (매수/매도 신호와 관계없이 최우선으로 체크) ---
         # 포트폴리오 전체 손절 체크 (보유 종목이 하나라도 있을 때만)
         # 현재 가격 정보 수집 (포트폴리오 손절 체크를 위해 모든 보유 종목 가격 필요)
-        current_prices_for_portfolio_check = {stock_code: current_price}
-        for code in list(self.broker.positions.keys()): 
-            if code != stock_code: # 현재 처리 중인 종목이 아닌 다른 보유 종목
-                price_data = self._get_bar_at_time('minute', code, current_dt)
-                if price_data is not None:
-                    current_prices_for_portfolio_check[code] = price_data['close']
-                else: # 분봉 데이터가 없으면 일봉 마지막 가격이라도 사용 (정확도는 떨어지지만 없는 것보다 낫다)
-                    daily_price = self._get_bar_at_time('daily', code, current_dt.date())
-                    if daily_price is not None:
-                        current_prices_for_portfolio_check[code] = daily_price['close']
+        # current_prices_for_portfolio_check = {stock_code: current_price}
+        # for code in list(self.broker.positions.keys()): 
+        #     if code != stock_code: # 현재 처리 중인 종목이 아닌 다른 보유 종목
+        #         price_data = self._get_bar_at_time('minute', code, current_dt)
+        #         if price_data is not None:
+        #             current_prices_for_portfolio_check[code] = price_data['close']
+        #         else: # 분봉 데이터가 없으면 일봉 마지막 가격이라도 사용 (정확도는 떨어지지만 없는 것보다 낫다)
+        #             daily_price = self._get_bar_at_time('daily', code, current_dt.date())
+        #             if daily_price is not None:
+        #                 current_prices_for_portfolio_check[code] = daily_price['close']
                         
-        if self.broker.check_and_execute_portfolio_stop_loss(current_prices_for_portfolio_check, current_dt):
-            # 포트폴리오 전체 손절이 발생하면 모든 포지션이 청산되므로 더 이상 다른 매매 로직 실행하지 않음
-            # 모든 종목의 traded_today 플래그를 True로 설정 (이미 매도되었으므로)
-            for code in list(self.signals.keys()):
-                if code in self.broker.transaction_log[-1]: # 방금 매도된 종목이라면
-                     self.signals[code]['traded_today'] = True
-            return
+        # if self.broker.check_and_execute_portfolio_stop_loss(current_prices_for_portfolio_check, current_dt):
+        #     # 포트폴리오 전체 손절이 발생하면 모든 포지션이 청산되므로 더 이상 다른 매매 로직 실행하지 않음
+        #     # 모든 종목의 traded_today 플래그를 True로 설정 (이미 매도되었으므로)
+        #     for code in list(self.signals.keys()):
+        #         if code in self.broker.transaction_log[-1]: # 방금 매도된 종목이라면
+        #              self.signals[code]['traded_today'] = True
+        #     return
 
-        # 개별 종목 손절 체크 (종목을 보유하고 있는 경우에만)
-        if self.broker.get_position_size(stock_code) > 0:
-            if self.broker.check_and_execute_stop_loss(stock_code, current_price, current_dt):
-                # 개별 종목 손절이 발생했으므로 당일 해당 종목 추가 거래 방지
-                self.signals[stock_code]['traded_today'] = True
-                return
+        # # 개별 종목 손절 체크 (종목을 보유하고 있는 경우에만)
+        # if self.broker.get_position_size(stock_code) > 0:
+        #     if self.broker.check_and_execute_stop_loss(stock_code, current_price, current_dt):
+        #         # 개별 종목 손절이 발생했으므로 당일 해당 종목 추가 거래 방지
+        #         self.signals[stock_code]['traded_today'] = True
+        #         return
 
         # --- 기존 매수/매도 로직 (손절이 발생하지 않은 경우에만) ---
         momentum_signal_info = self.signals.get(stock_code)
