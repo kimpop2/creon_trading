@@ -7,7 +7,7 @@ import time
 from backtest.broker import Broker
 from util.utils import calculate_performance_metrics, get_next_weekday 
 from strategies.strategy import DailyStrategy, MinuteStrategy 
-
+from manager.db_manager import DBManager # DBManager 임포트
 class Backtester:
     def __init__(self, api_client, initial_cash):
         self.api_client = api_client
@@ -18,6 +18,8 @@ class Backtester:
         
         self.daily_strategy: DailyStrategy = None
         self.minute_strategy: MinuteStrategy = None
+
+        self.db_manager = DBManager() # DBManager 인스턴스 생성
 
         logging.info(f"백테스터 초기화 완료. 초기 현금: {self.initial_cash:,.0f}원")
 
@@ -129,13 +131,18 @@ class Backtester:
         portfolio_values = []
         dates = []
         
+        # ----------------------------------------------------------------------
+        # DB 스키마 생성 및 초기화 (최초 실행 시에만 필요)
+        #self.db_manager.execute_sql_file('create_backtesting_schema')
+        # ----------------------------------------------------------------------
+
         all_daily_dates = pd.DatetimeIndex([])
         for stock_code, daily_df in self.data_store['daily'].items():
             if not daily_df.empty:
                 all_daily_dates = all_daily_dates.union(pd.DatetimeIndex(daily_df.index).normalize())
 
         daily_dates_to_process = all_daily_dates[
-            (all_daily_dates >= pd.Timestamp( start_date).normalize()) & \
+            (all_daily_dates >= pd.Timestamp(start_date).normalize()) & \
             (all_daily_dates <= pd.Timestamp(end_date).normalize())
         ].sort_values()
 
@@ -143,16 +150,40 @@ class Backtester:
             logging.error("지정된 백테스트 기간 내에 일봉 데이터가 없습니다. 종료합니다.")
             return pd.Series(), {} 
 
+        # --- 백테스트 실행 정보 (run_id)를 먼저 DB에 저장 ---
+        run_data = {
+            'start_date': start_date.date(),
+            'end_date': end_date.date(),
+            'initial_capital': self.initial_cash,
+            'final_capital': None, 
+            'total_profit_loss': None,
+            'cumulative_return': None,
+            'max_drawdown': None,
+            'strategy_daily': self.daily_strategy.__class__.__name__ if self.daily_strategy else None,
+            'strategy_minute': self.minute_strategy.__class__.__name__ if self.minute_strategy else None,
+            'params_json_daily': self.daily_strategy.strategy_params if self.daily_strategy else None,
+            'params_json_minute': self.minute_strategy.strategy_params if self.minute_strategy else None,
+        }
+        run_id = self.db_manager.save_backtest_run(run_data)
+        if run_id is None:
+            logging.error("백테스트 실행 정보를 DB에 저장하는데 실패했습니다. 백테스트 결과가 저장되지 않을 수 있습니다.")
+            return pd.Series(), {} 
+        # ---------------------------------------------------
+        
+        # 일별 성능 데이터 저장을 위한 리스트
+        performance_records = []
+
+        # 백테스트 시작 시점의 포트폴리오 가치 (initial_cash)를 초기값으로 설정
+        # MDD 및 수익률 계산의 기준점이 됩니다.
+        previous_day_portfolio_value = self.initial_cash
+
         for current_daily_date_full in daily_dates_to_process:
             current_daily_date = current_daily_date_full.date()
             logging.info(f"\n--- 처리 중인 날짜: {current_daily_date.isoformat()} ---")
 
             # 매일 시작 시 모든 종목의 'traded_today' 플래그 초기화
             if self.daily_strategy:
-                # signals 딕셔너리가 비어있을 수 있으므로 안전하게 처리
-                # DualMomentumDaily의 _initialize_signals_for_all_stocks()가 add_daily_data에서 호출되므로,
-                # 이 시점에는 signals가 채워져 있을 것으로 예상.
-                for stock_code in list(self.daily_strategy.signals.keys()): # 순회 중 딕셔너리 변경 방지를 위해 list()로 감싸기
+                for stock_code in list(self.daily_strategy.signals.keys()):
                     self.daily_strategy.signals[stock_code]['traded_today'] = False
 
             # 일봉 전략 로직 실행
@@ -165,9 +196,8 @@ class Backtester:
 
             # 매수/매도 시그널이 있는 종목들에 대해서만 분봉 데이터 처리
             if self.daily_strategy and self.minute_strategy:
-                # self.daily_strategy.signals가 비어있지 않은지 확인
                 if not self.daily_strategy.signals:
-                    logging.debug(f"[{current_daily_date.isoformat()}] 일봉 전략에서 생성된 시그널이 없어 분봉 로직을 건너뜜.")
+                    logging.debug(f"[{current_daily_date.isoformat()}] 일봉 전략에서 생성된 시그널이 없어 분봉 로직을 건너뜀.")
                 
                 for stock_code, signal_info in self.daily_strategy.signals.items():
                     if signal_info.get('traded_today', False):
@@ -181,16 +211,13 @@ class Backtester:
                             if signal_info['signal'] == 'sell' and self.broker.get_position_size(stock_code) <= 0:
                                 continue
 
-                            minute_data = self._get_minute_data_for_signal_dates(stock_code, signal_date) # API 호출로 분봉 데이터 로드
+                            minute_data = self._get_minute_data_for_signal_dates(stock_code, signal_date) 
                             if not minute_data.empty:
                                 minute_data_today = minute_data.loc[minute_data.index.normalize() == pd.Timestamp(current_daily_date).normalize()]
                                 for minute_dt in minute_data_today.index:
                                     if minute_dt > end_date: 
                                         break
-                                    # RSI 분봉 트레이더를 통해 실제 매수/매도 실행
                                     self.minute_strategy.run_minute_logic(stock_code, minute_dt)
-                                    # 매수/매도가 완료되면 해당 종목의 분봉 루프는 중단
-                                    # (traded_today 플래그가 True가 되면 다음 종목으로 넘어감)
                                     if self.daily_strategy.signals[stock_code]['traded_today']:
                                         break
                             else:
@@ -203,22 +230,45 @@ class Backtester:
                 if not daily_bar.empty:
                     current_prices[stock_code] = daily_bar['close'].iloc[0]
                 else:
-                    # 해당 날짜에 데이터가 없으면, 전날 마지막 가격으로 대체 시도
                     last_valid_idx = self.data_store['daily'][stock_code].index.normalize() <= current_daily_date_full.normalize()
                     if last_valid_idx.any():
                         current_prices[stock_code] = self.data_store['daily'][stock_code].loc[last_valid_idx]['close'].iloc[-1]
                     else:
-                        current_prices[stock_code] = 0 # 데이터 없으면 0으로 간주 (포트폴리오 가치에 영향)
+                        current_prices[stock_code] = 0
 
             portfolio_value = self.broker.get_portfolio_value(current_prices)
             portfolio_values.append(portfolio_value)
             dates.append(current_daily_date_full)
 
+            # --- 일일 성능 지표 계산 및 기록 ---
+            # 현재 날짜의 포트폴리오 가치를 기준으로 일일 손익 및 수익률 계산
+            # previous_day_portfolio_value는 루프 시작 전 initial_cash로 초기화되고, 매일 업데이트됩니다.
+            daily_profit_loss = portfolio_value - previous_day_portfolio_value
+            daily_return = daily_profit_loss / previous_day_portfolio_value if previous_day_portfolio_value != 0 else 0
+
+            # 누적 수익률과 낙폭 계산을 위해 현재까지의 portfolio_values를 사용하여 calculate_performance_metrics 호출
+            current_portfolio_series = pd.Series(portfolio_values, index=dates)
+            temp_metrics = calculate_performance_metrics(current_portfolio_series, risk_free_rate=0.03) 
+            
+            performance_records.append({
+                'run_id': run_id,
+                'date': current_daily_date,
+                'end_capital': portfolio_value,
+                'daily_return': daily_return, 
+                'daily_profit_loss': daily_profit_loss,
+                'cumulative_return': temp_metrics['total_return'], 
+                'drawdown': temp_metrics['mdd'] 
+            })
+            
+            # 다음 날 계산을 위해 현재 포트폴리오 가치를 저장
+            previous_day_portfolio_value = portfolio_value
+            # ----------------------------------
+
         portfolio_value_series = pd.Series(portfolio_values, index=dates)
         metrics = calculate_performance_metrics(portfolio_value_series, risk_free_rate=0.03)
         
         logging.info("\n=== 백테스트 결과 ===")
-        logging.info(f"시작일: { start_date.date().isoformat()}")
+        logging.info(f"시작일: {start_date.date().isoformat()}")
         logging.info(f"종료일: {end_date.date().isoformat()}")
         logging.info(f"초기자금: {self.initial_cash:,.0f}원")
         logging.info(f"최종 포트폴리오 가치: {portfolio_values[-1]:,.0f}원")
@@ -236,5 +286,71 @@ class Backtester:
                 logging.info(f"{stock_code}: 보유수량 {pos_info['size']}주, 평균단가 {pos_info['avg_price']:,.0f}원")
         else:
             logging.info("보유 중인 종목 없음")
+
+        # --- 백테스트 결과 (run_id) 최종 업데이트 ---
+        final_run_data = {
+            'run_id': run_id,
+            'final_capital': portfolio_values[-1],
+            'total_profit_loss': portfolio_values[-1] - self.initial_cash,
+            'cumulative_return': metrics['total_return'],
+            'max_drawdown': metrics['mdd']
+        }
+        update_sql = """
+            UPDATE backtest_run
+            SET final_capital = %s,
+                total_profit_loss = %s,
+                cumulative_return = %s,
+                max_drawdown = %s
+            WHERE run_id = %s
+            """
+        self.db_manager.execute_sql(update_sql, (
+            final_run_data['final_capital'],
+            final_run_data['total_profit_loss'],
+            final_run_data['cumulative_return'],
+            final_run_data['max_drawdown'],
+            run_id
+        ))
+        logging.info(f"백테스트 실행 요약 (run_id: {run_id}) 최종 결과 업데이트 완료.")
+        # ---------------------------------------------
+
+        # --- 거래 내역 (transaction_log) DB에 저장 ---
+        trade_records = []
+        # 'entry_trade_id'를 정확히 매칭하기 위해 매수 거래의 DB ID를 추적해야 함
+        # 여기서는 단순화를 위해 매수 거래의 DB ID를 직접 매칭하지 않고 None으로 둠.
+        # 실제 구현에서는 매수 트랜잭션 저장 후 반환되는 ID를 저장하고, 매도 시 해당 ID를 사용해야 합니다.
+        # 예시: self.broker.transaction_log 대신 매수/매도 시마다 trade_records에 추가하도록 변경 고려
         
+        # 현재는 broker.transaction_log의 튜플 형태를 딕셔너리로 변환하여 사용
+        for trade in self.broker.transaction_log:
+            trade_type_str = trade[2].upper() 
+            trade_amount = trade[4] * trade[3] 
+            
+            realized_profit_loss = 0
+            entry_trade_id = None 
+
+            trade_records.append({
+                'run_id': run_id,
+                'stock_code': trade[1],
+                'trade_type': trade_type_str,
+                'trade_price': trade[3],
+                'trade_quantity': trade[4],
+                'trade_amount': trade_amount, 
+                'trade_datetime': trade[0],
+                'commission': trade[5],
+                'tax': 0, 
+                'realized_profit_loss': realized_profit_loss,
+                'entry_trade_id': entry_trade_id
+            })
+        self.db_manager.save_backtest_trade(trade_records)
+        logging.info(f"{len(trade_records)}개의 거래 내역을 DB에 저장했습니다.")
+        # --------------------------------------------------
+
+        # --- 일별 성능 지표 (performance_records) DB에 저장 ---
+        self.db_manager.save_backtest_performance(performance_records)
+        logging.info(f"{len(performance_records)}개의 일별 성능 지표를 DB에 저장했습니다.")
+        # -------------------------------------------------------
+        
+        # DBManager 연결 닫기 (백테스터 실행 종료 시)
+        self.db_manager.close()
+
         return portfolio_value_series, metrics
