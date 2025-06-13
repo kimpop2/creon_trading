@@ -1,4 +1,4 @@
--- backtesting/db/sql/drop_stock_tables.sql
+-- manager/sql/drop_stock_tables.sql
 
 -- 1. 모든 외래 키(FK) 제약 조건 비활성화
 SET FOREIGN_KEY_CHECKS = 0; 
@@ -9,7 +9,9 @@ SET FOREIGN_KEY_CHECKS = 0;
 
 -- 2. 테이블 삭제
 -- 참조 관계가 없는 테이블들이므로 삭제 순서는 중요하지 않으나, 일반적으로 알파벳 순서 또는 논리적 순서를 따릅니다.
-DROP TABLE IF EXISTS stock_price;
+DROP TABLE IF EXISTS market_calendar;
+DROP TABLE IF EXISTS minute_price;
+DROP TABLE IF EXISTS daily_price;
 DROP TABLE IF EXISTS stock_info;
 
 -- 작업 완료 후 FK 제약 조건 다시 활성화

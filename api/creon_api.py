@@ -5,9 +5,9 @@ import ctypes
 import time
 import logging
 import pandas as pd
-import datetime # datetime 모듈 전체를 임포트하여 datetime.timedelta 사용 가능
+#import datetime # datetime 모듈 전체를 임포트하여 datetime.timedelta 사용 가능
 import re
-
+from datetime import datetime, date, timedelta
 API_REQUEST_INTERVAL = 0.2
 
 # 로거 설정 (기존 설정 유지)
@@ -223,25 +223,25 @@ class CreonAPIClient:
                     
                     try:
                         # 날짜와 시간을 합쳐 datetime 객체 생성
-                        dt_obj = datetime.datetime.strptime(f"{date_val}{time_str_padded}", '%Y%m%d%H%M')
+                        dt_obj = datetime.strptime(f"{date_val}{time_str_padded}", '%Y%m%d%H%M')
                         row_data['datetime'] = dt_obj
                     except ValueError as e:
                         logger.error(f"Error parsing minute datetime for {stock_code}: {date_val}{time_str_padded}. Error: {e}")
                         continue # 잘못된 날짜/시간 포맷은 건너뜀
 
                     # GetDataValue 인덱스 매핑 (requested_fields 순서에 따름)
-                    row_data['open_price'] = objChart.GetDataValue(2, i) # 시가
-                    row_data['high_price'] = objChart.GetDataValue(3, i) # 고가
-                    row_data['low_price'] = objChart.GetDataValue(4, i)  # 저가
-                    row_data['close_price'] = objChart.GetDataValue(5, i)# 종가
+                    row_data['open'] = objChart.GetDataValue(2, i) # 시가
+                    row_data['high'] = objChart.GetDataValue(3, i) # 고가
+                    row_data['low'] = objChart.GetDataValue(4, i)  # 저가
+                    row_data['close'] = objChart.GetDataValue(5, i)# 종가
                     row_data['volume'] = objChart.GetDataValue(6, i)     # 거래량
                 else: # 일봉, 주봉, 월봉
                     date_val = objChart.GetDataValue(0, i)
-                    row_data['date'] = datetime.datetime.strptime(str(date_val), '%Y%m%d').date() # 일봉은 date 컬럼 (datetime.date 객체)
-                    row_data['open_price'] = objChart.GetDataValue(1, i)
-                    row_data['high_price'] = objChart.GetDataValue(2, i)
-                    row_data['low_price'] = objChart.GetDataValue(3, i)
-                    row_data['close_price'] = objChart.GetDataValue(4, i)
+                    row_data['date'] = datetime.strptime(str(date_val), '%Y%m%d').date() # 일봉은 date 컬럼 (datetime.date 객체)
+                    row_data['open'] = objChart.GetDataValue(1, i)
+                    row_data['high'] = objChart.GetDataValue(2, i)
+                    row_data['low'] = objChart.GetDataValue(3, i)
+                    row_data['close'] = objChart.GetDataValue(4, i)
                     row_data['volume'] = objChart.GetDataValue(5, i)
                     row_data['change_rate'] = None # 요청하지 않은 필드
                     row_data['trading_value'] = 0 # 요청하지 않은 필드
@@ -263,16 +263,22 @@ class CreonAPIClient:
         else: # 일봉, 주봉, 월봉
             df['date'] = pd.to_datetime(df['date']) # date 컬럼이 현재는 date 객체일 것이므로 datetime으로 변환
             df = df.sort_values(by='date').set_index('date') # 'date' 컬럼을 인덱스로 설정
-            
+            df.index = df.index.normalize()
+
         # backtrader에서 요구하는 컬럼명으로 변경
-        df.rename(columns={
-            'open_price': 'open',
-            'high_price': 'high',
-            'low_price': 'low',
-            'close_price': 'close',
-            'volume': 'volume'
-        }, inplace=True)
-            
+        # df.rename(columns={
+        #     'open_price': 'open',
+        #     'high_price': 'high',
+        #     'low_price': 'low',
+        #     'close_price': 'close',
+        #     'volume': 'volume'
+        # }, inplace=True)
+        
+        # 핵심 수정: 숫자 컬럼들을 float 타입으로 명시적으로 변환
+        for col in standard_ohlcv_columns: # ['open', 'high', 'low', 'close', 'volume']
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').astype(float)
+        
         return df
 
     def get_daily_ohlcv(self, code, from_date, to_date):
@@ -288,3 +294,38 @@ class CreonAPIClient:
         # _get_price_data에서 이미 rename 처리
         # 빈 DataFrame일 경우에도 'open', 'high', 'low', 'close', 'volume' 컬럼이 보장됨
         return df[['open', 'high', 'low', 'close', 'volume']]
+
+
+    def get_all_trading_days_from_api(self, from_date: date, to_date: date, stock_code: str = 'A005930') -> list[date]:
+        """
+        Creon API의 일봉 데이터 조회를 통해 특정 기간의 모든 거래일(날짜)을 가져옵니다.
+        _get_price_data에서 반환되는 DatetimeIndex를 활용합니다.
+
+        :param from_date: 조회 시작일 (datetime.date 객체)
+        :param to_date: 조회 종료일 (datetime.date 객체)
+        :param stock_code: 거래일을 조회할 기준 종목 코드 (기본값: 삼성전자 'A005930')
+        :return: 거래일 날짜를 담은 list (datetime.date 객체들), 실패 시 빈 리스트
+        """
+        logger.info(f"Creon API를 통해 거래일 캘린더 조회 시작: {stock_code} ({from_date} ~ {to_date})")
+
+        from_date_str = from_date.strftime('%Y%m%d')
+        to_date_str = to_date.strftime('%Y%m%d')
+
+        # _get_price_data는 일봉 데이터를 DatetimeIndex 인덱스로 가진 DataFrame을 반환합니다.
+        # 이 인덱스의 각 요소는 pandas.Timestamp 객체이며, normalize()에 의해 시간 정보는 00:00:00으로 설정됩니다.
+        ohlcv_df = self._get_price_data(stock_code, 'D', from_date_str, to_date_str)
+
+        if ohlcv_df.empty:
+            logger.warning(f"Creon API로부터 {stock_code}의 일봉 데이터를 가져오지 못했습니다. 거래일 없음.")
+            return []
+        
+        # DatetimeIndex의 .date 속성을 사용하여 각 Timestamp에서 datetime.date 객체를 추출합니다.
+        # 이 과정은 pandas의 DatetimeIndex가 datetime.date 객체와 호환되도록 설계되어 있어 안전합니다.
+        trading_days = ohlcv_df.index.date.tolist()
+        
+        # _get_price_data에서 이미 인덱스 기준으로 정렬되지만, 최종적으로 정렬 및 중복 제거
+        trading_days = sorted(list(set(trading_days)))
+
+        logger.info(f"Creon API로부터 총 {len(trading_days)}개의 거래일 캘린더 데이터를 가져왔습니다.")
+        return trading_days
+    

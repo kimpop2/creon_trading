@@ -7,7 +7,8 @@ import time
 from backtest.broker import Broker
 from util.utils import calculate_performance_metrics, get_next_weekday 
 from strategies.strategy import DailyStrategy, MinuteStrategy 
-from manager.db_manager import DBManager # DBManager 임포트
+from manager.db_manager import DBManager 
+from manager.data_manager import DataManager
 class Backtester:
     def __init__(self, api_client, initial_cash):
         self.api_client = api_client
@@ -20,7 +21,7 @@ class Backtester:
         self.minute_strategy: MinuteStrategy = None
 
         self.db_manager = DBManager() # DBManager 인스턴스 생성
-
+        self.data_manager = DataManager() # DBManager 인스턴스 생성
         logging.info(f"백테스터 초기화 완료. 초기 현금: {self.initial_cash:,.0f}원")
 
     def set_strategies(self, daily_strategy: DailyStrategy = None, minute_strategy: MinuteStrategy = None):
@@ -98,8 +99,7 @@ class Backtester:
         
         dfs_to_concat = []
         for date in dates_to_load:
-            date_str = date.strftime('%Y%m%d')
-            
+            #date_str = date
             # 해당 날짜의 분봉 데이터가 이미 있는지 확인
             if stock_code in self.data_store['minute'] and date in self.data_store['minute'][stock_code]:
                 dfs_to_concat.append(self.data_store['minute'][stock_code][date])
@@ -108,17 +108,17 @@ class Backtester:
             # 해당 날짜가 거래일인지 확인
             daily_df = self.data_store['daily'].get(stock_code)
             if daily_df is not None and not daily_df.empty and pd.Timestamp(date).normalize() in daily_df.index:
-                minute_df_day = self.api_client.get_minute_ohlcv(stock_code, date_str, date_str, interval=1)
-                time.sleep(0.3)   # API 호출 제한 방지를 위한 대기
+                #minute_df_day = self.api_client.get_minute_ohlcv(stock_code, date_str, date_str, interval=1)
+                minute_df_day = self.data_manager.cache_minute_ohlcv(stock_code, date, date, interval=1)
                 
                 if not minute_df_day.empty:
                     if stock_code not in self.data_store['minute']:
                         self.data_store['minute'][stock_code] = {}
                     self.data_store['minute'][stock_code][date] = minute_df_day
                     dfs_to_concat.append(minute_df_day)
-                    logging.info(f"{stock_code} 종목의 {date_str} 분봉 데이터 로드 완료. 데이터 수: {len(minute_df_day)}행")
+                    logging.info(f"{stock_code} 종목의 {date} 분봉 데이터 로드 완료. 데이터 수: {len(minute_df_day)}행")
                 else:
-                    logging.warning(f"{stock_code} 종목의 {date_str} 분봉 데이터가 없습니다 (거래일임에도 불구하고).")
+                    logging.warning(f"{stock_code} 종목의 {date} 분봉 데이터가 없습니다 (거래일임에도 불구하고).")
         
         if dfs_to_concat:
             full_df = pd.concat(dfs_to_concat).sort_index()
@@ -152,8 +152,8 @@ class Backtester:
 
         # --- 백테스트 실행 정보 (run_id)를 먼저 DB에 저장 ---
         run_data = {
-            'start_date': start_date.date(),
-            'end_date': end_date.date(),
+            'start_date': start_date,
+            'end_date': end_date,
             'initial_capital': self.initial_cash,
             'final_capital': None, 
             'total_profit_loss': None,
@@ -215,7 +215,7 @@ class Backtester:
                             if not minute_data.empty:
                                 minute_data_today = minute_data.loc[minute_data.index.normalize() == pd.Timestamp(current_daily_date).normalize()]
                                 for minute_dt in minute_data_today.index:
-                                    if minute_dt > end_date: 
+                                    if minute_dt.date() > end_date: 
                                         break
                                     self.minute_strategy.run_minute_logic(stock_code, minute_dt)
                                     if self.daily_strategy.signals[stock_code]['traded_today']:
@@ -268,8 +268,8 @@ class Backtester:
         metrics = calculate_performance_metrics(portfolio_value_series, risk_free_rate=0.03)
         
         logging.info("\n=== 백테스트 결과 ===")
-        logging.info(f"시작일: {start_date.date().isoformat()}")
-        logging.info(f"종료일: {end_date.date().isoformat()}")
+        logging.info(f"시작일: {start_date.isoformat()}")
+        logging.info(f"종료일: {end_date.isoformat()}")
         logging.info(f"초기자금: {self.initial_cash:,.0f}원")
         logging.info(f"최종 포트폴리오 가치: {portfolio_values[-1]:,.0f}원")
         logging.info(f"총 수익률: {metrics['total_return']*100:.2f}%")

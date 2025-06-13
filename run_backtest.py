@@ -20,7 +20,7 @@ from backtest.backtester import Backtester
 from backtest.broker import Broker
 from strategies.dual_momentum_daily import DualMomentumDaily
 from strategies.rsi_minute import RSIMinute
-
+from manager.data_manager import DataManager
 # --- 로깅 설정 ---
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -65,18 +65,18 @@ if __name__ == '__main__':
         #     ('KB금융', '금융'), ('신한지주', '금융'), ('하나금융지주', '금융'),
         #     ('우리금융지주', '금융'), ('메리츠금융지주', '금융')
         # ],
-        # '통신': [
-        #     ('SK텔레콤', '통신'), ('KT', '통신'), ('LG유플러스', '통신'),
-        #     ('SK스퀘어', '통신')
-        # ],
-        # '유통/소비재': [
-        #     ('CJ제일제당', '소비재'), ('오리온', '소비재'), ('롯데쇼핑', '유통'),
-        #     ('이마트', '유통'), ('BGF리테일', '유통')
-        # ],
-        # '건설/기계': [
-        #     ('현대건설', '건설'), ('대우건설', '건설'), ('GS건설', '건설'),
-        #     ('두산에너빌리티', '기계'), ('두산밥캣', '기계')
-        # ],
+        '통신': [
+            ('SK텔레콤', '통신'), ('KT', '통신'), ('LG유플러스', '통신'),
+            ('SK스퀘어', '통신')
+        ],
+        '유통/소비재': [
+            ('CJ제일제당', '소비재'), ('오리온', '소비재'), ('롯데쇼핑', '유통'),
+            ('이마트', '유통'), ('BGF리테일', '유통')
+        ],
+        '건설/기계': [
+            ('현대건설', '건설'), ('대우건설', '건설'), ('GS건설', '건설'),
+            ('두산에너빌리티', '기계'), ('두산밥캣', '기계')
+        ],
         # '조선/항공': [
         #     ('한국조선해양', '조선'), ('삼성중공업', '조선'), ('대한항공', '항공'),
         #     ('현대미포조선', '조선')
@@ -89,20 +89,20 @@ if __name__ == '__main__':
         #     ('원익IPS', 'IT'), ('피에스케이', 'IT'), ('주성엔지니어링', 'IT'),
         #     ('테스', 'IT'), ('에이피티씨', 'IT')
         # ],
-        # '디스플레이': [
-        #     ('LG디스플레이', 'IT'), ('덕산네오룩스', 'IT'), ('동운아나텍', 'IT'),
-        #     ('매크로젠', 'IT')
-        # ],
-        '방산': [
-            ('한화에어로스페이스', '방산'), ('LIG넥스원', '방산'), ('한화시스템', '방산'),
-            ('현대로템', '방산')
-        ]
+        '디스플레이': [
+            ('LG디스플레이', 'IT'), ('덕산네오룩스', 'IT'), ('동운아나텍', 'IT'),
+            ('매크로젠', 'IT')
+        ],
+        # '방산': [
+        #     ('한화에어로스페이스', '방산'), ('LIG넥스원', '방산'), ('한화시스템', '방산'),
+        #     ('현대로템', '방산')
+        # ]
     }
     
     # 백테스트 기간 설정
-    daily_data_fetch_start = '20250301' 
-    backtest_start_date = datetime.datetime(2025, 4, 1, 9, 0, 0)
-    backtest_end_date = datetime.datetime(2025, 6, 4, 3, 30, 0)
+    daily_data_fetch_start  = datetime.datetime(2024, 8, 15, 9, 0, 0).date()
+    backtest_start_date     = datetime.datetime(2024, 9, 1, 9, 0, 0).date()
+    backtest_end_date       = datetime.datetime(2025, 2, 15, 3, 30, 0).date()
 
     creon_api = CreonAPIClient()
     if not creon_api.connected:
@@ -116,9 +116,9 @@ if __name__ == '__main__':
     daily_strategy = DualMomentumDaily(
         data_store=backtester_instance.data_store,
         strategy_params={
-            'momentum_period': 5,          # 모멘텀 계산 기간 (거래일)
-            'rebalance_weekday': 3,        # 리밸런싱 요일 (0: 월요일, 4: 금요일)
-            'num_top_stocks': 10,           # 상위 N종목 선택
+            'momentum_period': 20,          # 모멘텀 계산 기간 (거래일)
+            'rebalance_weekday': 1,        # 리밸런싱 요일 (0: 월요일, 4: 금요일)
+            'num_top_stocks': 7,           # 상위 N종목 선택
             'safe_asset_code': 'A439870',  # 안전자산 코드 (국고채 ETF)
         },
         broker=backtester_instance.broker # Broker 인스턴스 전달
@@ -148,7 +148,8 @@ if __name__ == '__main__':
     }
     stop_loss_params = None #손절하지 않기
     #backtester_instance.set_broker_stop_loss_params(stop_loss_params)
-
+    
+    data_manager = DataManager()
     # 모든 종목을 하나의 리스트로 변환
     stock_names = []
     for sector, stocks in sector_stocks.items():
@@ -159,23 +160,22 @@ if __name__ == '__main__':
     # 안전자산 코드도 미리 추가
     safe_asset_code = daily_strategy.strategy_params['safe_asset_code'] # <-- 여기서 직접 정의한 strategy_params에서 가져옴
 
-    logging.info(f"'안전자산' (코드: {safe_asset_code}) 안전자산 일봉 데이터 로딩 중... (기간: {daily_data_fetch_start} ~ {backtest_end_date.strftime('%Y%m%d')})")
-    
-    daily_df = creon_api.get_daily_ohlcv(safe_asset_code, daily_data_fetch_start, backtest_end_date.strftime('%Y%m%d'))
+    logging.info(f"'안전자산' (코드: {safe_asset_code}) 안전자산 일봉 데이터 로딩 중... (기간: {daily_data_fetch_start.strftime('%Y%m%d')} ~ {backtest_end_date.strftime('%Y%m%d')})")
+    #daily_df = creon_api.get_daily_ohlcv(safe_asset_code, daily_data_fetch_start, backtest_end_date.strftime('%Y%m%d'))
+    daily_df = data_manager.cache_daily_ohlcv(safe_asset_code, daily_data_fetch_start, backtest_end_date)
     backtester_instance.add_daily_data(safe_asset_code, daily_df)
     if daily_df.empty:
         logging.warning(f"'안전자산' (코드: {safe_asset_code}) 종목의 일봉 데이터를 가져올 수 없습니다. 종료합니다다.")
         exit(1)
     logging.info(f"'안전자산' (코드: {safe_asset_code}) 종목의 일봉 데이터 로드 완료. 데이터 수: {len(daily_df)}행")
-    
+
 
     all_target_stock_names = stock_names
     for name in all_target_stock_names:
         code = creon_api.get_stock_code(name)
         if code:
-            logging.info(f"'{name}' (코드: {code}) 종목 일봉 데이터 로딩 중... (기간: {daily_data_fetch_start} ~ {backtest_end_date.strftime('%Y%m%d')})")
-            daily_df = creon_api.get_daily_ohlcv(code, daily_data_fetch_start, backtest_end_date.strftime('%Y%m%d'))
-            time.sleep(0.3) 
+            logging.info(f"'{name}' (코드: {code}) 종목 일봉 데이터 로딩 중... (기간: {daily_data_fetch_start.strftime('%Y%m%d')} ~ {backtest_end_date.strftime('%Y%m%d')})")
+            daily_df = data_manager.cache_daily_ohlcv(code, daily_data_fetch_start, backtest_end_date)
             
             if daily_df.empty:
                 logging.warning(f"{name} ({code}) 종목의 일봉 데이터를 가져올 수 없습니다. 해당 종목을 건너뜁니다.")

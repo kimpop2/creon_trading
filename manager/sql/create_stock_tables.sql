@@ -19,9 +19,15 @@ CREATE TABLE IF NOT EXISTS stock_info (
     upd_date DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '최종 업데이트 일시'
 ) COMMENT='종목 기본 정보 및 재무 데이터';
 
+-- market_calendar 테이블 생성
+CREATE TABLE IF NOT EXISTS market_calendar (
+    date DATE NOT NULL PRIMARY KEY,         -- 날짜 (YYYY-MM-DD), 기본 키
+    is_holiday BOOLEAN NOT NULL DEFAULT FALSE, -- 공휴일 여부 (TRUE: 공휴일, FALSE: 영업일)
+    description VARCHAR(4000)                  -- 공휴일 또는 특이사항 설명
+) COMMENT='주식시장 캘린더';
 
--- stock_price 테이블 생성 (일봉 주가 데이터)
-CREATE TABLE IF NOT EXISTS stock_price (
+-- day_price 테이블 생성 (일봉 주가 데이터)
+CREATE TABLE IF NOT EXISTS daily_price (
     stock_code VARCHAR(10) NOT NULL COMMENT '종목 코드',
     date DATE NOT NULL COMMENT '거래일',
     open DECIMAL(18, 2) NOT NULL COMMENT '시가',
@@ -39,6 +45,38 @@ CREATE TABLE IF NOT EXISTS stock_price (
 )
 COMMENT='백테스트 일봉 주가 데이터'
 PARTITION BY RANGE (YEAR(date)) (
+    PARTITION p2020 VALUES LESS THAN (2021),
+    PARTITION p2021 VALUES LESS THAN (2022),
+    PARTITION p2022 VALUES LESS THAN (2023),
+    PARTITION p2023 VALUES LESS THAN (2024),
+    PARTITION p2024 VALUES LESS THAN (2025),
+    PARTITION p2025 VALUES LESS THAN (2026),
+    PARTITION p2026 VALUES LESS THAN (2027),
+    PARTITION p2027 VALUES LESS THAN (2028),
+    PARTITION p2028 VALUES LESS THAN (2029),
+    PARTITION p2029 VALUES LESS THAN (2030),
+    PARTITION pmax VALUES LESS THAN MAXVALUE
+);
+
+-- minute_price 테이블 생성 (분봉 주가 데이터)
+CREATE TABLE IF NOT EXISTS minute_price (
+    stock_code VARCHAR(10) NOT NULL COMMENT '종목 코드',
+    datetime DATETIME NOT NULL COMMENT '거래시각각',
+    open DECIMAL(18, 2) NOT NULL COMMENT '시가',
+    high DECIMAL(18, 2) NOT NULL COMMENT '고가',
+    low DECIMAL(18, 2) NOT NULL COMMENT '저가',
+    close DECIMAL(18, 2) NOT NULL COMMENT '종가',
+    volume BIGINT NOT NULL COMMENT '거래량',
+    trading_value BIGINT COMMENT '거래대금 (선택적)',
+    change_rate DECIMAL(10, 4) COMMENT '대비 (직전일 대비 변화율, 백분율)',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '생성 시각',
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '최종 업데이트 시각',
+
+    -- 기본 키 정의: 종목 코드와 시각(날짜+시각)의 조합으로 고유성을 보장하는 복합 기본 키
+    PRIMARY KEY (stock_code, datetime)
+)
+COMMENT='백테스트 분봉 주가 데이터'
+PARTITION BY RANGE (YEAR(datetime)) (
     PARTITION p2020 VALUES LESS THAN (2021),
     PARTITION p2021 VALUES LESS THAN (2022),
     PARTITION p2022 VALUES LESS THAN (2023),
