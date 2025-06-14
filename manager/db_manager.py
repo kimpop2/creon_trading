@@ -1274,72 +1274,72 @@ if __name__ == "__main__":
     # 로깅 레벨을 DEBUG로 설정하여 SQL 실행 로그 확인
     logger.setLevel(logging.DEBUG) 
     
-    db_manager = DBManager()
+    # db_manager = DBManager()
 
-    # --- 1. 종목 및 주가 관련 테이블 테스트 ---
-    logger.info("--- 종목 및 주가 관련 테이블 테스트 시작 ---")
+    # # --- 1. 종목 및 주가 관련 테이블 테스트 ---
+    # logger.info("--- 종목 및 주가 관련 테이블 테스트 시작 ---")
     
-    # 1.1 테이블 삭제 및 재생성 (stock_info, daily_price, minute_price, market_calendar)
-    logger.info("기존 stock_tables 삭제 중...")
-    if not db_manager.drop_stock_tables(): # <-- 반환값 확인
-        logger.error("stock_tables 삭제 실패! 존재하지 않을 수 있음")
+    # # 1.1 테이블 삭제 및 재생성 (stock_info, daily_price, minute_price, market_calendar)
+    # logger.info("기존 stock_tables 삭제 중...")
+    # if not db_manager.drop_stock_tables(): # <-- 반환값 확인
+    #     logger.error("stock_tables 삭제 실패! 존재하지 않을 수 있음")
         
-    logger.info("stock_tables 생성 중...")
-    if not db_manager.create_stock_tables(): # <-- 반환값 확인
-        logger.error("stock_tables 생성 실패! 테스트를 중단합니다. SQL 파일 경로 또는 SQL 문법을 확인하세요.")
-        sys.exit(1) # 테스트 중단
-    logger.info("stock_tables 생성 완료.")
+    # logger.info("stock_tables 생성 중...")
+    # if not db_manager.create_stock_tables(): # <-- 반환값 확인
+    #     logger.error("stock_tables 생성 실패! 테스트를 중단합니다. SQL 파일 경로 또는 SQL 문법을 확인하세요.")
+    #     sys.exit(1) # 테스트 중단
+    # logger.info("stock_tables 생성 완료.")
 
-    # 1.2 save_stock_info 테스트
-    logger.info("save_stock_info 테스트 시작...")
-    test_stock_info_data = [
-        {
-            'stock_code': 'A005930', 'stock_name': '삼성전자', 'market_type': 'KOSPI', 'sector': '반도체 및 반도체 장비',
-            'per': 15.20, 'pbr': 1.60, 'eps': 5000.00, 'roe': 10.50, 'debt_ratio': 25.30,
-            'sales': 280000000, 'operating_profit': 4000000, 'net_profit': 3000000,
-            'recent_financial_date': date(2024, 3, 31)
-        },
-        {
-            'stock_code': 'A000660', 'stock_name': 'SK하이닉스', 'market_type': 'KOSPI', 'sector': '반도체 및 반도체 장비',
-            'per': 20.10, 'pbr': 2.50, 'eps': 3500.00, 'roe': 12.00, 'debt_ratio': 35.00,
-            'sales': 35000000, 'operating_profit': 500000, 'net_profit': 400000,
-            'recent_financial_date': date(2024, 3, 31)
-        },
-        {
-            'stock_code': 'A035420', 'stock_name': 'NAVER', 'market_type': 'KOSPI', 'sector': '소프트웨어',
-            'per': 30.50, 'pbr': 3.00, 'eps': 2000.00, 'roe': 8.00, 'debt_ratio': 15.00,
-            'sales': 900000, 'operating_profit': 150000, 'net_profit': 100000,
-            'recent_financial_date': date(2024, 3, 31)
-        }
-    ]
-    db_manager.save_stock_info(test_stock_info_data)
-    logger.info("save_stock_info 테스트 완료.")
+    # # 1.2 save_stock_info 테스트
+    # logger.info("save_stock_info 테스트 시작...")
+    # test_stock_info_data = [
+    #     {
+    #         'stock_code': 'A005930', 'stock_name': '삼성전자', 'market_type': 'KOSPI', 'sector': '반도체 및 반도체 장비',
+    #         'per': 15.20, 'pbr': 1.60, 'eps': 5000.00, 'roe': 10.50, 'debt_ratio': 25.30,
+    #         'sales': 280000000, 'operating_profit': 4000000, 'net_profit': 3000000,
+    #         'recent_financial_date': date(2024, 3, 31)
+    #     },
+    #     {
+    #         'stock_code': 'A000660', 'stock_name': 'SK하이닉스', 'market_type': 'KOSPI', 'sector': '반도체 및 반도체 장비',
+    #         'per': 20.10, 'pbr': 2.50, 'eps': 3500.00, 'roe': 12.00, 'debt_ratio': 35.00,
+    #         'sales': 35000000, 'operating_profit': 500000, 'net_profit': 400000,
+    #         'recent_financial_date': date(2024, 3, 31)
+    #     },
+    #     {
+    #         'stock_code': 'A035420', 'stock_name': 'NAVER', 'market_type': 'KOSPI', 'sector': '소프트웨어',
+    #         'per': 30.50, 'pbr': 3.00, 'eps': 2000.00, 'roe': 8.00, 'debt_ratio': 15.00,
+    #         'sales': 900000, 'operating_profit': 150000, 'net_profit': 100000,
+    #         'recent_financial_date': date(2024, 3, 31)
+    #     }
+    # ]
+    # db_manager.save_stock_info(test_stock_info_data)
+    # logger.info("save_stock_info 테스트 완료.")
 
-    # 1.3 fetch_stock_info 테스트
-    logger.info("fetch_stock_info 테스트 시작 (전체 조회)...")
-    fetched_stock_info = db_manager.fetch_stock_info()
-    logger.info(f"조회된 stock_info 데이터:\n{fetched_stock_info}")
+    # # 1.3 fetch_stock_info 테스트
+    # logger.info("fetch_stock_info 테스트 시작 (전체 조회)...")
+    # fetched_stock_info = db_manager.fetch_stock_info()
+    # logger.info(f"조회된 stock_info 데이터:\n{fetched_stock_info}")
 
-    logger.info("fetch_stock_info 테스트 시작 (특정 종목 조회)...")
-    fetched_specific_stock_info = db_manager.fetch_stock_info(stock_codes=['A005930'])
-    logger.info(f"조회된 특정 종목 stock_info 데이터 (A005930):\n{fetched_specific_stock_info}")
-    logger.info("fetch_stock_info 테스트 완료.")
+    # logger.info("fetch_stock_info 테스트 시작 (특정 종목 조회)...")
+    # fetched_specific_stock_info = db_manager.fetch_stock_info(stock_codes=['A005930'])
+    # logger.info(f"조회된 특정 종목 stock_info 데이터 (A005930):\n{fetched_specific_stock_info}")
+    # logger.info("fetch_stock_info 테스트 완료.")
 
-    # 1.4 get_all_stock_codes 테스트
-    logger.info("get_all_stock_codes 테스트 시작...")
-    all_codes = db_manager.get_all_stock_codes()
-    logger.info(f"모든 종목 코드:\n{all_codes}")
-    logger.info("get_all_stock_codes 테스트 완료.")
+    # # 1.4 get_all_stock_codes 테스트
+    # logger.info("get_all_stock_codes 테스트 시작...")
+    # all_codes = db_manager.get_all_stock_codes()
+    # logger.info(f"모든 종목 코드:\n{all_codes}")
+    # logger.info("get_all_stock_codes 테스트 완료.")
 
-    # 1.5 fetch_stock_codes_by_criteria 테스트
-    logger.info("fetch_stock_codes_by_criteria 테스트 시작 (EPS 3000 이상)...")
-    filtered_codes = db_manager.fetch_stock_codes_by_criteria(eps_min=3000)
-    logger.info(f"EPS 3000 이상 종목 코드:\n{filtered_codes}")
+    # # 1.5 fetch_stock_codes_by_criteria 테스트
+    # logger.info("fetch_stock_codes_by_criteria 테스트 시작 (EPS 3000 이상)...")
+    # filtered_codes = db_manager.fetch_stock_codes_by_criteria(eps_min=3000)
+    # logger.info(f"EPS 3000 이상 종목 코드:\n{filtered_codes}")
 
-    logger.info("fetch_stock_codes_by_criteria 테스트 시작 (PBR 2.0 이하, ROE 10.0 이상)...")
-    filtered_codes_complex = db_manager.fetch_stock_codes_by_criteria(pbr_max=2.0, roe_min=10.0)
-    logger.info(f"PBR 2.0 이하, ROE 10.0 이상 종목 코드:\n{filtered_codes_complex}")
-    logger.info("fetch_stock_codes_by_criteria 테스트 완료.")
+    # logger.info("fetch_stock_codes_by_criteria 테스트 시작 (PBR 2.0 이하, ROE 10.0 이상)...")
+    # filtered_codes_complex = db_manager.fetch_stock_codes_by_criteria(pbr_max=2.0, roe_min=10.0)
+    # logger.info(f"PBR 2.0 이하, ROE 10.0 이상 종목 코드:\n{filtered_codes_complex}")
+    # logger.info("fetch_stock_codes_by_criteria 테스트 완료.")
 
     # # 1.6 save_daily_price 테스트
     # logger.info("save_daily_price 테스트 시작...")
@@ -1612,6 +1612,6 @@ if __name__ == "__main__":
     # #db_manager.drop_stock_tables()
     # logger.info("--- 모든 테이블 삭제 완료 ---")
 
-    db_manager.close()
-    logger.info("DB 연결 종료.")
-    logger.info("모든 테스트 완료.")
+    # db_manager.close()
+    # logger.info("DB 연결 종료.")
+    # logger.info("모든 테스트 완료.")

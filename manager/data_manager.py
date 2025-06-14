@@ -7,12 +7,11 @@ import time
 import sys
 import os
 
-
+# --- 로거 설정 (스크립트 최상단에서 설정하여 항상 보이도록 함) ---
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO) # 테스트 시 DEBUG로 설정하여 모든 로그 출력
 # sys.path에 프로젝트 루트 추가 (db_manager 및 creon_api 임포트를 위함)
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..')) 
-
 sys.path.insert(0, project_root)
 logger.debug(f"Project root added to sys.path: {project_root}")
 
@@ -307,11 +306,9 @@ class DataManager:
 
 # __main__ 부분은 이전과 동일하게 유지됩니다.
 if __name__ == "__main__":
-    root_logger = logging.getLogger()
-    root_logger.setLevel(logging.INFO)
-    if not root_logger.handlers: # 루트 로거에 핸들러가 없다면 추가
-        console_handler = logging.StreamHandler(sys.stdout)
-
+    # 로깅 레벨을 DEBUG로 설정하여 SQL 실행 로그 확인
+    logger.setLevel(logging.DEBUG) 
+ 
     logger.info("DataManager 실제 객체로 초기화 시작...")
     try:
         data_manager = DataManager()
