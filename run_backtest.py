@@ -20,6 +20,7 @@ from backtest.backtester import Backtester
 from backtest.broker import Broker
 from strategies.dual_momentum_daily import DualMomentumDaily
 from strategies.rsi_minute import RSIMinute
+from strategies.temp_daily import TempletDaily
 from manager.data_manager import DataManager
 # --- 로깅 설정 ---
 logging.basicConfig(level=logging.INFO,
@@ -112,7 +113,7 @@ if __name__ == '__main__':
     backtester_instance = Backtester(creon_api, initial_cash=10_000_000)
 
     # 듀얼 모멘텀 전략 설정 (DualMomentumDaily 인스턴스 생성 및 Backtester에 주입)
-    daily_strategy = DualMomentumDaily(
+    dual_daily_strategy = DualMomentumDaily(
         data_store=backtester_instance.data_store,
         strategy_params={
             'momentum_period': 20,          # 모멘텀 계산 기간 (거래일)
@@ -120,12 +121,22 @@ if __name__ == '__main__':
             'num_top_stocks': 7,           # 상위 N종목 선택
             'safe_asset_code': 'A439870',  # 안전자산 코드 (국고채 ETF)
         },
-        broker=backtester_instance.broker # Broker 인스턴스 전달
+        broker=backtester_instance.broker
     )
-    backtester_instance.set_strategies(daily_strategy=daily_strategy)
 
+    temp_daily_strategy = TempletDaily(
+        data_store=backtester_instance.data_store,
+        strategy_params={
+            'momentum_period': 20,         # 듀얼 모멘텀처럼 기간 설정이 필요하다면 추가
+            'rebalance_weekday': 1,        # 듀얼 모멘텀처럼 리밸런싱 요일 설정
+            'num_top_stocks': 7,           # 듀얼 모멘텀처럼 상위 N종목 설정
+            'safe_asset_code': 'A439870', # 안전자산 코드
+            # 기타 TempletDaily에 전달하고 싶은 파라미터를 여기에 추가
+        },
+        broker=backtester_instance.broker 
+    )
     # RSI 분봉 전략 설정 (RSIMinute 인스턴스 생성 및 Backtester에 주입)
-    minute_strategy = RSIMinute(
+    rsi_minute_strategy = RSIMinute(
         data_store=backtester_instance.data_store,
         strategy_params={
             'minute_rsi_period': 14,
@@ -135,8 +146,11 @@ if __name__ == '__main__':
         },
         broker=backtester_instance.broker # Broker 인스턴스 전달
     )
-    backtester_instance.set_strategies(minute_strategy=minute_strategy)
 
+    # 전략 설정 (듀얼 모멘텀 전략 사용)
+    #backtester_instance.set_strategies(daily_strategy=dual_daily_strategy, minute_strategy=rsi_minute_strategy)
+    backtester_instance.set_strategies(daily_strategy=temp_daily_strategy, minute_strategy=rsi_minute_strategy)
+    
     # Broker에 손절매 파라미터 설정
     stop_loss_params = {
         'stop_loss_ratio': -10.0,      # 기본 손절 비율
@@ -146,7 +160,7 @@ if __name__ == '__main__':
         'max_losing_positions': 5,     # 동시 손실 허용 종목 수
     }
     stop_loss_params = None #손절하지 않기
-    #backtester_instance.set_broker_stop_loss_params(stop_loss_params)
+    backtester_instance.set_broker_stop_loss_params(stop_loss_params)
     
     data_manager = DataManager()
     # 모든 종목을 하나의 리스트로 변환
@@ -157,18 +171,17 @@ if __name__ == '__main__':
 
     # 종목 코드 확인 및 일봉 데이터 로딩
     # 안전자산 코드도 미리 추가
-    safe_asset_code = daily_strategy.strategy_params['safe_asset_code'] # <-- 여기서 직접 정의한 strategy_params에서 가져옴
+    safe_asset_code = dual_daily_strategy.strategy_params['safe_asset_code'] # 듀얼 모멘텀 전략의 안전자산 코드 사용
 
     logging.info(f"'안전자산' (코드: {safe_asset_code}) 안전자산 일봉 데이터 로딩 중... (기간: {daily_data_fetch_start.strftime('%Y%m%d')} ~ {backtest_end_date.strftime('%Y%m%d')})")
-    #daily_df = creon_api.get_daily_ohlcv(safe_asset_code, daily_data_fetch_start, backtest_end_date.strftime('%Y%m%d'))
     daily_df = data_manager.cache_daily_ohlcv(safe_asset_code, daily_data_fetch_start, backtest_end_date)
     backtester_instance.add_daily_data(safe_asset_code, daily_df)
     if daily_df.empty:
-        logging.warning(f"'안전자산' (코드: {safe_asset_code}) 종목의 일봉 데이터를 가져올 수 없습니다. 종료합니다다.")
+        logging.warning(f"'안전자산' (코드: {safe_asset_code}) 종목의 일봉 데이터를 가져올 수 없습니다. 종료합니다.")
         exit(1)
-    logging.info(f"'안전자산' (코드: {safe_asset_code}) 종목의 일봉 데이터 로드 완료. 데이터 수: {len(daily_df)}행")
+    logging.debug(f"'안전자산' (코드: {safe_asset_code}) 종목의 일봉 데이터 로드 완료. 데이터 수: {len(daily_df)}행")
 
-
+    # 모든 종목 데이터 로딩
     all_target_stock_names = stock_names
     for name in all_target_stock_names:
         code = creon_api.get_stock_code(name)
@@ -179,7 +192,7 @@ if __name__ == '__main__':
             if daily_df.empty:
                 logging.warning(f"{name} ({code}) 종목의 일봉 데이터를 가져올 수 없습니다. 해당 종목을 건너뜁니다.")
                 continue
-            logging.info(f"{name} ({code}) 종목의 일봉 데이터 로드 완료. 데이터 수: {len(daily_df)}행")
+            logging.debug(f"{name} ({code}) 종목의 일봉 데이터 로드 완료. 데이터 수: {len(daily_df)}행")
             backtester_instance.add_daily_data(code, daily_df)
         else:
             logging.warning(f"'{name}' 종목의 코드를 찾을 수 없습니다. 해당 종목을 건너뜁니다.")

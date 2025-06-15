@@ -30,38 +30,7 @@ class DualMomentumDaily(DailyStrategy): # DailyStrategy 상속
 
     # _get_historical_data_up_to 메서드 삭제 (BaseStrategy로 이동)
     # _get_bar_at_time 메서드는 DualMomentumDaily에서 사용하지 않으므로 변경 없음
-
-    def _calculate_target_quantity(self, stock_code, current_price): 
-        """주어진 가격에서 동일비중 투자에 필요한 수량을 계산합니다. 원본 로직 그대로.""" 
-        target_amount = self.broker.cash / self.strategy_params['num_top_stocks'] 
-        
-        # 현재 보유 현금 확인 
-        available_cash = self.broker.cash 
-        
-        # 수수료를 고려한 실제 투자 가능 금액 계산 
-        commission_rate = self.broker.commission_rate 
-        max_buyable_amount = available_cash / (1 + commission_rate) 
-        
-        # 목표 투자금액과 실제 투자 가능 금액 중 작은 값 선택 
-        actual_investment_amount = min(target_amount, max_buyable_amount) 
-        
-        # 주식 수량 계산 (소수점 이하 버림) 
-        quantity = int(actual_investment_amount / current_price) 
-        
-        if quantity > 0: 
-            # 실제 필요한 현금 (수수료 포함) 계산 
-            total_cost = current_price * quantity * (1 + commission_rate) 
-            if total_cost > available_cash: 
-                # 수량을 1주 줄여서 재계산 (최소 거래 단위 1주이므로) 
-                quantity -= 1 
-            
-        if quantity > 0: 
-            logging.info(f"{stock_code} 종목 매수 수량 계산: {quantity}주 (목표금액: {target_amount:,.0f}원, 가용현금: {available_cash:,.0f}원, 현재가: {current_price:,.0f}원)") 
-        else: 
-            logging.warning(f"{stock_code} 종목 매수 불가: 현금 부족 (목표금액: {target_amount:,.0f}원, 가용현금: {available_cash:,.0f}원, 현재가: {current_price:,.0f}원)") 
-        
-        return quantity 
-
+    # _calculate_target_quantity 메서드 삭제 (DailyStrategy로 이동)
 
     def run_daily_logic(self, current_daily_date): 
         """ 
@@ -141,7 +110,8 @@ class DualMomentumDaily(DailyStrategy): # DailyStrategy 상속
                 # --- 여기에서 target_quantity가 0인지 체크하는 로직 추가 --- 
                 # 새로 매수할 종목 
                 current_price_daily = self._get_historical_data_up_to('daily', stock_code, current_daily_date, lookback_period=1)['close'].iloc[-1] # BaseStrategy의 메서드 사용
-                target_quantity = self._calculate_target_quantity(stock_code, current_price_daily) 
+                # 부모 클래스의 _calculate_target_quantity 메서드 사용
+                target_quantity = super()._calculate_target_quantity(stock_code, current_price_daily)
                 if target_quantity > 0: # 매수 수량이 1주 이상일 경우에만 'buy' 신호 생성 
                     if stock_code in current_positions: 
                         # 이미 보유 중인 종목은 홀딩 
@@ -161,31 +131,7 @@ class DualMomentumDaily(DailyStrategy): # DailyStrategy 상속
                 else: 
                     logging.debug(f'매도 신호 - {stock_code} (미보유): 순위 {rank}위, 모멘텀 {score:.2f}') 
 
-        # 리밸런싱 계획 요약 
-        current_prices_for_summary = {} 
-        for stock_code in self.data_store['daily']: 
-            daily_data = self._get_historical_data_up_to('daily', stock_code, current_daily_date, lookback_period=1) # BaseStrategy의 메서드 사용
-            if not daily_data.empty: 
-                current_prices_for_summary[stock_code] = daily_data['close'].iloc[-1] 
-
-        portfolio_value = self.broker.get_portfolio_value(current_prices_for_summary) 
-        current_holdings = [(code, pos['size'] * current_prices_for_summary[code]) for code, pos in self.broker.positions.items() if code in current_prices_for_summary and pos['size'] > 0] 
-        total_holdings_value = sum(value for _, value in current_holdings) 
-        
-        # 매수 계획 계산 
-        new_buys = [(code, self.signals[code]['target_quantity'] * current_prices_for_summary[code])  
-                    for code in buy_candidates if code not in current_positions and code in current_prices_for_summary] 
-        total_buy_amount = sum(amount for _, amount in new_buys) 
-        
-        # 매도 계획 계산 
-        to_sell = [(code, pos['size'] * current_prices_for_summary[code])  
-                   for code, pos in self.broker.positions.items()  
-                   if code not in buy_candidates and code in current_prices_for_summary] 
-        total_sell_amount = sum(amount for _, amount in to_sell) 
-
-        logging.info("\n=== 리밸런싱 계획 요약 ===") 
-        logging.info(f"현재 상태: 포트폴리오 가치 {portfolio_value:,.0f}원 = 보유종목 {len(current_holdings)}개 ({total_holdings_value:,.0f}원) + 현금 {self.broker.cash:,.0f}원") 
-        logging.info(f"매수 계획: {len(new_buys)}종목 (소요금액: {total_buy_amount:,.0f}원)") 
-        logging.info(f"매도 계획: {len(to_sell)}종목 (회수금액: {total_sell_amount:,.0f}원)") 
+        # 리밸런싱 계획 요약 로깅
+        self._log_rebalancing_summary(current_daily_date, buy_candidates, current_positions)
 
         self.last_rebalance_date = current_daily_date 

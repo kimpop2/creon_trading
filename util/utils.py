@@ -31,6 +31,11 @@ def get_next_weekday(date, target_weekday):
     if days_ahead <= 0:  # Target day already happened this week
         days_ahead += 7
     return date + datetime.timedelta(days=days_ahead)
+def calculate_sma(data, period):
+    """주어진 데이터프레임의 'close' 가격에 대한 단순 이동평균(SMA)을 계산합니다."""
+    if 'close' not in data.columns:
+        raise ValueError("데이터프레임에 'close' 컬럼이 없습니다.")
+    return data['close'].rolling(window=period, min_periods=1).mean() # min_periods=1로 설정하여 초기에도 계산되도록 함
 
 def calculate_performance_metrics(portfolio_values, risk_free_rate=0.03):
     """
