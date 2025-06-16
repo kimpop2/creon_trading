@@ -1,4 +1,3 @@
-
 # manager/db_manager.py
 
 import pymysql
@@ -972,7 +971,7 @@ class DBManager:
         
     def fetch_minute_price(self, stock_code: str, start_date: date, end_date: date) -> pd.DataFrame:
         """
-        DB에서 특정 종목의 일봉 데이터를 조회합니다.
+        DB에서 특정 종목의 분봉 데이터를 조회합니다.
         :param stock_code: 조회할 종목 코드
         :param start_date: 시작 날짜 (YYYY-MM-DD 또는 date 객체)
         :param end_date: 종료 날짜 (YYYY-MM-DD 또는 date 객체)
@@ -981,30 +980,34 @@ class DBManager:
         conn = self.get_db_connection()
         if not conn: return pd.DataFrame()
         
+        # start_date와 end_date를 datetime으로 변환하여 정확한 시간 범위 지정
+        start_datetime = datetime.combine(start_date, datetime.min.time())
+        end_datetime = datetime.combine(end_date, datetime.max.time())
+        
         sql = """
         SELECT stock_code, datetime, open, high, low, close, volume, change_rate, trading_value
         FROM minute_price
-        WHERE stock_code = %s AND DATE(datetime) BETWEEN %s AND %s -- DATE() 함수 사용하여 날짜만 비교
+        WHERE stock_code = %s 
+        AND datetime >= %s 
+        AND datetime <= %s
         ORDER BY datetime ASC
         """
-        params = (stock_code, start_date, end_date)
+        params = (stock_code, start_datetime, end_datetime)
         
         try:
             cursor = self.execute_sql(sql, params)
             if cursor:
                 result = cursor.fetchall()
-                df = pd.DataFrame(result) # 컬럼명도 제대로 가져오기
+                df = pd.DataFrame(result)
                 if not df.empty:
                     # 'datetime' 컬럼을 Pandas datetime 객체로 변환하고 인덱스로 설정
                     df['datetime'] = pd.to_datetime(df['datetime'])
-                    df = df.set_index('datetime') # <- **수정: inplace=True 제거
+                    df.set_index('datetime', inplace=True)
 
                     # 숫자 컬럼을 float으로 명시적 변환
                     numeric_cols = ['open', 'high', 'low', 'close', 'volume', 'change_rate', 'trading_value']
                     for col in numeric_cols:
                         if col in df.columns:
-                            # Decimal 객체가 올 수 있으므로 float()으로 변환
-                            # None 값은 그대로 유지되도록 apply 사용
                             df[col] = df[col].apply(lambda x: float(x) if isinstance(x, (Decimal, int, float)) else x)
                 return df
             else:
@@ -1012,54 +1015,6 @@ class DBManager:
         except Exception as e:
             logger.error(f"fetch_minute_price 처리 중 예외 발생: {e}", exc_info=True)
             return pd.DataFrame()
-        
-
-    # def fetch_minute_price(self, stock_code: str, start_date: date, end_date: date) -> pd.DataFrame:
-    #     """
-    #     DB에서 특정 종목의 분봉 데이터를 조회합니다.
-    #     :param stock_code: 조회할 종목 코드
-    #     :param start_date: 시작 날짜 (YYYY-MM-DD 또는 date 객체). 분봉은 시각까지 포함하는 datetime.datetime으로 사용.
-    #     :param end_date: 종료 날짜 (YYYY-MM-DD 또는 date 객체). 분봉은 시각까지 포함하는 datetime.datetime으로 사용.
-    #     :return: Pandas DataFrame
-    #     """
-    #     conn = self.get_db_connection()
-    #     if not conn: return pd.DataFrame()
-        
-    #     # start_date, end_date가 date 객체로 들어올 수 있으므로, datetime으로 변환하여 범위 지정
-    #     start_datetime = datetime.combine(start_date, datetime.min.time()) if isinstance(start_date, date) else start_date
-    #     end_datetime = datetime.combine(end_date, datetime.max.time()) if isinstance(end_date, date) else end_date
-
-    #     sql = """
-    #     SELECT stock_code, datetime, open, high, low, close, volume, change_rate, trading_value
-    #     FROM minute_price
-    #     WHERE stock_code = %s
-    #     """
-    #     params = [stock_code]
-    #     if start_datetime:
-    #         sql += " AND datetime >= %s"
-    #         params.append(start_datetime)
-    #     if end_datetime:
-    #         sql += " AND datetime <= %s"
-    #         params.append(end_datetime)
-    #     sql += " ORDER BY datetime ASC" 
-
-    #     try:
-    #         cursor = self.execute_sql(sql, tuple(params))
-    #         if cursor:
-    #             result = cursor.fetchall()
-    #             df = pd.DataFrame(result)
-    #             if not df.empty:
-    #                 # 'datetime' 컬럼이 이미 datetime 타입이거나, datetime.datetime으로 변환될 수 있도록 처리
-    #                 if not pd.api.types.is_datetime64_any_dtype(df['datetime']):
-    #                     df['datetime'] = pd.to_datetime(df['datetime'])
-    #                 df.set_index('datetime', inplace=True) # 날짜+시각을 인덱스로 설정
-    #             return df
-    #         else:
-    #             return pd.DataFrame()
-    #     except Exception as e:
-    #         logger.error(f"fetch_minute_price 처리 중 예외 발생: {e}", exc_info=True)
-    #         return pd.DataFrame()
-        
 
     # --- stock_info 관련 추가 메서드 ---
     def fetch_stock_codes_by_criteria(self, market_type: str = None, sector: str = None, per_max: float = None, 

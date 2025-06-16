@@ -88,65 +88,39 @@ class Backtester:
         logging.warning(f"{date.strftime('%Y-%m-%d')} 이후 {10}일 이내에 거래일을 찾을 수 없습니다.")
         return None
 
-    def _get_minute_data_for_signal_dates(self, stock_code, signal_date, execution_date): # Modified
+    def _get_minute_data_for_signal_dates(self, stock_code, signal_date, execution_date):
         """
         매수/매도 시그널이 발생한 날짜와 실행될 거래일의 분봉 데이터를 조회합니다.
-        크레온 API 호출을 통해 데이터를 가져와 data_store에 저장하고 반환합니다.
+        이미 로드된 데이터가 있으면 재사용하고, 없으면 API를 통해 가져옵니다.
         """
-        # signal_date와 execution_date 모두의 분봉 데이터가 필요할 수 있으므로 포함
-        dates_to_load = sorted(list(set([signal_date, execution_date]))) 
+        # 이미 로드된 데이터가 있는지 확인
+        if (stock_code in self.data_store['minute'] and 
+            signal_date in self.data_store['minute'][stock_code] and 
+            execution_date in self.data_store['minute'][stock_code]):
+            return pd.concat([
+                self.data_store['minute'][stock_code][signal_date],
+                self.data_store['minute'][stock_code][execution_date]
+            ]).sort_index()
         
-        dfs_to_concat = []
-        for date in dates_to_load:
-            if stock_code in self.data_store['minute'] and date in self.data_store['minute'][stock_code]:
-                dfs_to_concat.append(self.data_store['minute'][stock_code][date])
-                continue
+        # 데이터가 없으면 API에서 가져오기
+        minute_df = self.data_manager.cache_minute_ohlcv(
+            stock_code, 
+            min(signal_date, execution_date), 
+            max(signal_date, execution_date)
+        )
         
-        if not dfs_to_concat:
-            minute_df_day = self.data_manager.cache_minute_ohlcv(stock_code, signal_date, execution_date, interval=1)
-            # minute_df_day에서 signal_date와 execution_date에 해당하는 데이터만 필터링
-            signal_date_data = minute_df_day.loc[minute_df_day.index.normalize() == pd.Timestamp(signal_date).normalize()]
-            execution_date_data = minute_df_day.loc[minute_df_day.index.normalize() == pd.Timestamp(execution_date).normalize()]
-
-            # 각 날짜별 데이터를 data_store에 저장
-            if not signal_date_data.empty:
-                if stock_code not in self.data_store['minute']:
-                    self.data_store['minute'][stock_code] = {}
-                self.data_store['minute'][stock_code][signal_date] = signal_date_data
-                logging.debug(f"{stock_code} 종목의 {signal_date} 분봉 데이터 로드 완료. 데이터 수: {len(signal_date_data)}행")
-
-            if not execution_date_data.empty:
-                if stock_code not in self.data_store['minute']:
-                    self.data_store['minute'][stock_code] = {}
-                self.data_store['minute'][stock_code][execution_date] = execution_date_data
-                logging.debug(f"{stock_code} 종목의 {execution_date} 분봉 데이터 로드 완료. 데이터 수: {len(execution_date_data)}행")
-
-            # 두 날짜의 데이터를 합쳐서 반환
-            if not signal_date_data.empty:
-                dfs_to_concat.append(signal_date_data)
-            if not execution_date_data.empty:
-                dfs_to_concat.append(execution_date_data)
-    
-            # daily_df = self.data_store['daily'].get(stock_code)
-            # if daily_df is not None and not daily_df.empty and pd.Timestamp(date).normalize() in daily_df.index:
-            #     minute_df_day = self.data_manager.cache_minute_ohlcv(stock_code, date, date, interval=1)
-                
-            #     if not minute_df_day.empty:
-            #         if stock_code not in self.data_store['minute']:
-            #             self.data_store['minute'][stock_code] = {}
-            #         self.data_store['minute'][stock_code][date] = minute_df_day
-            #         dfs_to_concat.append(minute_df_day)
-            #         logging.info(f"{stock_code} 종목의 {date} 분봉 데이터 로드 완료. 데이터 수: {len(minute_df_day)}행")
-            #     else:
-            #         logging.warning(f"{stock_code} 종목의 {date} 분봉 데이터가 없습니다 (거래일임에도 불구하고).")
+        # 데이터 저장 및 반환
+        if not minute_df.empty:
+            if stock_code not in self.data_store['minute']:
+                self.data_store['minute'][stock_code] = {}
+            for date in [signal_date, execution_date]:
+                date_data = minute_df[minute_df.index.normalize() == pd.Timestamp(date).normalize()]
+                if not date_data.empty:
+                    self.data_store['minute'][stock_code][date] = date_data
+                    logging.debug(f"{stock_code} 종목의 {date} 분봉 데이터 로드 완료. 데이터 수: {len(date_data)}행")
         
-        if dfs_to_concat:
-            full_df = pd.concat(dfs_to_concat).sort_index()
-            return full_df
-        return pd.DataFrame()
-    
+        return minute_df
 
-    
     def run(self, start_date, end_date):
         portfolio_values = []
         dates = []
@@ -202,9 +176,9 @@ class Backtester:
 
             # 1. 전날 일봉 전략에서 생성된 '오늘 실행할' 신호들을 처리 (분봉 로직)
             if self.minute_strategy:
-                # 전날 생성된 pending_daily_signals를 현재 날짜의 실행 신호로 사용합니다.
-                signals_to_execute_today = self.pending_daily_signals.copy() 
-                self.pending_daily_signals = {} # 실행 후 초기화
+                # 전날 생성된 pending_daily_signals를 현재 날짜의 실행 신호로 사용
+                signals_to_execute_today = self.pending_daily_signals.copy()
+                self.pending_daily_signals = {}  # 실행 후 초기화
 
                 # 매수/매도 신호가 없고 stop_loss_params가 None이면 분봉 로직을 건너뜁니다.
                 has_trading_signals = any(signal_info['signal'] in ['buy', 'sell'] for signal_info in signals_to_execute_today.values())
@@ -213,58 +187,67 @@ class Backtester:
                 if not (has_trading_signals or has_stop_loss):
                     logging.debug(f"[{current_daily_date.isoformat()}] 매수/매도 신호가 없고 손절매가 비활성화되어 있어 분봉 로직을 건너뜁니다.")
                 else:
-                    # 모든 시그널을 분봉 전략에 한 번에 업데이트
-                    self.minute_strategy.update_signals(signals_to_execute_today) 
+                    # 1-1. 먼저 당일 실행할 신호가 있는 종목들의 분봉 데이터를 모두 로드
+                    stocks_to_load = [
+                        stock_code for stock_code, signal_info in signals_to_execute_today.items()
+                        if signal_info['signal'] in ['buy', 'sell', 'hold'] or has_stop_loss
+                    ]
+                    
+                    logging.info(f"[{current_daily_date.isoformat()}] 분봉 데이터 로드 시작: {len(stocks_to_load)}개 종목")
+                    
+                    # 모든 필요한 종목의 분봉 데이터를 한 번에 로드
+                    for stock_code in stocks_to_load:
+                        signal_info = signals_to_execute_today[stock_code]
+                        # 매도 신호인데 현재 포지션이 없으면 건너뜁니다.
+                        if signal_info['signal'] == 'sell' and self.broker.get_position_size(stock_code) <= 0:
+                            logging.debug(f"[{current_daily_date.isoformat()}] {stock_code}: 매도 신호가 있지만 보유 포지션이 없어 분봉 데이터 로드를 건너뜁니다.")
+                            continue
+                            
+                        self._get_minute_data_for_signal_dates(
+                            stock_code, 
+                            signal_info['signal_date'], 
+                            current_daily_date
+                        )
+                    
+                    # 1-2. 모든 시그널을 분봉 전략에 한 번에 업데이트
+                    self.minute_strategy.update_signals(signals_to_execute_today)
                     logging.debug(f"[{current_daily_date.isoformat()}] 분봉 전략에 {len(signals_to_execute_today)}개의 시그널 업데이트 완료.")
 
+                    # 1-3. 분봉 매매 로직 실행
                     for stock_code, signal_info in signals_to_execute_today.items():
-                        # 매수/매도 신호가 있거나 손절매가 활성화된 경우에만 분봉 데이터 로드
-                        if signal_info['signal'] in ['buy', 'sell'] or has_stop_loss:
+                        if signal_info['signal'] in ['buy', 'sell', 'hold'] or has_stop_loss:
                             # 매도 신호인데 현재 포지션이 없으면 건너뜁니다.
                             if signal_info['signal'] == 'sell' and self.broker.get_position_size(stock_code) <= 0:
-                                logging.debug(f"[{current_daily_date.isoformat()}] {stock_code}: 매도 신호가 있지만 보유 포지션이 없어 건너뜁니다.")
+                                logging.debug(f"[{current_daily_date.isoformat()}] {stock_code}: 매도 신호가 있지만 보유 포지션이 없어 매매를 건너뜁니다.")
                                 continue
 
-                            # 해당 종목의 분봉 데이터 로드
-                            minute_data_for_execution = self._get_minute_data_for_signal_dates(
-                                stock_code, signal_info['signal_date'], current_daily_date
-                            )
-                            
-                            # 현재 날짜의 분봉 데이터만 필터링
-                            minute_data_today = minute_data_for_execution.loc[
-                                minute_data_for_execution.index.normalize() == pd.Timestamp(current_daily_date).normalize()
-                            ]
-
-                            if not minute_data_today.empty:
-                                logging.debug(f"[{current_daily_date.isoformat()}] {stock_code}: {len(minute_data_today)}개의 분봉 데이터로 매매 시도.")
+                            # 이미 로드된 분봉 데이터 사용
+                            if stock_code in self.data_store['minute'] and current_daily_date in self.data_store['minute'][stock_code]:
+                                minute_data_today = self.data_store['minute'][stock_code][current_daily_date]
                                 
-                                # # 매수/매도 신호가 있는 경우: 다음 영업일 첫 분봉에서 강제 매매 실행
-                                # if signal_info['signal'] in ['buy', 'sell']:
-                                #     first_minute = minute_data_today.index[0]
-                                #     if signal_info['signal'] == 'buy':
-                                #         self.minute_strategy.force_buy(stock_code, first_minute)
-                                #     else:  # sell
-                                #         self.minute_strategy.force_sell(stock_code, first_minute)
-                                #     logging.info(f"[{current_daily_date.isoformat()}] {stock_code}: {signal_info['signal']} 신호에 따라 강제 매매 실행")
-                                # 손절매가 활성화된 경우: 모든 분봉에서 RSI 매매 및 손절매 체크
-                                if has_stop_loss:
-                                    for minute_dt in minute_data_today.index:
-                                        if minute_dt.date() > end_date:
-                                            logging.info(f"[{current_daily_date.isoformat()}] 백테스트 종료일 {end_date}를 넘어섰습니다. 백테스트 종료.")
-                                            break
-                                        
-                                        self.minute_strategy.run_minute_logic(stock_code, minute_dt)
-                                        
-                                        if self.minute_strategy.signals.get(stock_code, {}).get('traded_today', False):
-                                            logging.debug(f"[{current_daily_date.isoformat()}] {stock_code}: 분봉 매매 완료 (traded_today=True), 다음 분봉 틱 건너뜁니다.")
-                                            break
+                                if not minute_data_today.empty:
+                                    logging.debug(f"[{current_daily_date.isoformat()}] {stock_code}: {len(minute_data_today)}개의 분봉 데이터로 매매 시도.")
+                                    
+                                    # 손절매가 활성화된 경우: 모든 분봉에서 RSI 매매 및 손절매 체크
+                                    if has_stop_loss:
+                                        for minute_dt in minute_data_today.index:
+                                            if minute_dt.date() > end_date:
+                                                logging.info(f"[{current_daily_date.isoformat()}] 백테스트 종료일 {end_date}를 넘어섰습니다. 백테스트 종료.")
+                                                break
+                                            
+                                            self.minute_strategy.run_minute_logic(stock_code, minute_dt)
+                                            
+                                            if self.minute_strategy.signals.get(stock_code, {}).get('traded_today', False):
+                                                logging.debug(f"[{current_daily_date.isoformat()}] {stock_code}: 분봉 매매 완료 (traded_today=True), 다음 분봉 틱 건너뜁니다.")
+                                                break
+                                else:
+                                    logging.warning(f"[{current_daily_date.isoformat()}] {stock_code}: 시그널({signal_info['signal']})이 있으나 현재 날짜의 분봉 데이터가 없어 매매를 시도할 수 없습니다.")
                             else:
-                                logging.warning(f"[{current_daily_date.isoformat()}] {stock_code}: 시그널({signal_info['signal']})이 있으나 현재 날짜의 분봉 데이터가 없어 매매를 시도할 수 없습니다.")
+                                logging.warning(f"[{current_daily_date.isoformat()}] {stock_code}: 시그널({signal_info['signal']})이 있으나 분봉 데이터가 로드되지 않았습니다.")
                         else:  # 'hold' 또는 None 시그널인 경우
                             logging.debug(f"[{current_daily_date.isoformat()}] {stock_code}: 시그널이 '{signal_info['signal']}'이므로 분봉 매매 로직을 건너뜁니다.")
             else:
                 logging.debug(f"분봉 전략이 설정되지 않아 분봉 로직을 건너뜁니다.")
-
 
             # 2. 오늘 일봉 데이터를 기반으로 '내일 실행할' 신호를 생성
             if self.daily_strategy:
