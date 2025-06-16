@@ -9,7 +9,7 @@ import os
 
 # --- 로거 설정 (스크립트 최상단에서 설정하여 항상 보이도록 함) ---
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO) # 테스트 시 DEBUG로 설정하여 모든 로그 출력
+logger.setLevel(logging.DEBUG) # 테스트 시 DEBUG로 설정하여 모든 로그 출력
 # sys.path에 프로젝트 루트 추가 (db_manager 및 creon_api 임포트를 위함)
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..')) 
 sys.path.insert(0, project_root)
@@ -158,7 +158,7 @@ class DataManager:
             
             api_fetched_dfs = []
             current_start = missing_dates[0]
-            current_end = current_start + timedelta(days=13)
+            current_end = missing_dates[-1] #current_start + timedelta(days=13)
             
             api_fetched_dfs.append(self._fetch_and_store_daily_range(stock_code, current_start, current_end, 'minute'))
 

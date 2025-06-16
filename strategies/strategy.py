@@ -2,7 +2,9 @@ import abc # Abstract Base Class
 import pandas as pd
 import datetime
 import logging
-
+# --- 로거 설정 (스크립트 최상단에서 설정하여 항상 보이도록 함) ---
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG) # 테스트 시 DEBUG로 설정하여 모든 로그 출력
 class BaseStrategy(abc.ABC):
     """모든 전략의 기반이 되는 추상 클래스."""
     def __init__(self, data_store, strategy_params, broker, position_info=None):

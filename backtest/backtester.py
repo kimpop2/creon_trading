@@ -9,6 +9,9 @@ from util.utils import calculate_performance_metrics, get_next_weekday
 from strategies.strategy import DailyStrategy, MinuteStrategy 
 from manager.db_manager import DBManager 
 from manager.data_manager import DataManager
+# --- 로거 설정 (스크립트 최상단에서 설정하여 항상 보이도록 함) ---
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG) # 테스트 시 DEBUG로 설정하여 모든 로그 출력
 class Backtester:
     def __init__(self, api_client, initial_cash):
         self.api_client = api_client
@@ -22,6 +25,8 @@ class Backtester:
 
         self.db_manager = DBManager() # DBManager 인스턴스 생성
         self.data_manager = DataManager() # DBManager 인스턴스 생성
+        self.pending_daily_signals = {} # 일봉 전략이 다음 날 실행을 위해 생성한 신호들을 저장
+
         logging.info(f"백테스터 초기화 완료. 초기 현금: {self.initial_cash:,.0f}원")
 
     def set_strategies(self, daily_strategy: DailyStrategy = None, minute_strategy: MinuteStrategy = None):
@@ -47,11 +52,11 @@ class Backtester:
 
     def set_broker_stop_loss_params(self, params):
         """Broker의 손절매 파라미터를 설정합니다."""
-        # if self.broker:
-        #     self.broker.set_stop_loss_params(params)
-        # else:
-        #     logging.warning("Broker가 초기화되지 않아 손절매 파라미터를 설정할 수 없습니다.")
-        pass
+        if self.broker:
+            self.broker.set_stop_loss_params(params)
+        else:
+            logging.warning("Broker가 초기화되지 않아 손절매 파라미터를 설정할 수 없습니다.")
+        
     
     def add_daily_data(self, stock_code, daily_df):
         """백테스터에 종목별 일봉 데이터를 추가합니다."""
@@ -83,42 +88,57 @@ class Backtester:
         logging.warning(f"{date.strftime('%Y-%m-%d')} 이후 {10}일 이내에 거래일을 찾을 수 없습니다.")
         return None
 
-    def _get_minute_data_for_signal_dates(self, stock_code, signal_date):
+    def _get_minute_data_for_signal_dates(self, stock_code, signal_date, execution_date): # Modified
         """
-        매수/매도 시그널이 발생한 날짜와 다음 거래일의 분봉 데이터를 조회합니다.
+        매수/매도 시그널이 발생한 날짜와 실행될 거래일의 분봉 데이터를 조회합니다.
         크레온 API 호출을 통해 데이터를 가져와 data_store에 저장하고 반환합니다.
         """
-        # 다음 거래일 찾기
-        next_trading_day = self.get_next_business_day(signal_date)
-        if next_trading_day is None:
-            logging.warning(f"{signal_date} 이후의 다음 거래일을 찾을 수 없습니다 - {stock_code}")
-            return pd.DataFrame()
-            
-        # 시그널 발생일과 다음 거래일의 분봉 데이터 로드
-        dates_to_load = [signal_date, next_trading_day]
+        # signal_date와 execution_date 모두의 분봉 데이터가 필요할 수 있으므로 포함
+        dates_to_load = sorted(list(set([signal_date, execution_date]))) 
         
         dfs_to_concat = []
         for date in dates_to_load:
-            #date_str = date
-            # 해당 날짜의 분봉 데이터가 이미 있는지 확인
             if stock_code in self.data_store['minute'] and date in self.data_store['minute'][stock_code]:
                 dfs_to_concat.append(self.data_store['minute'][stock_code][date])
                 continue
-            
-            # 해당 날짜가 거래일인지 확인
-            daily_df = self.data_store['daily'].get(stock_code)
-            if daily_df is not None and not daily_df.empty and pd.Timestamp(date).normalize() in daily_df.index:
-                #minute_df_day = self.api_client.get_minute_ohlcv(stock_code, date_str, date_str, interval=1)
-                minute_df_day = self.data_manager.cache_minute_ohlcv(stock_code, date, date, interval=1)
+        
+        if not dfs_to_concat:
+            minute_df_day = self.data_manager.cache_minute_ohlcv(stock_code, signal_date, execution_date, interval=1)
+            # minute_df_day에서 signal_date와 execution_date에 해당하는 데이터만 필터링
+            signal_date_data = minute_df_day.loc[minute_df_day.index.normalize() == pd.Timestamp(signal_date).normalize()]
+            execution_date_data = minute_df_day.loc[minute_df_day.index.normalize() == pd.Timestamp(execution_date).normalize()]
+
+            # 각 날짜별 데이터를 data_store에 저장
+            if not signal_date_data.empty:
+                if stock_code not in self.data_store['minute']:
+                    self.data_store['minute'][stock_code] = {}
+                self.data_store['minute'][stock_code][signal_date] = signal_date_data
+                logging.debug(f"{stock_code} 종목의 {signal_date} 분봉 데이터 로드 완료. 데이터 수: {len(signal_date_data)}행")
+
+            if not execution_date_data.empty:
+                if stock_code not in self.data_store['minute']:
+                    self.data_store['minute'][stock_code] = {}
+                self.data_store['minute'][stock_code][execution_date] = execution_date_data
+                logging.debug(f"{stock_code} 종목의 {execution_date} 분봉 데이터 로드 완료. 데이터 수: {len(execution_date_data)}행")
+
+            # 두 날짜의 데이터를 합쳐서 반환
+            if not signal_date_data.empty:
+                dfs_to_concat.append(signal_date_data)
+            if not execution_date_data.empty:
+                dfs_to_concat.append(execution_date_data)
+    
+            # daily_df = self.data_store['daily'].get(stock_code)
+            # if daily_df is not None and not daily_df.empty and pd.Timestamp(date).normalize() in daily_df.index:
+            #     minute_df_day = self.data_manager.cache_minute_ohlcv(stock_code, date, date, interval=1)
                 
-                if not minute_df_day.empty:
-                    if stock_code not in self.data_store['minute']:
-                        self.data_store['minute'][stock_code] = {}
-                    self.data_store['minute'][stock_code][date] = minute_df_day
-                    dfs_to_concat.append(minute_df_day)
-                    logging.info(f"{stock_code} 종목의 {date} 분봉 데이터 로드 완료. 데이터 수: {len(minute_df_day)}행")
-                else:
-                    logging.warning(f"{stock_code} 종목의 {date} 분봉 데이터가 없습니다 (거래일임에도 불구하고).")
+            #     if not minute_df_day.empty:
+            #         if stock_code not in self.data_store['minute']:
+            #             self.data_store['minute'][stock_code] = {}
+            #         self.data_store['minute'][stock_code][date] = minute_df_day
+            #         dfs_to_concat.append(minute_df_day)
+            #         logging.info(f"{stock_code} 종목의 {date} 분봉 데이터 로드 완료. 데이터 수: {len(minute_df_day)}행")
+            #     else:
+            #         logging.warning(f"{stock_code} 종목의 {date} 분봉 데이터가 없습니다 (거래일임에도 불구하고).")
         
         if dfs_to_concat:
             full_df = pd.concat(dfs_to_concat).sort_index()
@@ -172,58 +192,99 @@ class Backtester:
         
         # 일별 성능 데이터 저장을 위한 리스트
         performance_records = []
-
         # 백테스트 시작 시점의 포트폴리오 가치 (initial_cash)를 초기값으로 설정
         # MDD 및 수익률 계산의 기준점이 됩니다.
         previous_day_portfolio_value = self.initial_cash
 
-        for current_daily_date_full in daily_dates_to_process:
+        for i, current_daily_date_full in enumerate(daily_dates_to_process):
             current_daily_date = current_daily_date_full.date()
             logging.info(f"\n--- 처리 중인 날짜: {current_daily_date.isoformat()} ---")
 
-            # 매일 시작 시 모든 종목의 'traded_today' 플래그 초기화
-            if self.daily_strategy:
-                for stock_code in list(self.daily_strategy.signals.keys()):
-                    self.daily_strategy.signals[stock_code]['traded_today'] = False
+            # 1. 전날 일봉 전략에서 생성된 '오늘 실행할' 신호들을 처리 (분봉 로직)
+            if self.minute_strategy:
+                # 전날 생성된 pending_daily_signals를 현재 날짜의 실행 신호로 사용합니다.
+                signals_to_execute_today = self.pending_daily_signals.copy() 
+                self.pending_daily_signals = {} # 실행 후 초기화
 
-            # 일봉 전략 로직 실행
-            if self.daily_strategy:
-                self.daily_strategy.run_daily_logic(current_daily_date)
-            
-            # 분봉 전략에 최신 시그널 업데이트
-            if self.daily_strategy and self.minute_strategy:
-                self.minute_strategy.update_signals(self.daily_strategy.signals)
+                # 매수/매도 신호가 없고 stop_loss_params가 None이면 분봉 로직을 건너뜁니다.
+                has_trading_signals = any(signal_info['signal'] in ['buy', 'sell'] for signal_info in signals_to_execute_today.values())
+                has_stop_loss = self.broker.stop_loss_params is not None
 
-            # 매수/매도 시그널이 있는 종목들에 대해서만 분봉 데이터 처리
-            if self.daily_strategy and self.minute_strategy:
-                if not self.daily_strategy.signals:
-                    logging.debug(f"[{current_daily_date.isoformat()}] 일봉 전략에서 생성된 시그널이 없어 분봉 로직을 건너뜀.")
-                
-                for stock_code, signal_info in self.daily_strategy.signals.items():
-                    if signal_info.get('traded_today', False):
-                        continue
+                if not (has_trading_signals or has_stop_loss):
+                    logging.debug(f"[{current_daily_date.isoformat()}] 매수/매도 신호가 없고 손절매가 비활성화되어 있어 분봉 로직을 건너뜁니다.")
+                else:
+                    # 모든 시그널을 분봉 전략에 한 번에 업데이트
+                    self.minute_strategy.update_signals(signals_to_execute_today) 
+                    logging.debug(f"[{current_daily_date.isoformat()}] 분봉 전략에 {len(signals_to_execute_today)}개의 시그널 업데이트 완료.")
 
-                    if signal_info['signal'] in ['buy', 'sell']:
-                        signal_date = signal_info['signal_date']
-                        
-                        next_trading_day_for_signal = self.get_next_business_day(signal_date)
-                        if next_trading_day_for_signal and next_trading_day_for_signal == current_daily_date:
+                    for stock_code, signal_info in signals_to_execute_today.items():
+                        # 매수/매도 신호가 있거나 손절매가 활성화된 경우에만 분봉 데이터 로드
+                        if signal_info['signal'] in ['buy', 'sell'] or has_stop_loss:
+                            # 매도 신호인데 현재 포지션이 없으면 건너뜁니다.
                             if signal_info['signal'] == 'sell' and self.broker.get_position_size(stock_code) <= 0:
+                                logging.debug(f"[{current_daily_date.isoformat()}] {stock_code}: 매도 신호가 있지만 보유 포지션이 없어 건너뜁니다.")
                                 continue
 
-                            minute_data = self._get_minute_data_for_signal_dates(stock_code, signal_date) 
-                            if not minute_data.empty:
-                                minute_data_today = minute_data.loc[minute_data.index.normalize() == pd.Timestamp(current_daily_date).normalize()]
-                                for minute_dt in minute_data_today.index:
-                                    if minute_dt.date() > end_date: 
-                                        break
-                                    self.minute_strategy.run_minute_logic(stock_code, minute_dt)
-                                    if self.daily_strategy.signals[stock_code]['traded_today']:
-                                        break
-                            else:
-                                logging.warning(f"[{current_daily_date.isoformat()}] {stock_code}: 시그널({signal_info['signal']})이 있으나 분봉 데이터가 없어 매매를 시도할 수 없습니다.")
+                            # 해당 종목의 분봉 데이터 로드
+                            minute_data_for_execution = self._get_minute_data_for_signal_dates(
+                                stock_code, signal_info['signal_date'], current_daily_date
+                            )
+                            
+                            # 현재 날짜의 분봉 데이터만 필터링
+                            minute_data_today = minute_data_for_execution.loc[
+                                minute_data_for_execution.index.normalize() == pd.Timestamp(current_daily_date).normalize()
+                            ]
 
-            # 일별 종료 시 포트폴리오 가치 계산 및 기록
+                            if not minute_data_today.empty:
+                                logging.debug(f"[{current_daily_date.isoformat()}] {stock_code}: {len(minute_data_today)}개의 분봉 데이터로 매매 시도.")
+                                
+                                # # 매수/매도 신호가 있는 경우: 다음 영업일 첫 분봉에서 강제 매매 실행
+                                # if signal_info['signal'] in ['buy', 'sell']:
+                                #     first_minute = minute_data_today.index[0]
+                                #     if signal_info['signal'] == 'buy':
+                                #         self.minute_strategy.force_buy(stock_code, first_minute)
+                                #     else:  # sell
+                                #         self.minute_strategy.force_sell(stock_code, first_minute)
+                                #     logging.info(f"[{current_daily_date.isoformat()}] {stock_code}: {signal_info['signal']} 신호에 따라 강제 매매 실행")
+                                # 손절매가 활성화된 경우: 모든 분봉에서 RSI 매매 및 손절매 체크
+                                if has_stop_loss:
+                                    for minute_dt in minute_data_today.index:
+                                        if minute_dt.date() > end_date:
+                                            logging.info(f"[{current_daily_date.isoformat()}] 백테스트 종료일 {end_date}를 넘어섰습니다. 백테스트 종료.")
+                                            break
+                                        
+                                        self.minute_strategy.run_minute_logic(stock_code, minute_dt)
+                                        
+                                        if self.minute_strategy.signals.get(stock_code, {}).get('traded_today', False):
+                                            logging.debug(f"[{current_daily_date.isoformat()}] {stock_code}: 분봉 매매 완료 (traded_today=True), 다음 분봉 틱 건너뜁니다.")
+                                            break
+                            else:
+                                logging.warning(f"[{current_daily_date.isoformat()}] {stock_code}: 시그널({signal_info['signal']})이 있으나 현재 날짜의 분봉 데이터가 없어 매매를 시도할 수 없습니다.")
+                        else:  # 'hold' 또는 None 시그널인 경우
+                            logging.debug(f"[{current_daily_date.isoformat()}] {stock_code}: 시그널이 '{signal_info['signal']}'이므로 분봉 매매 로직을 건너뜁니다.")
+            else:
+                logging.debug(f"분봉 전략이 설정되지 않아 분봉 로직을 건너뜁니다.")
+
+
+            # 2. 오늘 일봉 데이터를 기반으로 '내일 실행할' 신호를 생성
+            if self.daily_strategy:
+                # 매일 시작 시 모든 종목의 'traded_today' 플래그 초기화는 daily_strategy에서 이미 수행됩니다.
+                # run_daily_logic이 실행되면 self.daily_strategy.signals가 업데이트됩니다.
+                self.daily_strategy.run_daily_logic(current_daily_date)
+
+                # 생성된 신호 중 'buy' 또는 'sell' 신호를 pending_daily_signals에 저장
+                for stock_code, signal_info in self.daily_strategy.signals.items():
+                    if signal_info['signal'] in ['buy', 'sell', 'hold']: # 'hold'도 포함하여 다음 날에도 계속 감시할 수 있도록 합니다.
+                        self.pending_daily_signals[stock_code] = signal_info
+                        # 'traded_today' 플래그는 매일 초기화되므로 여기서 특별히 건드릴 필요는 없습니다.
+                        # 다음 날 이 신호가 사용될 때, 해당 플래그는 다시 False로 시작해야 합니다.
+                        self.pending_daily_signals[stock_code]['traded_today'] = False 
+                        # signal_date는 신호가 발생한 current_daily_date로 설정됩니다.
+                        self.pending_daily_signals[stock_code]['signal_date'] = current_daily_date
+
+
+            # 3. 일별 종료 시 포트폴리오 가치 계산 및 기록 (기존 로직 유지)
+            # ... (기존 포트폴리오 가치 계산 및 성능 지표 기록 로직)
             current_prices = {}
             for stock_code in self.data_store['daily']:
                 daily_bar = self.data_store['daily'][stock_code].loc[self.data_store['daily'][stock_code].index.normalize() == current_daily_date_full.normalize()]
@@ -240,16 +301,12 @@ class Backtester:
             portfolio_values.append(portfolio_value)
             dates.append(current_daily_date_full)
 
-            # --- 일일 성능 지표 계산 및 기록 ---
-            # 현재 날짜의 포트폴리오 가치를 기준으로 일일 손익 및 수익률 계산
-            # previous_day_portfolio_value는 루프 시작 전 initial_cash로 초기화되고, 매일 업데이트됩니다.
             daily_profit_loss = portfolio_value - previous_day_portfolio_value
             daily_return = daily_profit_loss / previous_day_portfolio_value if previous_day_portfolio_value != 0 else 0
 
-            # 누적 수익률과 낙폭 계산을 위해 현재까지의 portfolio_values를 사용하여 calculate_performance_metrics 호출
             current_portfolio_series = pd.Series(portfolio_values, index=dates)
             temp_metrics = calculate_performance_metrics(current_portfolio_series, risk_free_rate=0.03) 
-            
+
             performance_records.append({
                 'run_id': run_id,
                 'date': current_daily_date,
@@ -259,8 +316,7 @@ class Backtester:
                 'cumulative_return': temp_metrics['total_return'], 
                 'drawdown': temp_metrics['mdd'] 
             })
-            
-            # 다음 날 계산을 위해 현재 포트폴리오 가치를 저장
+
             previous_day_portfolio_value = portfolio_value
             # ----------------------------------
 

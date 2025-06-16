@@ -69,17 +69,13 @@ class TempletDaily(DailyStrategy):
             logging.debug(f'매도 신호 - {stock_code} (미보유): ')
 
     def run_daily_logic(self, current_daily_date): 
-        """주간 듀얼 모멘텀 로직을 실행하고 신호를 생성합니다.""" 
-        if current_daily_date.weekday() != self.strategy_params['rebalance_weekday']: 
-            return 
+        """모멘텀 로직을 실행하고 신호를 생성합니다.""" 
 
         logging.info(f'{current_daily_date.isoformat()} - --- 주간 모멘텀 로직 실행 중 ---') 
 
         # 1. 모멘텀 스코어 계산
         momentum_scores = {}
         for stock_code in self.data_store['daily']:
-            if stock_code == self.strategy_params['safe_asset_code']:
-                continue  # 안전자산은 모멘텀 계산에서 제외
 
             daily_df = self.data_store['daily'][stock_code]
             if daily_df.empty:

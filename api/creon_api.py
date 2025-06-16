@@ -11,7 +11,6 @@ from datetime import datetime, date, timedelta
 API_REQUEST_INTERVAL = 0.2
 
 # 로거 설정 (기존 설정 유지)
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 class CreonAPIClient:
@@ -286,6 +285,8 @@ class CreonAPIClient:
         df = self._get_price_data(code, 'D', from_date, to_date)
         # _get_price_data에서 이미 rename 처리
         # 빈 DataFrame일 경우에도 'open', 'high', 'low', 'close', 'volume' 컬럼이 보장됨
+        logger.debug(f"Creon API 일봉 {from_date}~{to_date} {len(df)}건 로드.")
+
         return df[['open', 'high', 'low', 'close', 'volume']] 
 
     def get_minute_ohlcv(self, code, from_date, to_date, interval=1):
@@ -293,8 +294,8 @@ class CreonAPIClient:
         df = self._get_price_data(code, 'm', from_date, to_date, interval)
         # _get_price_data에서 이미 rename 처리
         # 빈 DataFrame일 경우에도 'open', 'high', 'low', 'close', 'volume' 컬럼이 보장됨
+        logger.debug(f"Creon API {interval}분봉 {from_date}~{to_date} {len(df)}건 로드.")
         return df[['open', 'high', 'low', 'close', 'volume']]
-
 
     def get_all_trading_days_from_api(self, from_date: date, to_date: date, stock_code: str = 'A005930') -> list[date]:
         """
