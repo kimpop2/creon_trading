@@ -107,7 +107,7 @@ if __name__ == '__main__':
     
     # 추세전환
     backtest_start_date     = datetime.datetime(2025, 3, 1, 9, 0, 0).date()
-    backtest_end_date       = datetime.datetime(2025, 5, 31, 3, 30, 0).date()
+    backtest_end_date       = datetime.datetime(2025, 4, 1, 3, 30, 0).date()
     # 일봉 데이터 가져오기 시작일을 백테스트 시작일 한 달 전으로 자동 설정
     daily_data_fetch_start = (backtest_start_date - datetime.timedelta(days=30)).replace(day=1)
     
@@ -141,7 +141,7 @@ if __name__ == '__main__':
         strategy_params={
             'momentum_period': 15,         # 듀얼 모멘텀처럼 기간 설정이 필요하다면 추가
             'num_top_stocks': 7,           # 듀얼 모멘텀처럼 상위 N종목 설정
-             # 기타 TempletDaily에 전달하고 싶은 파라미터를 여기에 추가
+            'safe_asset_code': 'A439870', # 안전자산 코드
         },
         broker=backtester_instance.broker 
     )

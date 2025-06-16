@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np 
 
 from strategies.strategy import MinuteStrategy 
-from util.utils import calculate_momentum, calculate_rsi 
+from util.strategies_util import calculate_momentum, calculate_rsi 
 
 logger = logging.getLogger(__name__)
 

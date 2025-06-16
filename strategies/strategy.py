@@ -2,6 +2,7 @@ import abc # Abstract Base Class
 import pandas as pd
 import datetime
 import logging
+from util.strategies_util import *
 # --- 로거 설정 (스크립트 최상단에서 설정하여 항상 보이도록 함) ---
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG) # 테스트 시 DEBUG로 설정하여 모든 로그 출력
@@ -97,6 +98,48 @@ class DailyStrategy(BaseStrategy):
         """일봉 전략은 분봉 로직을 직접 수행하지 않으므로 이 메서드는 비워둡니다."""
         pass 
 
+    def _calculate_safe_asset_momentum(self, current_daily_date):
+        """안전자산의 모멘텀을 계산합니다."""
+        safe_asset_df = self.data_store['daily'].get(self.strategy_params['safe_asset_code'])
+        safe_asset_momentum = 0
+        if safe_asset_df is not None and not safe_asset_df.empty:
+            safe_asset_data = self._get_historical_data_up_to(
+                'daily',
+                self.strategy_params['safe_asset_code'],
+                current_daily_date,
+                lookback_period=self.strategy_params['momentum_period'] + 1
+            )
+            if len(safe_asset_data) >= self.strategy_params['momentum_period']:
+                safe_asset_momentum = calculate_momentum(safe_asset_data, self.strategy_params['momentum_period']).iloc[-1]
+        return safe_asset_momentum
+    
+    def _calculate_momentum_scores(self, current_daily_date):
+        """모든 종목의 모멘텀 스코어를 계산합니다."""
+        momentum_scores = {}
+        for stock_code in self.data_store['daily']:
+            if stock_code == self.strategy_params['safe_asset_code']:
+                continue  # 안전자산은 모멘텀 계산에서 제외
+
+            daily_df = self.data_store['daily'][stock_code]
+            if daily_df.empty:
+                continue
+
+            historical_data = self._get_historical_data_up_to(
+                'daily',
+                stock_code,
+                current_daily_date,
+                lookback_period=self.strategy_params['momentum_period'] + 1
+            )
+
+            if len(historical_data) < self.strategy_params['momentum_period']:
+                logging.debug(f'{stock_code} 종목의 모멘텀 계산을 위한 데이터가 부족합니다.')
+                continue
+
+            momentum_score = calculate_momentum(historical_data, self.strategy_params['momentum_period']).iloc[-1]
+            momentum_scores[stock_code] = momentum_score
+
+        return momentum_scores
+
     def _calculate_target_quantity(self, stock_code, current_price, num_stocks=None):
         """
         주어진 가격에서 동일비중 투자에 필요한 수량을 계산합니다.
@@ -183,7 +226,71 @@ class DailyStrategy(BaseStrategy):
         logging.info(f"현재 상태: 포트폴리오 가치 {portfolio_value:,.0f}원 = 보유종목 {len(current_holdings)}개 ({total_holdings_value:,.0f}원) + 현금 {self.broker.cash:,.0f}원")
         logging.info(f"매수 계획: {len(new_buys)}종목 (소요금액: {total_buy_amount:,.0f}원)")
         logging.info(f"매도 계획: {len(to_sell)}종목 (회수금액: {total_sell_amount:,.0f}원)")
+    def _initialize_signals_for_all_stocks(self): 
+        """모든 종목에 대한 시그널을 초기화합니다.""" 
+        for stock_code in self.data_store['daily']: 
+            if stock_code not in self.signals: 
+                self.signals[stock_code] = { 
+                    'signal': None, 
+                    'signal_date': None, 
+                    'traded_today': False, 
+                    'target_quantity': 0 
+                } 
 
+
+
+    def _select_buy_candidates(self, momentum_scores, safe_asset_momentum):
+        """모멘텀 스코어를 기반으로 매수 대상 종목을 선정합니다."""
+        sorted_stocks = sorted(momentum_scores.items(), key=lambda x: x[1], reverse=True)
+        buy_candidates = set()
+        
+        for rank, (stock_code, score) in enumerate(sorted_stocks, 1):
+            if rank <= self.strategy_params['num_top_stocks'] and score > safe_asset_momentum:
+                buy_candidates.add(stock_code)
+
+        return buy_candidates, sorted_stocks
+
+    def _generate_signals(self, current_daily_date, buy_candidates, sorted_stocks):
+        """매수/매도/홀딩 신호를 생성하고 업데이트합니다."""
+        current_positions = set(self.broker.positions.keys())
+
+        for stock_code, _ in sorted_stocks:
+            # 기본 정보 업데이트
+            self.signals[stock_code].update({
+                'signal_date': current_daily_date,
+                'traded_today': False
+            })
+
+            if stock_code in buy_candidates:
+                self._handle_buy_candidate(stock_code, current_daily_date, current_positions)
+            else:
+                self._handle_sell_candidate(stock_code, current_positions)
+
+        return current_positions
+
+    def _handle_buy_candidate(self, stock_code, current_daily_date, current_positions):
+        """매수 대상 종목에 대한 신호를 처리합니다."""
+        current_price_daily = self._get_historical_data_up_to('daily', stock_code, current_daily_date, lookback_period=1)['close'].iloc[-1]
+        target_quantity = self._calculate_target_quantity(stock_code, current_price_daily)
+
+        if target_quantity > 0:
+            if stock_code in current_positions:
+                self.signals[stock_code]['signal'] = 'hold'
+                logging.info(f'홀딩 신호 - {stock_code}: (기존 보유 종목)')
+            else:
+                self.signals[stock_code].update({
+                    'signal': 'buy',
+                    'target_quantity': target_quantity
+                })
+                logging.info(f'매수 신호 - {stock_code}: 목표수량 {target_quantity}주')
+
+    def _handle_sell_candidate(self, stock_code, current_positions):
+        """매도 대상 종목에 대한 신호를 처리합니다."""
+        self.signals[stock_code]['signal'] = 'sell'
+        if stock_code in current_positions:
+            logging.info(f'매도 신호 - {stock_code} (보유중): ')
+        else:
+            logging.debug(f'매도 신호 - {stock_code} (미보유): ')
 
 
 class MinuteStrategy(BaseStrategy):

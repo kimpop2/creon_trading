@@ -1,0 +1,15 @@
+# 기본 패키지
+pandas==1.4.2
+numpy==1.21.6
+matplotlib==3.7.5
+matplotlib-inline==0.1.7
+seaborn>=0.12.0  # 현재 설치되어 있지 않으므로 최신 안정 버전 지정
+
+# 테스트 관련 패키지
+pytest>=7.0.0
+pytest-cov>=4.0.0
+
+# 개발 도구
+black>=23.0.0
+flake8>=6.0.0
+mypy>=1.0.0 

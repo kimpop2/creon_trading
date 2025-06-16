@@ -5,7 +5,7 @@ import numpy as np
 import time
 
 from backtest.broker import Broker
-from util.utils import calculate_performance_metrics, get_next_weekday 
+from util.strategies_util import calculate_performance_metrics, get_next_weekday 
 from strategies.strategy import DailyStrategy, MinuteStrategy 
 from manager.db_manager import DBManager 
 from manager.data_manager import DataManager
@@ -380,8 +380,12 @@ class Backtester:
                 'realized_profit_loss': realized_profit_loss,
                 'entry_trade_id': entry_trade_id
             })
-        self.db_manager.save_backtest_trade(trade_records)
-        logging.info(f"{len(trade_records)}개의 거래 내역을 DB에 저장했습니다.")
+        # 거래 내역이 있을 때만 DB 저장 실행
+        if trade_records:
+            self.db_manager.save_backtest_trade(trade_records)
+            logging.info(f"{len(trade_records)}개의 거래 내역을 DB에 저장했습니다.")
+        else:
+            logging.info("저장할 거래 내역이 없습니다.")
         # --------------------------------------------------
 
         # --- 일별 성능 지표 (performance_records) DB에 저장 ---
