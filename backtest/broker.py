@@ -3,7 +3,7 @@ import logging
 from typing import Dict
 # --- 로거 설정 (스크립트 최상단에서 설정하여 항상 보이도록 함) ---
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG) # 테스트 시 DEBUG로 설정하여 모든 로그 출력
+# logger.setLevel(logging.DEBUG) # 테스트 시 DEBUG로 설정하여 모든 로그 출력 - 제거
 class Broker:
     def __init__(self, initial_cash, commission_rate=0.0003, slippage_rate=0.0):
         self.cash = initial_cash
@@ -211,3 +211,9 @@ class Broker:
             if self.positions[stock_code]['size'] > 0:
                 self.execute_order(stock_code, 'sell', current_prices[stock_code], 
                                  self.positions[stock_code]['size'], current_dt)
+
+    def reset_daily_transactions(self):
+        """일일 거래 초기화를 수행합니다. 현재는 빈 메서드로 두어 향후 확장 가능하도록 합니다."""
+        # 일일 거래 관련 상태를 초기화하는 로직이 필요할 때 여기에 추가
+        # 예: 일일 거래 횟수 제한, 일일 손실 한도 등
+        pass

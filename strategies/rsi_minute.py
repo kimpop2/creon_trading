@@ -122,7 +122,7 @@ class RSIMinute(MinuteStrategy):
 
         # 현재 시간의 분봉 데이터 가져오기 (한 번만 조회)
         minute_df = self._get_bar_at_time('minute', stock_code, current_dt)
-        if minute_df.empty:
+        if minute_df is None or minute_df.empty:
             return
         
         current_price = minute_df['close']

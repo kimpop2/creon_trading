@@ -8,45 +8,63 @@
 
 주요 특징과 구성요소를 설명드리겠습니다:
 # 프로그램 개요
-- 시작 파일명: run_daily_minute.py
-* 목적: 듀얼 모멘텀 + RSI 전략 백테스팅
+- 시작 파일명: run_backtest.py
+* 목적: 일봉 전략(듀얼 모멘텀, 모멘텀) + 분봉 전략(RSI 전략) 을  백테스팅
 
 ## 주요 구성요소:
 ### /api
 - CreonAPIClient: 크레온 API 연동
-### /backtest
-- Backtester: 백테스팅 엔진
-- Broker: 거래 실행 및 포트폴리오 관리
-- Repoter: 백테스팅 결과 분석/저장 (개발 예정)
+* 증권사 api - 현재 대신증권 creon api 사용 중
+
+### /selector (개발 중)
+- StockSelector : 종목 선정 (기본적+기술적 분석 만족하는 종목 선정)
+- ThemeSelector: 테마종목 선정 (현 시점의 주도테마와 주도주 선정)
+
 ### /strategies : 일봉/분봉전략->Backtester에 주입 (새로운 전략 개발 예정)
 - DualMomentumDaily: 일봉 기반 듀얼 모멘텀 전략
 - RSIMinute: 분봉 기반 RSI 전략
-- StockSelector : 종목 선정 (기본적+기술적 분석 만족하는 종목 선정)
-- ThemeSelector: 테마종목 선정 (현재 주도테마와 주도주 선정)
-- 종목선정 전략은 개발예정
+* 다수 일봉 기반 전략, 다수의 분분 기반 전략 개발 예정
+
+### /backtest
+- Backtester: 백테스팅 엔진 - /strategies 의 일봉 전략 과 분봉 전략을 주입 받아 백테스트
+- Broker: 거래 실행 및 포트폴리오 관리 -> Backtester 에 주입할 예정
+- Repoter( 개발 예정): 백테스팅 결과 분석/출력/DB 저장 
+
 ### /manager
 - DataManager: DB, api, 화면면 등 다양한 데이터 소스간에 데이터 처리
 - DBManager: MariaDB 테이블 단위 앱력/출력, 각종 조회
-- SetupManager: 각종 데이터 소스를 통한 초기 데이터 입력, 일일 데이터 셋업 (주로 과거데이터 수집용)
-* 증권사 api - 현재 대신증권 creon api 사용 중
+- SetupManager (개발 예정): 각종 데이터 소스를 통한 초기 데이터 입력, 일일 데이터 셋업 (주로 과거데이터 수집용)
+- FeedManager (개발 예정): 각종 데이터를 다양한 방법으로 수집하여 DB에 저장 (feeder 모듈과 관련)
+- UIManager (개발 예정): 응용프로그램 화면과 DB, 프로그램간의 데이터 교환
 * DB - 현재 MariaDB 사용 중
-* 크롤링 - 증권사 api에서 미제공하는 정보(수급 현황), 웹사이트를 크롤링하여 데이터 수집
-* OCR - 실시간 조회순위등 증권사 화면으로만 제공하는 기능, 화면 영역을 지정 OCR처리
-* UI - 사용자 화면을 통한 셋업데이터 
-- RealtimeManager: (개발 에정)
-* 실시간 api 를 통한 데이터(현재가, 호가, 순간체결) 관리
-- EventManager (개발 예정)
-* 외부 openapi 를 통한 이벤트성 데이터 (텔레그램, 뉴스 등) 관리
-### /ui
+* UI - pyQt5 사용 예정
+
+### /optimizer (개발 중) - 최적화
+- 장세(강세장/약세장/추세전환기)에 따른 전략별 파라미터 최적화
+- 일봉전략 분봉전략 조합 최적화 
+
+### /feeder (개발 예정) - 수집기 : 각종 데이터를 다양한 방법으로 수집
+- NewsFeeder : 증권사 API 연동해서 뉴스에 관련된 데이터 수집 (뉴스, 지표 신호)
+- TelegramFeeder : 텔레그램 채널들 에서 데이터 수집
+- RealtimeFeeder : 증권사 API 연동해서 실시간 구독 데이터 수집 (현재가, 호가, 체결)
+- CrawlingFeeder : 웹사이트의 페이지들을 크롤링 하여 데이터 수집
+- OCRFeeder : Win32com 을 이용해서 윈도우 어플리케이션 특정 창과 OCR할 영역을 스캔하여 의미있는 데이터 수집
+- AiFeeder : chatGpt, Gemini 등과 프롬프트를 통한 데이터 수집
+
+### /trader - 매매기 (개발 예정)
+- 자동매매 실행
+*/strategies Backtester 처럼 일봉 전략 과 분봉 전략을 주입 받아 자동매매 실행
+
+### /ui (개발예정)
 - 응용프로그램 화면구성
-### /trader (개발 예정)
-- 자동매매 관련 
+
 ### /analyzer (개발 예정)
 - 백테스팅, 자동매매결과 분석
 - 결과분석에는 통계, 머신러닝, AI api 사용
-### /test (개발 예정)
+
+### /tests 
 - 각 클래스 모듈 단위 테스트
-- 통합 테스트
+- 기능별 통합 테스트
 
 ## 전략 구성:
 a) 듀얼 모멘텀 전략 (DualMomentumDaily)

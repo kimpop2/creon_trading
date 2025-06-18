@@ -1,0 +1,487 @@
+
+
+주식 백테스팅 프로그램 상세 설계 문서
+0. 초록
+문제 제기: 기존 백테스팅 시스템은 특정 전략이나 데이터 구조에 강하게 결합되어 있어, 새로운 전략을 도입하거나 데이터 소스를 변경할 때마다 상당한 코드 수정이 필요했습니다. 이는 개발 및 테스트의 비효율성을 야기하며, 시스템의 유지보수를 어렵게 만드는 주요 원인이었습니다. 또한, 보고서 형식의 유연성 부족으로 다양한 분석 요구사항을 충족시키기 어려웠습니다.
+개발 이유: 이러한 문제점을 해결하고, 금융 시장의 변화에 유연하게 대응하며, 다양한 매매 전략을 신속하게 검증할 수 있는 확장 가능한 백테스팅 환경을 구축하고자 본 프로젝트를 시작하였습니다. 모듈화된 설계를 통해 각 컴포넌트의 독립성을 확보하고, 의존성 주입 패턴을 통해 컴포넌트 간의 결합도를 낮추는 것을 목표로 합니다.
+개발 요약: 본 백테스팅 프로그램은 Backtester, Broker, DataManager, Reporter, StockSelector 등 핵심 기능을 담당하는 컴포넌트들을 명확히 분리한 아키텍처를 채택하였습니다. CreonAPIClient를 통해 데이터를 수집하며, 일봉 및 분봉 단위의 전략 실행을 지원합니다. 모든 컴포넌트는 추상 클래스를 기반으로 하여 확장성을 극대화했으며, 백테스팅 결과는 데이터베이스에 체계적으로 저장되어 상세 분석이 가능합니다.
+
+백테스팅 프로그램 상세 설계 문서
+1. 프로젝트 개요
+본 문서는 주식 시장 백테스팅 프로그램의 상세 설계를 다룹니다. 이 프로그램은 크레온 API를 통해 데이터를 수집하고 MariaDB에 저장하며, 듀얼 모멘텀 일봉 전략과 RSI 분봉 매매 전략을 결합하여 과거 데이터를 기반으로 투자 전략의 성능을 시뮬레이션하고 최적화하는 것을 목표로 합니다. 시스템은 모듈화된 구조를 통해 유연성과 확장성을 확보하며, Optimizer 모듈을 통해 최적의 전략 파라미터를 탐색합니다.
+
+2. 사용자 요구사항
+2.1 핵심 기능 (Functional Requirements)
+백테스팅 실행 엔진:
+지정된 과거 기간 동안 일봉 및 분봉 데이터를 기반으로 백테스팅을 실행합니다.
+초기 자금, 보유 포지션, 현금 잔고, 거래 내역을 정확하게 관리하고 시뮬레이션합니다.
+포트폴리오 가치 및 다양한 성능 지표(예: CAGR, MDD)를 계산하고 추적합니다.
+전략 구현:
+일봉 데이터를 활용하는 '일봉 전략'(DailyStrategy 계열, 예: 듀얼 모멘텀)을 구현하고 적용할 수 있어야 합니다.
+분봉 데이터를 활용하여 매매 시점을 정교하게 결정하는 '분봉 전략'(MinuteStrategy 계열, 예: RSI)을 구현하고 적용할 수 있어야 합니다.
+새로운 일봉 및 분봉 전략을 쉽게 추가할 수 있도록 유연한 구조(추상 클래스 BaseStrategy)를 제공합니다.
+신호 및 주문 흐름:
+일봉 전략은 전반적인 매매 신호(매수/매도/홀딩 대상 종목)를 생성합니다.
+백테스터(Backtester)는 일봉 전략의 신호를 받아 분봉 전략(MinuteStrategy)으로 전달하는 중개자 역할을 수행합니다.
+분봉 전략은 전달받은 신호와 분봉 데이터를 바탕으로 구체적인 매매 추천(가격, 수량, 타입)을 생성합니다.
+백테스터는 분봉 전략의 매매 추천에 따라 브로커(Broker)를 통해 거래를 실행합니다.
+종목 선정:
+동적으로 백테스팅 대상 종목을 선정하는 StockSelector 모듈을 가집니다.
+StockSelector는 선정된 종목 코드 리스트만을 반환합니다.
+Backtester는 StockSelector가 반환한 종목 코드에 대해 DataManager를 통해 실제 일봉 OHLCV 데이터를 가져오는 책임을 가집니다.
+데이터 관리:
+역사적 OHLCV 데이터(일봉, 분봉)를 조회하고 관리합니다.
+데이터 획득을 위해 크레온 API를 활용합니다.
+데이터 및 백테스팅 결과 저장을 위해 MariaDB 데이터베이스를 사용합니다.
+데이터 조회 효율성을 위한 캐싱 기능을 포함합니다.
+거래 실행 시뮬레이션:
+매수/매도 주문 실행을 시뮬레이션하고, 수수료 및 슬리피지(slippage)를 반영합니다.
+포트폴리오 포지션을 관리하고 손익을 계산합니다.
+전략 최적화:
+별도의 Optimizer 모듈을 통해 전략 파라미터(종목 선정, 일봉 전략, 분봉 전략)의 최적 조합을 탐색합니다.
+Optimizer는 다양한 파라미터 조합으로 Backtester를 반복 실행하고 그 결과를 평가합니다.
+Backtester 자체에는 최적화 로직을 포함하지 않고, 주어진 파라미터로 백테스트만 실행합니다.
+결과 보고:
+백테스트 종료 후 상세한 보고서를 생성합니다.
+거래 내역 및 일별/최종 성능 지표를 데이터베이스에 저장합니다.
+Optimizer가 최적화 판단을 내릴 수 있도록 핵심 성능 지표를 제공합니다.
+2.2 비기능적 요구사항 및 설계 원칙 (Non-Functional Requirements / Design Principles)
+모듈성: 각 클래스가 명확한 단일 책임을 가지며, 역할이 분리되어야 합니다. (예: Backtester는 실행, StockSelector는 선정, Reporter는 보고, Optimizer는 최적화, Broker는 거래 실행).
+확장성: 새로운 전략, 종목 선정 방식, 또는 데이터 소스(장기적)를 쉽게 추가할 수 있는 유연한 구조를 지향합니다.
+중앙화된 브로커 상호작용: 모든 거래 관련 작업은 Backtester를 통해서만 Broker와 상호작용하여 제어의 일관성을 유지합니다.
+데이터 무결성 및 유효성 검사: 데이터 획득, 처리 및 저장 과정에서 데이터의 정확성과 신뢰성을 확보하기 위한 검증 로직이 필요합니다.
+로깅: 개발 및 운영 중 문제 진단과 상태 모니터링을 위한 상세한 로깅 시스템을 구축합니다.
+2.3 추후 업그레이드 고려사항
+설정 관리의 중앙화 (현재는 구조 변경에 집중, 차후 반영 예정).
+더욱 상세한 오류 처리 메커니즘 구축.
+데이터 시각화 및 고급 로깅 기능 강화.
+데이터 소스 추상화를 통한 타 증권사 API 연동 가능성 확보.
+3. 시스템 아키텍처 및 주요 모듈
+시스템은 다음의 주요 모듈들로 구성됩니다.
+
+메인 실행 모듈 (run_backtest.py): 시스템의 진입점 역할을 하며, 최적화 프로세스를 시작합니다.
+최적화 모듈 (Optimizer): 전략 파라미터를 탐색하고 Backtester를 오케스트레이션 합니다.
+백테스팅 엔진 (Backtester): 실제 백테스팅 로직을 실행하고, 다른 모듈들과의 상호작용을 조율합니다.
+데이터 관리 모듈 (DataManager, DBManager, CreonAPIClient): 데이터의 수집, 저장, 조회 및 캐싱을 담당합니다.
+전략 모듈 (BaseStrategy, DailyStrategy, MinuteStrategy 등): 다양한 투자 전략의 로직을 캡슐화합니다.
+거래 시뮬레이션 모듈 (Broker): 가상의 시장에서 주문을 실행하고 포트폴리오를 관리합니다.
+보고 모듈 (Reporter): 백테스팅 결과를 분석하고 저장하며, 성능 지표를 제공합니다.
+종목 선정 모듈 (StockSelector): 백테스팅 대상 종목을 동적으로 선정합니다.
+4. 클래스 설계
+4.1 클래스 관계도
+코드 스니펫
+
+classDiagram
+    direction LR
+
+    class run_backtest_py {
+        +main()
+    }
+    class Optimizer {
+        - backtester_template: Backtester
+        - data_manager: DataManager
+        - reporter: Reporter
+        - param_ranges: Dict
+        - optimization_goal: str
+        + __init__(Backtester, DataManager, Reporter, Dict, str)
+        + run_optimization() Dict
+    }
+    class Backtester {
+        - broker: Broker
+        - reporter: Reporter
+        - stock_selector: StockSelector
+        - data_manager: DataManager
+        - daily_strategy: DailyStrategy
+        - minute_strategy: MinuteStrategy
+        - initial_cash: float
+        - data_store: Dict
+        - pending_daily_signals: Dict
+        + __init__(Broker, Reporter, StockSelector, DataManager, float, DailyStrategy, MinuteStrategy)
+        + run_backtest(datetime.date, datetime.date, Dict) Dict
+    }
+    class StockSelector {
+        - data_manager: DataManager
+        - selection_params: Dict
+        + __init__(DataManager, Dict)
+        + select_stocks(datetime.date) List~str~
+    }
+    class DataManager {
+        - api_client: CreonAPIClient
+        - db_manager: DBManager
+        - cache: Dict
+        + __init__(CreonAPIClient, DBManager)
+        + cache_daily_ohlcv(str, datetime.date, datetime.date) pd.DataFrame
+        + cache_minute_ohlcv(str, datetime.date) pd.DataFrame
+        + get_stock_info(str) Dict
+    }
+    class DBManager {
+        - conn
+        + __init__(Dict)
+        + connect()
+        + fetch_data(str, Tuple) pd.DataFrame
+        + save_backtest_trade(List~Dict~)
+        + save_backtest_performance(List~Dict~)
+    }
+    class CreonAPIClient {
+        + get_daily_ohlcv(str, datetime.date, datetime.date) pd.DataFrame
+        + get_minute_ohlcv(str, datetime.date) pd.DataFrame
+    }
+    class BaseStrategy {
+        <<abstract>>
+        - data_store: Dict
+        - strategy_params: Dict
+        - signals: Dict
+        + __init__(Dict, Dict)
+        + run_daily_logic(datetime.date)
+        + run_minute_logic(str, datetime.datetime)
+    }
+    class DailyStrategy {
+        + run_daily_logic(datetime.date) Dict
+    }
+    class MinuteStrategy {
+        + update_signals(Dict)
+        + run_minute_logic(str, datetime.datetime) Dict
+    }
+    class Broker {
+        - cash: float
+        - positions: Dict
+        - transaction_log: List
+        + __init__(float, float, float)
+        + execute_order(str, str, float, int, datetime.datetime) bool
+        + get_current_portfolio_value(Dict~str, float~) float
+    }
+    class Reporter {
+        - db_manager: DBManager
+        + __init__(DBManager)
+        + generate_and_save_report(str, List, List)
+        + get_performance_metrics(List) Dict
+    }
+
+    run_backtest_py --> Optimizer : initiates
+    Optimizer "1" *-- "1" Backtester : composes/uses (template)
+    Backtester "1" *-- "1" Broker : composes
+    Backtester "1" *-- "1" Reporter : composes
+    Backtester "1" *-- "1" StockSelector : composes
+    Backtester "1" *-- "1" DataManager : composes
+    Backtester "1" *-- "1" DailyStrategy : composes
+    Backtester "1" *-- "1" MinuteStrategy : composes
+
+    StockSelector --> DataManager : uses
+    DataManager "1" *-- "1" CreonAPIClient : composes
+    DataManager "1" *-- "1" DBManager : composes
+    Reporter --> DBManager : uses
+
+    DailyStrategy --|> BaseStrategy : inherits
+    MinuteStrategy --|> BaseStrategy : inherits
+
+    Optimizer --> Reporter : receives results from
+4.2 각 클래스 상세 설계
+4.2.1 run_backtest.py (Main Execution Script)
+역할: 프로그램의 메인 진입점. 시스템의 핵심 컴포넌트를 초기화하고 Optimizer를 실행하여 백테스팅 프로세스를 시작합니다.
+주요 메서드:
+main(): 로깅 설정, CreonAPIClient, DataManager, DBManager, Broker, Reporter, StockSelector 및 전략 인스턴스 초기화, Optimizer 인스턴스 생성 및 run_optimization() 메서드 호출.
+4.2.2 Optimizer
+역할: 다양한 전략 및 종목 선정 파라미터 조합으로 Backtester를 반복 실행하여 최적의 성능을 보이는 조합을 탐색합니다.
+속성:
+backtester_template: Backtester: Backtester 인스턴스 또는 팩토리.
+data_manager: DataManager: 데이터 관리 인스턴스.
+reporter: Reporter: 결과 보고 인스턴스.
+param_ranges: Dict: 최적화할 파라미터 범위 정의.
+optimization_goal: str: 최적화 목표 지표 (예: 'CAGR', 'MDD').
+주요 메서드:
+__init__(backtester_template, data_manager, reporter, param_ranges, optimization_goal)
+run_optimization() -> Dict: 파라미터 조합 생성, 각 조합에 대해 Backtester 구성 및 실행, Reporter로부터 결과 지표 수신 및 평가, 최적 조합 반환.
+4.2.3 Backtester
+역할: 특정 파라미터 세트를 가지고 단일 백테스트를 실행하는 핵심 엔진. 모든 거래 실행 및 핵심 데이터 흐름을 조정하는 중앙 코디네이터.
+속성:
+broker: Broker: 브로커 인스턴스.
+reporter: Reporter: 리포터 인스턴스.
+stock_selector: StockSelector: 종목 선정기 인스턴스.
+data_manager: DataManager: 데이터 관리자 인스턴스.
+daily_strategy: DailyStrategy: 일봉 전략 인스턴스.
+minute_strategy: MinuteStrategy: 분봉 전략 인스턴스.
+initial_cash: float: 초기 현금.
+data_store: Dict[str, Dict[str, pd.DataFrame]]: 'daily', 'minute' 데이터 저장소.
+pending_daily_signals: Dict: 일봉 전략이 다음 날 실행을 위해 생성한 신호 임시 저장.
+주요 메서드:
+__init__(broker, reporter, stock_selector, data_manager, initial_cash, daily_strategy, minute_strategy)
+run_backtest(start_date: datetime.date, end_date: datetime.date, selection_params: Dict) -> Dict: 백테스팅 기간 루프, 종목 선정 (stock_selector.select_stocks), 일봉/분봉 데이터 로드 (data_manager.cache_daily/minute_ohlcv), 전략 실행 (daily_strategy.run_daily_logic, minute_strategy.run_minute_logic), 주문 실행 (broker.execute_order), 결과 보고 (reporter.generate_and_save_report).
+4.2.4 StockSelector
+역할: 백테스팅 날짜 및 선정 기준 파라미터를 기반으로 대상 종목 코드 리스트만 선정하여 반환.
+속성:
+data_manager: DataManager: 데이터 관리 인스턴스.
+selection_params: Dict: 선정 기준 파라미터.
+주요 메서드:
+__init__(data_manager, selection_params)
+select_stocks(current_date: datetime.date) -> List[str]: data_manager를 통해 데이터 조회, 선정 로직 수행, 선정된 종목 코드 리스트 반환.
+4.2.5 DataManager
+역할: CreonAPIClient 및 DBManager를 통해 주식 시세(OHLCV) 데이터, 종목 정보 등을 조회하고 캐싱합니다.
+속성:
+api_client: CreonAPIClient: 크레온 API 클라이언트 인스턴스.
+db_manager: DBManager: DB 관리자 인스턴스.
+cache: Dict: 데이터 캐시.
+주요 메서드:
+__init__(api_client, db_manager)
+cache_daily_ohlcv(stock_code, start_date, end_date) -> pd.DataFrame
+cache_minute_ohlcv(stock_code, date) -> pd.DataFrame
+get_stock_info(stock_code) -> Dict
+get_financial_data(stock_code, year) -> Dict
+4.2.6 DBManager
+역할: MariaDB 데이터베이스와 연동하여 데이터 조회 및 저장 기능을 제공합니다.
+속성:
+conn: 데이터베이스 연결 객체.
+주요 메서드:
+__init__(db_config: Dict)
+connect() / disconnect()
+fetch_data(query, params) -> pd.DataFrame
+save_backtest_trade(trade_records: List[Dict])
+save_backtest_performance(performance_records: List[Dict])
+save_daily_ohlcv(stock_code, df)
+save_minute_ohlcv(stock_code, df)
+4.2.7 CreonAPIClient
+역할: 실제 크레온 API와 통신하여 실시간/과거 주식 데이터를 조회합니다.
+주요 메서드:
+get_daily_ohlcv(stock_code, start_date, end_date) -> pd.DataFrame
+get_minute_ohlcv(stock_code, date) -> pd.DataFrame
+get_stock_code(stock_name) -> str
+get_current_price(stock_code) -> float
+4.2.8 BaseStrategy (추상 클래스)
+역할: 모든 전략의 기반이 되는 추상 클래스. 공통 속성 및 추상 메서드를 정의합니다.
+속성:
+data_store: Dict: Backtester로부터 전달받는 데이터 참조.
+strategy_params: Dict: 현재 전략의 파라미터.
+signals: Dict: 생성된 신호 저장.
+주요 추상 메서드:
+run_daily_logic(current_date: datetime.date)
+run_minute_logic(stock_code: str, current_minute_dt: datetime.datetime)
+4.2.9 DailyStrategy (예: DualMomentumDaily)
+역할: 일봉 데이터를 기반으로 광범위한 시장/종목 분석을 통해 매매 신호를 생성.
+상속: BaseStrategy
+주요 메서드:
+__init__(data_store, strategy_params)
+run_daily_logic(current_date: datetime.date) -> Dict: 매매 신호 딕셔너리 반환 ({stock_code: {'signal': 'buy/sell/hold', 'target_quantity': X}})
+4.2.10 MinuteStrategy (예: RSIMinute)
+역할: DailyStrategy에서 전달된 신호와 분봉 데이터를 기반으로 정확한 매매 시점을 포착하고 구체적인 매매 추천을 생성.
+상속: BaseStrategy
+주요 메서드:
+__init__(data_store, strategy_params)
+update_signals(signals: Dict): Backtester로부터 일봉 신호를 업데이트 받음.
+run_minute_logic(stock_code: str, current_minute_dt: datetime.datetime) -> Dict: 매매 추천 딕셔너리 반환 ({'type': 'buy/sell', 'stock_code': X, 'price': Y, 'quantity': Z})
+4.2.11 Broker
+역할: 실제 매매 주문을 시뮬레이션하고, 현금 잔고, 보유 포지션, 거래 내역을 관리합니다.
+속성:
+cash: float: 현재 현금 잔고.
+positions: Dict: 보유 종목 포지션.
+transaction_log: List: 모든 거래 기록.
+commission_rate: float: 수수료율.
+slippage_rate: float: 슬리피지율.
+주요 메서드:
+__init__(initial_cash, commission_rate, slippage_rate)
+execute_order(stock_code, order_type, price, quantity, dt) -> bool: 주문 실행.
+get_current_portfolio_value(current_prices) -> float: 현재 포트폴리오 가치 계산.
+get_positions() -> Dict: 현재 보유 포지션 반환.
+4.2.12 Reporter
+역할: Backtester로부터 백테스팅의 최종 결과(거래 로그, 포트폴리오 가치, 성능 지표 등)를 받아 분석, 시각화, 그리고 DBManager를 통한 저장을 전담합니다.
+속성:
+db_manager: DBManager: DB 관리자 인스턴스.
+주요 메서드:
+__init__(db_manager)
+generate_and_save_report(run_id, portfolio_values, transaction_log): 결과를 가공하여 DB에 저장.
+get_performance_metrics(portfolio_values) -> Dict: 성능 지표 계산 및 반환.
+export_report(format: str) (선택 사항): 보고서 내보내기.
+5. 데이터 흐름 (Data Flow Diagram - DFD)
+시스템 내 데이터의 입력, 출력, 저장, 그리고 각 프로세스(클래스/모듈) 간의 흐름을 나타냅니다.
+
+코드 스니펫
+
+graph TD
+    A[run_backtest.py] --> B(Optimizer)
+    B -- "파라미터 세트\n(전략, 선정 파라미터)" --> C(Backtester)
+    C -- "종목 선정 요청" --> D(StockSelector)
+    D -- "선정 종목 코드 리스트" --> C
+    C -- "일봉/분봉 데이터 요청" --> E(DataManager)
+    E -- "데이터 조회" --> F[CreonAPIClient]
+    E -- "데이터 조회/저장" --> G[DBManager]
+    D -- "데이터 조회" --> E
+    C -- "일봉 데이터 + 파라미터" --> H(DailyStrategy)
+    H -- "매매 신호" --> C
+    C -- "신호 + 분봉 데이터 + 파라미터" --> I(MinuteStrategy)
+    I -- "매매 추천" --> C
+    C -- "거래 실행 요청" --> J(Broker)
+    J -- "거래 실행 결과" --> C
+    C -- "백테스트 결과 데이터" --> K(Reporter)
+    K -- "결과 저장" --> G
+    K -- "결과 지표" --> B
+6. 핵심 시퀀스 다이어그램 (Key Sequence Diagram)
+Optimizer가 단일 백테스트를 실행하고 결과를 받는 주요 시퀀스를 보여줍니다.
+
+코드 스니펫
+
+sequenceDiagram
+    participant R as run_backtest.py
+    participant O as Optimizer
+    participant B as Backtester
+    participant SS as StockSelector
+    participant DM as DataManager
+    participant DBM as DBManager
+    participant CA as CreonAPIClient
+    participant DS as DailyStrategy
+    participant MS as MinuteStrategy
+    participant BR as Broker
+    participant RP as Reporter
+
+    R->>O: run_optimization()
+    activate O
+        loop for each parameter combination
+            O->>B: __init__(broker, reporter, selector, dm, initial_cash, daily_strategy, minute_strategy)
+            activate B
+            O->>B: run_backtest(start_date, end_date, selection_params)
+            activate B
+                B->>SS: select_stocks(current_date)
+                activate SS
+                    SS->>DM: get_financial_data()
+                    activate DM
+                    DM->>DBM: fetch_data()
+                    activate DBM
+                    DBM-->>DM: financial_data
+                    deactivate DBM
+                    DM-->>SS: financial_data
+                    deactivate DM
+                SS-->>B: selected_stock_codes
+                deactivate SS
+
+                B->>DM: cache_daily_ohlcv(stock_codes)
+                activate DM
+                DM->>CA: get_daily_ohlcv()
+                activate CA
+                CA-->>DM: daily_ohlcv_data
+                deactivate CA
+                DM->>DBM: save_daily_ohlcv()
+                activate DBM
+                DBM-->>DM: saved_ack
+                deactivate DBM
+                DM-->>B: daily_ohlcv_data
+                deactivate DM
+
+                loop for each trading day
+                    B->>DS: run_daily_logic(current_date, daily_ohlcv_data, daily_strategy_params)
+                    activate DS
+                    DS-->>B: daily_signals
+                    deactivate DS
+
+                    B->>MS: update_signals(daily_signals)
+                    activate MS
+                    MS-->>B: update_ack
+                    deactivate MS
+
+                    B->>DM: cache_minute_ohlcv(stock_codes, current_date)
+                    activate DM
+                    DM->>CA: get_minute_ohlcv()
+                    activate CA
+                    CA-->>DM: minute_ohlcv_data
+                    deactivate CA
+                    DM->>DBM: save_minute_ohlcv()
+                    activate DBM
+                    DBM-->>DM: saved_ack
+                    deactivate DBM
+                    DM-->>B: minute_ohlcv_data
+                    deactivate DM
+
+                    loop for each minute bar
+                        B->>MS: run_minute_logic(stock_code, current_minute_dt, minute_ohlcv_data, minute_strategy_params)
+                        activate MS
+                        MS-->>B: trade_recommendation
+                        deactivate MS
+
+                        B->>BR: execute_order(trade_recommendation)
+                        activate BR
+                        BR-->>B: trade_result (success/fail, log)
+                        deactivate BR
+                    end
+                end
+
+                B->>RP: generate_and_save_report(run_id, portfolio_values, transaction_log)
+                activate RP
+                RP->>DBM: save_backtest_trade()
+                activate DBM
+                DBM-->>RP: saved_ack
+                deactivate DBM
+                RP->>DBM: save_backtest_performance()
+                activate DBM
+                DBM-->>RP: saved_ack
+                deactivate DBM
+                RP-->>B: report_status
+                deactivate RP
+            B-->>O: backtest_run_result
+            deactivate B
+        end
+        O->>RP: get_performance_metrics(run_id)
+        activate RP
+        RP-->>O: performance_metrics
+        deactivate RP
+    O-->>R: optimal_parameters
+    deactivate O
+7. 데이터베이스 스키마 (Conceptual)
+DBManager가 관리할 데이터베이스의 주요 테이블 및 내용은 다음과 같습니다. (이는 개념적인 스키마이며, 실제 구현 시 더 많은 필드가 포함될 수 있습니다.)
+
+daily_ohlcv_data (일봉 데이터):
+stock_code (VARCHAR)
+date (DATE)
+open_price (DECIMAL)
+high_price (DECIMAL)
+low_price (DECIMAL)
+close_price (DECIMAL)
+volume (BIGINT)
+minute_ohlcv_data (분봉 데이터):
+stock_code (VARCHAR)
+datetime (DATETIME)
+open_price (DECIMAL)
+high_price (DECIMAL)
+low_price (DECIMAL)
+close_price (DECIMAL)
+volume (BIGINT)
+stock_info (종목 정보):
+stock_code (VARCHAR)
+stock_name (VARCHAR)
+sector (VARCHAR)
+market_cap (BIGINT)
+... (기타 기본 정보)
+financial_data (재무 데이터):
+stock_code (VARCHAR)
+year (INT)
+revenue (BIGINT)
+net_profit (BIGINT)
+... (기타 재무 지표)
+backtest_runs (백테스트 실행 정보):
+run_id (VARCHAR, UUID 등)
+start_date (DATE)
+end_date (DATE)
+initial_cash (DECIMAL)
+optimization_params (JSON/TEXT, 사용된 전략 및 선정 파라미터 저장)
+run_datetime (DATETIME)
+backtest_trades (백테스트 거래 내역):
+trade_id (BIGINT, auto-increment)
+run_id (VARCHAR, backtest_runs 참조)
+stock_code (VARCHAR)
+trade_type (VARCHAR, 'buy'/'sell')
+trade_price (DECIMAL)
+trade_quantity (INT)
+trade_amount (DECIMAL)
+trade_datetime (DATETIME)
+commission (DECIMAL)
+realized_profit_loss (DECIMAL)
+entry_trade_id (BIGINT, 매도 시 매수 거래 참조)
+backtest_performance (백테스트 일별/최종 성능 지표):
+run_id (VARCHAR, backtest_runs 참조)
+date (DATE)
+portfolio_value (DECIMAL)
+daily_return (DECIMAL)
+cumulative_return (DECIMAL)
+MDD (DECIMAL) (최종 결과에 포함될 수 있음)
+... (기타 성능 지표)
+8. 향후 개선 방향
+중앙 설정 관리: 현재는 클래스 초기화 시 파라미터를 직접 전달하지만, 향후 YAML/JSON 파일 등을 통해 모든 설정(DB 연결, 전략 파라미터, 백테스트 기간 등)을 중앙에서 관리하여 유연성을 높입니다.
+오류 처리 강화: 데이터 획득 실패, API 연결 끊김, 비정상적인 데이터 등 다양한 예외 상황에 대한 견고한 오류 처리 로직을 구현합니다.
+시각화: Reporter 모듈에 백테스트 결과(수익률 곡선, MDD 등)를 시각화하는 기능을 추가하거나, 외부 라이브러리(Matplotlib, Plotly)와 연동하여 대시보드를 구축합니다.
+테스트 자동화: 단위 테스트 및 통합 테스트 코드를 작성하여 각 모듈과 전체 시스템의 안정성을 확보합니다.
+실시간 연동: 백테스팅 시스템을 기반으로 실시간 데이터를 받아 실제 거래를 수행하는 모듈(Feeder, Trader)로 확장하는 것을 고려합니다.

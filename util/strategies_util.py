@@ -31,11 +31,105 @@ def get_next_weekday(date, target_weekday):
     if days_ahead <= 0:  # Target day already happened this week
         days_ahead += 7
     return date + datetime.timedelta(days=days_ahead)
+
 def calculate_sma(data, period):
     """주어진 데이터프레임의 'close' 가격에 대한 단순 이동평균(SMA)을 계산합니다."""
     if 'close' not in data.columns:
         raise ValueError("데이터프레임에 'close' 컬럼이 없습니다.")
     return data['close'].rolling(window=period, min_periods=1).mean() # min_periods=1로 설정하여 초기에도 계산되도록 함
+
+def calculate_sma_incremental(historical_data, period, cache=None):
+    """
+    SMA를 누적 계산 방식으로 계산합니다.
+    캐시된 데이터를 활용하여 효율적으로 계산합니다.
+    
+    Args:
+        historical_data: 가격 데이터 (DataFrame with 'close' column)
+        period: 이동평균 기간
+        cache: 이전 계산 결과 캐시 (dict)
+    
+    Returns:
+        tuple: (sma_value, updated_cache)
+    """
+    if len(historical_data) < period:
+        return None, cache
+    
+    # 캐시된 SMA 값이 있고, 새로운 데이터가 1개만 추가된 경우
+    if (cache is not None and 
+        'sma' in cache and 
+        'prices' in cache and
+        len(historical_data) == len(cache['prices']) + 1):
+        
+        old_sma = cache['sma']
+        new_price = historical_data['close'].iloc[-1]
+        
+        # 누적 계산: 새로운 SMA = (기존 SMA * (period-1) + 새로운 가격) / period
+        new_sma = (old_sma * (period - 1) + new_price) / period
+        
+        # 캐시 업데이트
+        updated_cache = {
+            'sma': new_sma,
+            'prices': historical_data['close'].values
+        }
+        
+        return new_sma, updated_cache
+    
+    # 전체 SMA 계산 (캐시가 없는 경우)
+    sma_value = historical_data['close'].rolling(window=period, min_periods=1).mean().iloc[-1]
+    
+    # 캐시 초기화
+    updated_cache = {
+        'sma': sma_value,
+        'prices': historical_data['close'].values
+    }
+    
+    return sma_value, updated_cache
+
+def calculate_volume_ma_incremental(historical_data, period, cache=None):
+    """
+    거래량 이동평균을 누적 계산 방식으로 계산합니다.
+    
+    Args:
+        historical_data: 거래량 데이터 (DataFrame with 'volume' column)
+        period: 이동평균 기간
+        cache: 이전 계산 결과 캐시 (dict)
+    
+    Returns:
+        tuple: (volume_ma_value, updated_cache)
+    """
+    if len(historical_data) < period:
+        return None, cache
+    
+    # 캐시된 거래량 MA 값이 있고, 새로운 데이터가 1개만 추가된 경우
+    if (cache is not None and 
+        'volume_ma' in cache and 
+        'volumes' in cache and
+        len(historical_data) == len(cache['volumes']) + 1):
+        
+        old_volume_ma = cache['volume_ma']
+        new_volume = historical_data['volume'].iloc[-1]
+        
+        # 누적 계산
+        new_volume_ma = (old_volume_ma * (period - 1) + new_volume) / period
+        
+        # 캐시 업데이트
+        updated_cache = {
+            'volume_ma': new_volume_ma,
+            'volumes': historical_data['volume'].values
+        }
+        
+        return new_volume_ma, updated_cache
+    
+    # 전체 거래량 MA 계산 (캐시가 없는 경우)
+    volume_ma_value = historical_data['volume'].rolling(window=period, min_periods=1).mean().iloc[-1]
+    
+    # 캐시 초기화
+    updated_cache = {
+        'volume_ma': volume_ma_value,
+        'volumes': historical_data['volume'].values
+    }
+    
+    return volume_ma_value, updated_cache
 
 def calculate_performance_metrics(portfolio_values, risk_free_rate=0.03):
     """

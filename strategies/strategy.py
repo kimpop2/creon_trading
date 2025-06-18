@@ -5,7 +5,7 @@ import logging
 from util.strategies_util import *
 # --- 로거 설정 (스크립트 최상단에서 설정하여 항상 보이도록 함) ---
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG) # 테스트 시 DEBUG로 설정하여 모든 로그 출력
+# logger.setLevel(logging.DEBUG) # 테스트 시 DEBUG로 설정하여 모든 로그 출력 - 제거
 class BaseStrategy(abc.ABC):
     """모든 전략의 기반이 되는 추상 클래스."""
     def __init__(self, data_store, strategy_params, broker, position_info=None):
@@ -228,16 +228,25 @@ class DailyStrategy(BaseStrategy):
         logging.info(f"매도 계획: {len(to_sell)}종목 (회수금액: {total_sell_amount:,.0f}원)")
     def _initialize_signals_for_all_stocks(self): 
         """모든 종목에 대한 시그널을 초기화합니다.""" 
-        for stock_code in self.data_store['daily']: 
+        # data_store에 있는 종목들 초기화
+        for stock_code in self.data_store.get('daily', {}): 
             if stock_code not in self.signals: 
                 self.signals[stock_code] = { 
                     'signal': None, 
                     'signal_date': None, 
                     'traded_today': False, 
                     'target_quantity': 0 
-                } 
-
-
+                }
+        
+        # broker의 positions에 있는 종목들도 초기화
+        for stock_code in self.broker.positions.keys():
+            if stock_code not in self.signals:
+                self.signals[stock_code] = {
+                    'signal': None,
+                    'signal_date': None,
+                    'traded_today': False,
+                    'target_quantity': 0
+                }
 
     def _select_buy_candidates(self, momentum_scores, safe_asset_momentum):
         """모멘텀 스코어를 기반으로 매수 대상 종목을 선정합니다."""
@@ -255,6 +264,15 @@ class DailyStrategy(BaseStrategy):
         current_positions = set(self.broker.positions.keys())
 
         for stock_code, _ in sorted_stocks:
+            # 종목이 signals에 초기화되지 않았다면 초기화
+            if stock_code not in self.signals:
+                self.signals[stock_code] = {
+                    'signal': None,
+                    'signal_date': None,
+                    'traded_today': False,
+                    'target_quantity': 0
+                }
+            
             # 기본 정보 업데이트
             self.signals[stock_code].update({
                 'signal_date': current_daily_date,
@@ -270,6 +288,15 @@ class DailyStrategy(BaseStrategy):
 
     def _handle_buy_candidate(self, stock_code, current_daily_date, current_positions):
         """매수 대상 종목에 대한 신호를 처리합니다."""
+        # 종목이 signals에 초기화되지 않았다면 초기화
+        if stock_code not in self.signals:
+            self.signals[stock_code] = {
+                'signal': None,
+                'signal_date': None,
+                'traded_today': False,
+                'target_quantity': 0
+            }
+            
         current_price_daily = self._get_historical_data_up_to('daily', stock_code, current_daily_date, lookback_period=1)['close'].iloc[-1]
         target_quantity = self._calculate_target_quantity(stock_code, current_price_daily)
 
@@ -286,6 +313,15 @@ class DailyStrategy(BaseStrategy):
 
     def _handle_sell_candidate(self, stock_code, current_positions):
         """매도 대상 종목에 대한 신호를 처리합니다."""
+        # 종목이 signals에 초기화되지 않았다면 초기화
+        if stock_code not in self.signals:
+            self.signals[stock_code] = {
+                'signal': None,
+                'signal_date': None,
+                'traded_today': False,
+                'target_quantity': 0
+            }
+            
         self.signals[stock_code]['signal'] = 'sell'
         if stock_code in current_positions:
             logging.info(f'매도 신호 - {stock_code} (보유중): ')
