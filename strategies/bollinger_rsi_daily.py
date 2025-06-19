@@ -43,31 +43,35 @@ class BollingerRSIDaily(DailyStrategy):
                    f"BB표준편차={self.strategy_params['bb_std']}, "
                    f"RSI기간={self.strategy_params['rsi_period']}일")
     
-    def calculate_signals(self, current_date: datetime.date) -> Dict[str, Dict[str, Any]]:
-        """
-        볼린저 밴드 + RSI 신호 계산
-        """
-        signals = {}
-        
+    def run_daily_logic(self, current_date: datetime.date):
         try:
-            # 모든 종목에 대해 신호 계산
+            logger.info(f'[{current_date.isoformat()}] --- 볼린저+RSI 전략 실행 중 ---')
+            # 1. 모든 종목 신호 계산
+            signals = {}
             for stock_code in self.data_store['daily']:
                 if stock_code == self.strategy_params['safe_asset_code']:
                     continue
-                
                 signal = self._calculate_stock_signal(stock_code, current_date)
-                if signal:
+                if signal and signal['signal'] == 'buy':
                     signals[stock_code] = signal
-            
-            # 상위 신호만 선택
-            top_signals = self._select_top_signals(signals)
-            
-            logger.info(f"[{current_date}] 볼린저+RSI 신호 생성 완료: {len(top_signals)}개 종목")
-            
+            # 2. 상위 신호만 추출 (점수 기준 정렬)
+            sorted_signals = sorted(signals.items(), key=lambda x: x[1]['score'], reverse=True)
+            buy_candidates = set()
+            for i, (stock_code, signal) in enumerate(sorted_signals):
+                if i < self.strategy_params['num_top_stocks']:
+                    buy_candidates.add(stock_code)
+            sorted_stocks = [(code, signals[code]['score']) for code in buy_candidates]
+            if not buy_candidates:
+                logger.warning('매수 후보 종목이 없습니다.')
+                return
+            # 3. 신호 생성 및 업데이트 (부모 클래스 메서드 사용)
+            current_positions = self._generate_signals(current_date, buy_candidates, sorted_stocks)
+            # 4. 리밸런싱 계획 요약 로깅
+            self._log_rebalancing_summary(current_date, buy_candidates, current_positions)
         except Exception as e:
-            logger.error(f"볼린저+RSI 신호 계산 중 오류: {str(e)}")
-        
-        return top_signals
+            logger.error(f"볼린저+RSI 전략 실행 중 오류: {str(e)}")
+            import traceback
+            logger.error(f"상세 오류: {traceback.format_exc()}")
     
     def _calculate_stock_signal(self, stock_code: str, current_date: datetime.date) -> Dict[str, Any]:
         """개별 종목 신호 계산"""
@@ -250,36 +254,6 @@ class BollingerRSIDaily(DailyStrategy):
         score = (bb_score * 0.6 + rsi_score * 0.4) * volume_weight
         
         return score
-    
-    def _select_top_signals(self, signals: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-        """상위 신호 선택"""
-        if not signals:
-            return {}
-        
-        # 매수 신호만 필터링
-        buy_signals = {k: v for k, v in signals.items() if v['signal'] == 'buy'}
-        
-        if not buy_signals:
-            return {}
-        
-        # 점수 기준 정렬
-        sorted_signals = sorted(buy_signals.items(), key=lambda x: x[1]['score'], reverse=True)
-        
-        # 상위 N개 선택
-        num_top_stocks = self.strategy_params['num_top_stocks']
-        top_signals = dict(sorted_signals[:num_top_stocks])
-        
-        # 선택된 신호들의 정보 로깅
-        for i, (stock_code, signal) in enumerate(sorted_signals[:num_top_stocks]):
-            stock_name = self.broker.api_client.get_stock_name(stock_code)
-            indicators = signal['indicators']
-            logger.info(f"매수 신호 {i+1}: {stock_code} ({stock_name}) "
-                       f"(점수: {signal['score']:.2f}, "
-                       f"BB: {indicators['bb_position']:.2f}, "
-                       f"RSI: {indicators['rsi']:.1f}, "
-                       f"거래량: {indicators['volume_ratio']:.1f}배)")
-        
-        return top_signals
     
     def _get_current_price(self, stock_code: str, current_date: datetime.date) -> float:
         """현재가 조회"""

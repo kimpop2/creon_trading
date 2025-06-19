@@ -171,7 +171,7 @@ class RSIMinute(MinuteStrategy):
         # 개별 종목 손절 체크
         if current_position_size > 0:
             if self.broker.check_and_execute_stop_loss(stock_code, current_price, current_dt):
-                self.signals[stock_code]['traded_today'] = True
+                self.reset_signal(stock_code)
                 return
 
         # 매수/매도 로직 실행
@@ -181,19 +181,38 @@ class RSIMinute(MinuteStrategy):
                 if current_rsi_value <= self.strategy_params['minute_rsi_oversold']:
                     logging.info(f'[RSI 매수] {current_dt.isoformat()} - {stock_code} RSI: {current_rsi_value:.2f}, 가격: {current_price:,.0f}원, 수량: {target_quantity}주')
                     if self.broker.execute_order(stock_code, 'buy', current_price, target_quantity, current_dt):
-                        self.signals[stock_code]['traded_today'] = True
-                elif current_minutes == 15 * 60 + 20:  # 15:20
-                    logging.info(f'[강제 매수] {current_dt.isoformat()} - {stock_code} RSI: {current_rsi_value:.2f}, 가격: {current_price:,.0f}원, 수량: {target_quantity}주')
-                    if self.broker.execute_order(stock_code, 'buy', current_price, target_quantity, current_dt):
-                        self.signals[stock_code]['traded_today'] = True
+                        self.reset_signal(stock_code)
+                elif current_minutes == 15 * 60 + 5:  # 15:05
+                    # trailing_stop_ratio를 목표가격 허용범위로 활용
+                    target_price = self.signals[stock_code].get('target_price', current_price)
+                    
+                    if current_price <= target_price * (1 + self.broker.stop_loss_params['trailing_stop_ratio']):
+                        logging.info(f'[목표가격 강제매수] {current_dt.isoformat()} - {stock_code} 목표가: {target_price:,.0f}원, 현재가: {current_price:,.0f}원')
+                        target_quantity = self.signals[stock_code].get('target_quantity', 0)
+                        if target_quantity > 0 and self.broker.execute_order(stock_code, 'buy', current_price, target_quantity, current_dt):
+                            self.reset_signal(stock_code)
+                    else:
+                        # 프리미엄이 너무 크면 다음 기회로 연기
+                        logging.info(f'[매수 연기] {current_dt.isoformat()} - {stock_code} 목표가: {target_price:,.0f}원, 현재가: {current_price:,.0f}원 (프리미엄: {((current_price/target_price)-1)*100:.1f}%)')
 
         elif momentum_signal == 'sell' and current_position_size > 0:
             if current_rsi_value >= self.strategy_params['minute_rsi_overbought']:
                 logging.info(f'[RSI 매도] {current_dt.isoformat()} - {stock_code} RSI: {current_rsi_value:.2f}, 가격: {current_price:,.0f}원, 수량: {current_position_size}주')
                 if self.broker.execute_order(stock_code, 'sell', current_price, current_position_size, current_dt):
-                    self.signals[stock_code]['traded_today'] = True
-            elif current_minutes == 9 * 60 + 5:  # 9:05
+                    self.reset_signal(stock_code)
+            elif current_minutes == 9 * 60 + 30:  # 09:30
                 logging.info(f'[강제 매도] {current_dt.isoformat()} - {stock_code} RSI: {current_rsi_value:.2f}, 가격: {current_price:,.0f}원, 수량: {current_position_size}주')
                 if self.broker.execute_order(stock_code, 'sell', current_price, current_position_size, current_dt):
-                    self.signals[stock_code]['traded_today'] = True
+                    self.reset_signal(stock_code)
+            elif current_minutes == 15 * 60 + 5:  # 15:05
+                # trailing_stop_ratio를 목표가격 허용범위로 활용
+                target_price = self.signals[stock_code].get('target_price', current_price)
+                
+                if current_price >= target_price * (1 - self.broker.stop_loss_params['trailing_stop_ratio']):
+                    logging.info(f'[목표가격 강제매도] {current_dt.isoformat()} - {stock_code} 목표가: {target_price:,.0f}원, 현재가: {current_price:,.0f}원')
+                    if self.broker.execute_order(stock_code, 'sell', current_price, current_position_size, current_dt):
+                        self.reset_signal(stock_code)
+                else:
+                    # 손실이 너무 크면 다음 기회로 연기
+                    logging.info(f'[매도 연기] {current_dt.isoformat()} - {stock_code} 목표가: {target_price:,.0f}원, 현재가: {current_price:,.0f}원 (손실: {((current_price/target_price)-1)*100:.1f}%)')
 

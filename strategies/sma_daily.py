@@ -104,10 +104,8 @@ class SMADaily(DailyStrategy):
                 selected_buy_candidates.add(stock_code)
                 logging.info(f'매수 후보 {i+1}: {stock_code} (점수: {score:.2f})')
 
-        # 4. 신호 생성 및 업데이트 (부모 클래스의 _generate_signals 사용)
-        # 부모 클래스의 _generate_signals는 모든 종목에 대해 신호를 생성하므로,
-        # SMA 전략에 맞게 수정된 로직을 사용합니다.
-        current_positions = self._generate_sma_signals(current_daily_date, selected_buy_candidates, sma_signals)
+        # 4. 신호 생성 및 업데이트 (부모 클래스 메서드 사용)
+        current_positions = self._generate_signals(current_daily_date, selected_buy_candidates, buy_candidates)
 
         # 5. 리밸런싱 계획 요약 로깅
         self._log_rebalancing_summary(current_daily_date, selected_buy_candidates, current_positions)
@@ -203,52 +201,4 @@ class SMADaily(DailyStrategy):
             
         except Exception as e:
             logging.error(f'{stock_code} SMA 신호 계산 중 오류: {str(e)}')
-            return None
-
-    def _generate_sma_signals(self, current_daily_date, buy_candidates, sma_signals):
-        """SMA 전략에 맞는 매수/매도/홀딩 신호를 생성하고 업데이트합니다."""
-        current_positions = set(self.broker.positions.keys())
-        
-        # 신호를 생성할 종목들: 매수/매도 신호가 있는 종목 + 현재 보유 중인 종목
-        stocks_to_process = set()
-        
-        # 매수/매도 신호가 있는 종목들 추가
-        stocks_to_process.update(buy_candidates)
-        stocks_to_process.update([
-            stock_code for stock_code, signal_info in sma_signals.items() 
-            if signal_info['signal'] == 'sell'
-        ])
-        
-        # 현재 보유 중인 종목들 추가 (홀딩 신호 생성용)
-        stocks_to_process.update(current_positions)
-
-        # 필요한 종목들에 대해서만 신호 처리
-        for stock_code in stocks_to_process:
-            if stock_code == self.strategy_params.get('safe_asset_code'):
-                continue
-                
-            # 종목이 signals에 초기화되지 않았다면 초기화
-            if stock_code not in self.signals:
-                self.signals[stock_code] = {
-                    'signal': None,
-                    'signal_date': None,
-                    'traded_today': False,
-                    'target_quantity': 0
-                }
-            
-            # 기본 정보 업데이트
-            self.signals[stock_code].update({
-                'signal_date': current_daily_date,
-                'traded_today': False
-            })
-
-            if stock_code in buy_candidates:
-                self._handle_buy_candidate(stock_code, current_daily_date, current_positions)
-            elif stock_code in sma_signals and sma_signals[stock_code]['signal'] == 'sell':
-                self._handle_sell_candidate(stock_code, current_positions)
-            elif stock_code in current_positions:
-                # 현재 보유 중인 종목이지만 매수/매도 신호가 없는 경우 홀딩
-                self.signals[stock_code]['signal'] = 'hold'
-                logging.debug(f'홀딩 신호 - {stock_code}: (기존 보유 종목, 추가 신호 없음)')
-
-        return current_positions 
+            return None 

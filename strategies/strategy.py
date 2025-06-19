@@ -155,34 +155,28 @@ class DailyStrategy(BaseStrategy):
         # 분배할 종목 수 결정
         if num_stocks is None:
             num_stocks = self.strategy_params.get('num_top_stocks', 1)
-        
-        # 목표 투자 금액 계산
-        target_amount = self.broker.cash / num_stocks
-        
-        # 현재 보유 현금 확인
+        # 포트폴리오 가치 기준 종목당 투자금 계산
+        # 현재가 정보 수집 (일봉 데이터 기준)
+        current_prices_for_summary = {}
+        for code in self.data_store['daily']:
+            daily_data = self._get_historical_data_up_to('daily', code, pd.Timestamp.today(), lookback_period=1)
+            if not daily_data.empty:
+                current_prices_for_summary[code] = daily_data['close'].iloc[-1]
+        portfolio_value = self.broker.get_portfolio_value(current_prices_for_summary)
+        per_stock_investment = portfolio_value / num_stocks
         available_cash = self.broker.cash
-        
-        # 수수료를 고려한 실제 투자 가능 금액 계산
         commission_rate = self.broker.commission_rate
         max_buyable_amount = available_cash / (1 + commission_rate)
-        
-        # 목표 투자금액과 실제 투자 가능 금액 중 작은 값 선택
-        actual_investment_amount = min(target_amount, max_buyable_amount)
-        
-        # 주식 수량 계산 (소수점 이하 버림)
+        actual_investment_amount = min(per_stock_investment, max_buyable_amount)
         quantity = int(actual_investment_amount / current_price)
-        
         if quantity > 0:
-            # 실제 필요한 현금 (수수료 포함) 계산
             total_cost = current_price * quantity * (1 + commission_rate)
             if total_cost > available_cash:
-                # 수량을 1주 줄여서 재계산 (최소 거래 단위 1주이므로)
                 quantity -= 1
-        
         if quantity > 0:
-            logging.info(f"{stock_code} 종목 매수 수량 계산: {quantity}주 (목표금액: {target_amount:,.0f}원, 가용현금: {available_cash:,.0f}원, 현재가: {current_price:,.0f}원)")
+            logging.info(f"{stock_code} 종목 매수 수량 계산: {quantity}주 (종목당 투자금: {per_stock_investment:,.0f}원, 가용현금: {available_cash:,.0f}원, 현재가: {current_price:,.0f}원)")
         else:
-            logging.warning(f"{stock_code} 종목 매수 불가: 현금 부족 (목표금액: {target_amount:,.0f}원, 가용현금: {available_cash:,.0f}원, 현재가: {current_price:,.0f}원)")
+            logging.warning(f"{stock_code} 종목 매수 불가: 현금 부족 (종목당 투자금: {per_stock_investment:,.0f}원, 가용현금: {available_cash:,.0f}원, 현재가: {current_price:,.0f}원)")
         
         return quantity
 
@@ -223,9 +217,14 @@ class DailyStrategy(BaseStrategy):
 
         # 리밸런싱 계획 로깅
         logging.info("\n=== 리밸런싱 계획 요약 ===")
+        holding_codes = [code for code, _ in current_holdings]
         logging.info(f"현재 상태: 포트폴리오 가치 {portfolio_value:,.0f}원 = 보유종목 {len(current_holdings)}개 ({total_holdings_value:,.0f}원) + 현금 {self.broker.cash:,.0f}원")
-        logging.info(f"매수 계획: {len(new_buys)}종목 (소요금액: {total_buy_amount:,.0f}원)")
-        logging.info(f"매도 계획: {len(to_sell)}종목 (회수금액: {total_sell_amount:,.0f}원)")
+        if holding_codes:
+            logging.info(f"보유종목: {holding_codes}")
+        buy_codes = [code for code, _ in new_buys]
+        sell_codes = [code for code, _ in to_sell]
+        logging.info(f"매수 계획: {len(new_buys)}종목 {buy_codes} (소요금액: {total_buy_amount:,.0f}원)")
+        logging.info(f"매도 계획: {len(to_sell)}종목 {sell_codes} (회수금액: {total_sell_amount:,.0f}원)")
     def _initialize_signals_for_all_stocks(self): 
         """모든 종목에 대한 시그널을 초기화합니다.""" 
         # data_store에 있는 종목들 초기화
@@ -236,8 +235,8 @@ class DailyStrategy(BaseStrategy):
                     'signal_date': None, 
                     'traded_today': False, 
                     'target_quantity': 0 
-                }
-        
+                } 
+
         # broker의 positions에 있는 종목들도 초기화
         for stock_code in self.broker.positions.keys():
             if stock_code not in self.signals:
@@ -307,9 +306,10 @@ class DailyStrategy(BaseStrategy):
             else:
                 self.signals[stock_code].update({
                     'signal': 'buy',
-                    'target_quantity': target_quantity
+                    'target_quantity': target_quantity,
+                    'target_price': current_price_daily  # 목표가격 추가
                 })
-                logging.info(f'매수 신호 - {stock_code}: 목표수량 {target_quantity}주')
+                logging.info(f'매수 신호 - {stock_code}: 목표수량 {target_quantity}주, 목표가격 {current_price_daily:,.0f}원')
 
     def _handle_sell_candidate(self, stock_code, current_positions):
         """매도 대상 종목에 대한 신호를 처리합니다."""
@@ -321,12 +321,19 @@ class DailyStrategy(BaseStrategy):
                 'traded_today': False,
                 'target_quantity': 0
             }
+        
+        # 현재가를 목표가격으로 설정
+        current_price_daily = self._get_historical_data_up_to('daily', stock_code, self.signals[stock_code].get('signal_date'), lookback_period=1)['close'].iloc[-1]
             
-        self.signals[stock_code]['signal'] = 'sell'
+        self.signals[stock_code].update({
+            'signal': 'sell',
+            'target_price': current_price_daily  # 목표가격 추가
+        })
+        
         if stock_code in current_positions:
-            logging.info(f'매도 신호 - {stock_code} (보유중): ')
+            logging.info(f'매도 신호 - {stock_code} (보유중): 목표가격 {current_price_daily:,.0f}원')
         else:
-            logging.debug(f'매도 신호 - {stock_code} (미보유): ')
+            logging.debug(f'매도 신호 - {stock_code} (미보유): 목표가격 {current_price_daily:,.0f}원')
 
 
 class MinuteStrategy(BaseStrategy):
@@ -345,4 +352,12 @@ class MinuteStrategy(BaseStrategy):
         예: RSI 기반의 실제 매수/매도 주문 실행
         """
         pass
+
+    def reset_signal(self, stock_code):
+        """매매 체결 후 신호 dict를 안전하게 초기화한다."""
+        if stock_code in self.signals:
+            self.signals[stock_code]['traded_today'] = True
+            self.signals[stock_code]['target_quantity'] = 0
+            self.signals[stock_code]['target_price'] = 0
+            self.signals[stock_code]['signal'] = None
 

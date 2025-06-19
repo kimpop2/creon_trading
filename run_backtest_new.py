@@ -1,7 +1,7 @@
 """
-파일명: run_daily_minute.py
-설명: 듀얼 모멘텀 + RSI 전략 백테스팅 (전략 패턴 적용)
-작성일: 2024-03-19 (업데이트: 2025-06-09)
+파일명: run_backtest_new.py
+설명: 삼중창 전략 백테스팅 (최적화된 파라미터 적용)
+작성일: 2024-03-19 (업데이트: 2025-06-18)
 """
 
 import datetime
@@ -19,14 +19,15 @@ from api.creon_api import CreonAPIClient
 from backtest.backtester import Backtester
 from backtest.broker import Broker
 from backtest.reporter import Reporter
+from strategies.triple_screen_daily import TripleScreenDaily
 from strategies.dual_momentum_daily import DualMomentumDaily
 from strategies.rsi_minute import RSIMinute
 from strategies.temp_daily import TempletDaily
 from strategies.sma_daily import SMADaily
+from strategies.open_minute import OpenMinute
 from manager.data_manager import DataManager
 from manager.db_manager import DBManager
 from selector.stock_selector import StockSelector
-from strategies.open_minute import OpenMinute
 from config.sector_config import sector_stocks  # 공통 설정 파일에서 import
 
 # --- 로깅 설정 ---
@@ -39,20 +40,11 @@ logging.basicConfig(level=logging.INFO,
                     ])
 
 if __name__ == '__main__':
-    logging.info("백테스트를 실행합니다.")
+    logging.info("삼중창 전략 백테스트를 실행합니다.")
 
-    # 백테스트 기간 설정
-    # 하락장 (최적화 기간과 동일)
-    # backtest_start_date     = datetime.datetime(2024, 12, 1, 9, 0, 0).date()
-    # backtest_end_date       = datetime.datetime(2025, 4, 1, 3, 30, 0).date()
-    
-    # 추세전환
-    # backtest_start_date     = datetime.datetime(2025, 2, 1, 9, 0, 0).date()
-    # backtest_end_date       = datetime.datetime(2025, 5, 1, 3, 30, 0).date()
-    
-    # 상승장
-    backtest_start_date     = datetime.datetime(2025, 5, 1, 9, 0, 0).date()
-    backtest_end_date       = datetime.datetime(2025, 6, 15, 3, 30, 0).date()
+    # 백테스트 기간 설정 (최적화 기간과 동일)
+    backtest_start_date     = datetime.datetime(2025, 1, 1, 9, 0, 0).date()
+    backtest_end_date       = datetime.datetime(2025, 4, 15, 3, 30, 0).date()
 
     # 일봉 데이터 가져오기 시작일을 백테스트 시작일 한 달 전으로 자동 설정
     daily_data_fetch_start = (backtest_start_date - datetime.timedelta(days=30)).replace(day=1)
@@ -77,14 +69,29 @@ if __name__ == '__main__':
         initial_cash=10_000_000
     )
 
+    # 삼중창 전략 설정 (기본 설정 + 거래비용 고려)
+    triple_screen_daily_strategy = TripleScreenDaily(
+        data_store=backtester_instance.data_store,
+        strategy_params={
+            'trend_ma_period': 20,          # 유지
+            'momentum_rsi_period': 22,      # 유지
+            'momentum_rsi_oversold': 35,    # 30 → 35 (매수 조건 더 보수적)
+            'momentum_rsi_overbought': 65,  # 70 → 65 (매도 조건 더 보수적)
+            'volume_ma_period': 19,         # 유지
+            'num_top_stocks': 3,            # 5 → 3 (집중 투자로 승률 향상)
+            'safe_asset_code': 'A439870',   # 안전자산 코드 (국고채 ETF)
+            'min_trend_strength': 0.02,     # 기본값: 0.02 (2% 추세)
+        },
+        broker=backtester_instance.broker
+    )
 
     # 듀얼 모멘텀 전략 설정 (DualMomentumDaily 인스턴스 생성 및 Backtester에 주입)
     dual_daily_strategy = DualMomentumDaily(
         data_store=backtester_instance.data_store,
         strategy_params={
-            'momentum_period': 15,         # 모멘텀 계산 기간 (거래일)
-            'rebalance_weekday': 1,        # 리밸런싱 요일 (0: 월요일, 4: 금요일)
-            'num_top_stocks': 7,           # 상위 N종목 선택
+            'momentum_period': 15,         # 최적화 결과: 15일
+            'rebalance_weekday': 0,        # 최적화 결과: 월요일 (0)
+            'num_top_stocks': 5,           # 최적화 결과: 5개
             'safe_asset_code': 'A439870',  # 안전자산 코드 (국고채 ETF)
         },
         broker=backtester_instance.broker
@@ -94,7 +101,7 @@ if __name__ == '__main__':
         data_store=backtester_instance.data_store,
         strategy_params={
             'momentum_period': 15,         # 듀얼 모멘텀처럼 기간 설정이 필요하다면 추가
-            'num_top_stocks': 7,           # 듀얼 모멘텀처럼 상위 N종목 설정
+            'num_top_stocks': 5,           # 최적화 결과: 5개
             'safe_asset_code': 'A439870', # 안전자산 코드
         },
         broker=backtester_instance.broker 
@@ -104,11 +111,20 @@ if __name__ == '__main__':
     sma_daily_strategy = SMADaily(
         data_store=backtester_instance.data_store,
         strategy_params={
-            'short_sma_period': 6,          # 최적화 결과: 6일
-            'long_sma_period': 15,          # 최적화 결과: 15일
-            'volume_ma_period': 8,          # 최적화 결과: 8일
-            'num_top_stocks': 7,            # 최적화 결과: 7개
+            'short_sma_period': 4,          # 최적화 결과: 4일
+            'long_sma_period': 10,          # 최적화 결과: 10일
+            'volume_ma_period': 6,          # 최적화 결과: 6일
+            'num_top_stocks': 5,            # 최적화 결과: 5개
             'safe_asset_code': 'A439870',   # 안전자산 코드
+        },
+        broker=backtester_instance.broker
+    )
+
+    # OpenMinute 분봉 전략 설정
+    open_minute_strategy = OpenMinute(
+        data_store=backtester_instance.data_store,
+        strategy_params={
+            'num_top_stocks': 3,            # 일봉 전략과 동일한 값으로 설정
         },
         broker=backtester_instance.broker
     )
@@ -119,26 +135,27 @@ if __name__ == '__main__':
         strategy_params={
             'minute_rsi_period': 52,        # 최적화 결과: 52분
             'minute_rsi_oversold': 34,      # 최적화 결과: 34
-            'minute_rsi_overbought': 74,    # 최적화 결과: 74
-            'num_top_stocks': 7,            # 일봉 전략과 동일한 값으로 설정
+            'minute_rsi_overbought': 70,    # 최적화 결과: 74
+            'num_top_stocks': 5,            # 일봉 전략과 동일한 값으로 설정
         },
         broker=backtester_instance.broker
     )
 
-    # 전략 설정 (SMA 일봉 + RSI 분봉 전략 사용)
+    # 전략 설정 (삼중창 일봉 + RSI 분봉 전략 사용)
+    #backtester_instance.set_strategies(daily_strategy=triple_screen_daily_strategy, minute_strategy=rsi_minute_strategy)
     #backtester_instance.set_strategies(daily_strategy=dual_daily_strategy, minute_strategy=rsi_minute_strategy)
     #backtester_instance.set_strategies(daily_strategy=temp_daily_strategy, minute_strategy=rsi_minute_strategy)
-    backtester_instance.set_strategies(daily_strategy=sma_daily_strategy, minute_strategy=rsi_minute_strategy)
+    #backtester_instance.set_strategies(daily_strategy=sma_daily_strategy, minute_strategy=rsi_minute_strategy)
+    backtester_instance.set_strategies(daily_strategy=sma_daily_strategy, minute_strategy=open_minute_strategy)
     
-    # Broker에 손절매 파라미터 설정 (최적화 결과 반영)
+    # Broker에 손절매 파라미터 설정 (기본 설정)
     stop_loss_params = {
-        'stop_loss_ratio': -3.7,         # 최적화 결과: -3.7%
-        'trailing_stop_ratio': -4.1,     # 최적화 결과: -4.1%
-        'portfolio_stop_loss': -3.7,     # 최적화 결과: -3.7%
-        'early_stop_loss': -3.7,         # 최적화 결과: -3.7%
-        'max_losing_positions': 5,       # 최적화 결과: 5개
+        'stop_loss_ratio': -5.0,         # 기본값: -5.0% (충분한 여유)
+        'trailing_stop_ratio': -3.0,     # 기본값: -3.0% (표준 트레일링)
+        'portfolio_stop_loss': -5.0,     # 기본값: -5.0% (포트폴리오 손절)
+        'early_stop_loss': -5.0,         # 기본값: -5.0% (조기 손절)
+        'max_losing_positions': 3,       # 기본값: 3개 (적당한 손실 허용)
     }
-    #stop_loss_params = None #손절하지 않기
     backtester_instance.set_broker_stop_loss_params(stop_loss_params)
     
     data_manager = DataManager()
@@ -148,7 +165,7 @@ if __name__ == '__main__':
 
     # 종목 코드 확인 및 일봉 데이터 로딩
     # 안전자산 코드도 미리 추가
-    safe_asset_code = dual_daily_strategy.strategy_params['safe_asset_code'] # 듀얼 모멘텀 전략의 안전자산 코드 사용
+    safe_asset_code = triple_screen_daily_strategy.strategy_params['safe_asset_code'] # 삼중창 전략의 안전자산 코드 사용
 
     logging.info(f"'안전자산' (코드: {safe_asset_code}) 안전자산 일봉 데이터 로딩 중... (기간: {daily_data_fetch_start.strftime('%Y%m%d')} ~ {backtest_end_date.strftime('%Y%m%d')})")
     daily_df = data_manager.cache_daily_ohlcv(safe_asset_code, daily_data_fetch_start, backtest_end_date)

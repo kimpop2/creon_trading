@@ -95,6 +95,26 @@ class GridSearchStrategy(OptimizationStrategy):
                         'safe_asset_code': ['A439870']
                     }
                 },
+                'dual_momentum_daily': {
+                    'parameter_ranges': {
+                        'momentum_period': [5, 10, 15, 20, 25, 30],
+                        'rebalance_weekday': [0, 1, 2, 3, 4],  # 월~금
+                        'num_top_stocks': [2, 3, 5, 7, 10],
+                        'safe_asset_code': ['A439870']
+                    }
+                },
+                'triple_screen_daily': {
+                    'parameter_ranges': {
+                        'trend_ma_period': [20, 30, 40, 50, 60],
+                        'momentum_rsi_period': [10, 14, 20, 25],
+                        'momentum_rsi_oversold': [20, 25, 30, 35],
+                        'momentum_rsi_overbought': [65, 70, 75, 80, 85],
+                        'volume_ma_period': [5, 10, 15, 20],
+                        'num_top_stocks': [3, 5, 7, 10],
+                        'min_trend_strength': [0.02, 0.03, 0.05, 0.08],
+                        'safe_asset_code': ['A439870']
+                    }
+                },
                 'rsi_daily': {
                     'parameter_ranges': {
                         'rsi_period': [14, 20, 30, 45, 60],
@@ -322,6 +342,64 @@ class GridSearchStrategy(OptimizationStrategy):
             
             ranges['safe_asset_code'] = full_ranges['safe_asset_code']
         
+        elif strategy_name == 'dual_momentum_daily':
+            # 듀얼모멘텀 전략 파라미터 축소
+            best_momentum = best_params['dual_momentum_params']['momentum_period']
+            ranges['momentum_period'] = self._get_narrowed_range(
+                best_momentum, full_ranges['momentum_period'], reduction_ratio
+            )
+            
+            best_weekday = best_params['dual_momentum_params']['rebalance_weekday']
+            ranges['rebalance_weekday'] = self._get_narrowed_range(
+                best_weekday, full_ranges['rebalance_weekday'], reduction_ratio
+            )
+            
+            best_stocks = best_params['dual_momentum_params']['num_top_stocks']
+            ranges['num_top_stocks'] = self._get_narrowed_range(
+                best_stocks, full_ranges['num_top_stocks'], reduction_ratio
+            )
+            
+            ranges['safe_asset_code'] = full_ranges['safe_asset_code']
+        
+        elif strategy_name == 'triple_screen_daily':
+            # 삼중창 전략 파라미터 축소
+            best_trend_ma = best_params['triple_screen_params']['trend_ma_period']
+            ranges['trend_ma_period'] = self._get_narrowed_range(
+                best_trend_ma, full_ranges['trend_ma_period'], reduction_ratio
+            )
+            
+            best_rsi_period = best_params['triple_screen_params']['momentum_rsi_period']
+            ranges['momentum_rsi_period'] = self._get_narrowed_range(
+                best_rsi_period, full_ranges['momentum_rsi_period'], reduction_ratio
+            )
+            
+            best_oversold = best_params['triple_screen_params']['momentum_rsi_oversold']
+            ranges['momentum_rsi_oversold'] = self._get_narrowed_range(
+                best_oversold, full_ranges['momentum_rsi_oversold'], reduction_ratio
+            )
+            
+            best_overbought = best_params['triple_screen_params']['momentum_rsi_overbought']
+            ranges['momentum_rsi_overbought'] = self._get_narrowed_range(
+                best_overbought, full_ranges['momentum_rsi_overbought'], reduction_ratio
+            )
+            
+            best_volume = best_params['triple_screen_params']['volume_ma_period']
+            ranges['volume_ma_period'] = self._get_narrowed_range(
+                best_volume, full_ranges['volume_ma_period'], reduction_ratio
+            )
+            
+            best_stocks = best_params['triple_screen_params']['num_top_stocks']
+            ranges['num_top_stocks'] = self._get_narrowed_range(
+                best_stocks, full_ranges['num_top_stocks'], reduction_ratio
+            )
+            
+            best_trend_strength = best_params['triple_screen_params']['min_trend_strength']
+            ranges['min_trend_strength'] = self._get_narrowed_range(
+                best_trend_strength, full_ranges['min_trend_strength'], reduction_ratio
+            )
+            
+            ranges['safe_asset_code'] = full_ranges['safe_asset_code']
+        
         return ranges
     
     def _narrow_minute_parameter_ranges(self, 
@@ -404,6 +482,10 @@ class GridSearchStrategy(OptimizationStrategy):
         # 일봉 전략별 파라미터 생성
         if daily_strategy_name == 'sma_daily':
             daily_combinations = self._generate_sma_combinations(daily_ranges)
+        elif daily_strategy_name == 'dual_momentum_daily':
+            daily_combinations = self._generate_dual_momentum_combinations(daily_ranges)
+        elif daily_strategy_name == 'triple_screen_daily':
+            daily_combinations = self._generate_triple_screen_combinations(daily_ranges)
         elif daily_strategy_name == 'rsi_daily':
             daily_combinations = self._generate_rsi_daily_combinations(daily_ranges)
         elif daily_strategy_name == 'macd_daily':
@@ -460,6 +542,54 @@ class GridSearchStrategy(OptimizationStrategy):
                     'long_sma_period': long_period,
                     'volume_ma_period': volume_period,
                     'num_top_stocks': num_stocks,
+                    'safe_asset_code': ranges['safe_asset_code'][0]
+                }
+            })
+        
+        return combinations
+    
+    def _generate_dual_momentum_combinations(self, ranges: Dict[str, List]) -> List[Dict[str, Any]]:
+        """듀얼모멘텀 전략 조합 생성"""
+        import itertools
+        
+        combinations = []
+        for momentum_period, rebalance_weekday, num_stocks in itertools.product(
+            ranges['momentum_period'], ranges['rebalance_weekday'], ranges['num_top_stocks']):
+            
+            combinations.append({
+                'dual_momentum_params': {
+                    'momentum_period': momentum_period,
+                    'rebalance_weekday': rebalance_weekday,
+                    'num_top_stocks': num_stocks,
+                    'safe_asset_code': ranges['safe_asset_code'][0]
+                }
+            })
+        
+        return combinations
+    
+    def _generate_triple_screen_combinations(self, ranges: Dict[str, List]) -> List[Dict[str, Any]]:
+        """삼중창 전략 조합 생성"""
+        import itertools
+        
+        combinations = []
+        for trend_ma, rsi_period, oversold, overbought, volume_period, num_stocks, min_strength in itertools.product(
+            ranges['trend_ma_period'], ranges['momentum_rsi_period'], 
+            ranges['momentum_rsi_oversold'], ranges['momentum_rsi_overbought'],
+            ranges['volume_ma_period'], ranges['num_top_stocks'], ranges['min_trend_strength']):
+            
+            # 유효한 조합만 필터링 (oversold < overbought)
+            if oversold >= overbought:
+                continue
+            
+            combinations.append({
+                'triple_screen_params': {
+                    'trend_ma_period': trend_ma,
+                    'momentum_rsi_period': rsi_period,
+                    'momentum_rsi_oversold': oversold,
+                    'momentum_rsi_overbought': overbought,
+                    'volume_ma_period': volume_period,
+                    'num_top_stocks': num_stocks,
+                    'min_trend_strength': min_strength,
                     'safe_asset_code': ranges['safe_asset_code'][0]
                 }
             })
@@ -805,6 +935,20 @@ class ProgressiveRefinementOptimizer:
                 strategy_params=params['sma_params'],
                 broker=backtester.broker
             )
+        elif strategy_name == 'dual_momentum_daily':
+            from strategies.dual_momentum_daily import DualMomentumDaily
+            return DualMomentumDaily(
+                data_store=backtester.data_store,
+                strategy_params=params['dual_momentum_params'],
+                broker=backtester.broker
+            )
+        elif strategy_name == 'triple_screen_daily':
+            from strategies.triple_screen_daily import TripleScreenDaily
+            return TripleScreenDaily(
+                data_store=backtester.data_store,
+                strategy_params=params['triple_screen_params'],
+                broker=backtester.broker
+            )
         elif strategy_name == 'rsi_daily':
             # RSI 일봉 전략 클래스가 있다면 여기에 추가
             # return RSIDaily(...)
@@ -824,9 +968,18 @@ class ProgressiveRefinementOptimizer:
         """분봉 전략 생성"""
         if strategy_name == 'open_minute':
             from strategies.open_minute import OpenMinute
-            # OpenMinute는 num_top_stocks만 필요하므로 sma_params에서 가져옴
+            # 전략별로 올바른 파라미터 참조
+            if 'sma_params' in params:
+                num_top_stocks = params['sma_params']['num_top_stocks']
+            elif 'dual_momentum_params' in params:
+                num_top_stocks = params['dual_momentum_params']['num_top_stocks']
+            elif 'triple_screen_params' in params:
+                num_top_stocks = params['triple_screen_params']['num_top_stocks']
+            else:
+                num_top_stocks = 5  # 기본값
+            
             minute_params = {
-                'num_top_stocks': params['sma_params']['num_top_stocks']
+                'num_top_stocks': num_top_stocks
             }
             return OpenMinute(
                 data_store=backtester.data_store,
@@ -953,6 +1106,12 @@ class ProgressiveRefinementOptimizer:
             print(f"  SMA: {params['sma_params']['short_sma_period']}일/{params['sma_params']['long_sma_period']}일")
             print(f"  거래량MA: {params['sma_params']['volume_ma_period']}일")
             print(f"  종목수: {params['sma_params']['num_top_stocks']}개")
+        elif 'dual_momentum_params' in params:
+            weekday_names = ['월', '화', '수', '목', '금']
+            weekday_name = weekday_names[params['dual_momentum_params']['rebalance_weekday']]
+            print(f"  모멘텀 기간: {params['dual_momentum_params']['momentum_period']}일")
+            print(f"  리밸런싱 요일: {weekday_name}요일")
+            print(f"  종목수: {params['dual_momentum_params']['num_top_stocks']}개")
         elif 'rsi_daily_params' in params:
             print(f"  RSI 기간: {params['rsi_daily_params']['rsi_period']}일")
             print(f"  과매도/과매수: {params['rsi_daily_params']['oversold_level']}/{params['rsi_daily_params']['overbought_level']}")
@@ -966,6 +1125,13 @@ class ProgressiveRefinementOptimizer:
             print(f"  볼린저밴드: {params['bollinger_params']['period']}일, 표준편차 {params['bollinger_params']['std_dev']}")
             print(f"  거래량MA: {params['bollinger_params']['volume_ma_period']}일")
             print(f"  종목수: {params['bollinger_params']['num_top_stocks']}개")
+        elif 'triple_screen_params' in params:
+            print(f"  추세MA: {params['triple_screen_params']['trend_ma_period']}일")
+            print(f"  RSI: {params['triple_screen_params']['momentum_rsi_period']}일 "
+                  f"({params['triple_screen_params']['momentum_rsi_oversold']}-{params['triple_screen_params']['momentum_rsi_overbought']})")
+            print(f"  거래량MA: {params['triple_screen_params']['volume_ma_period']}일")
+            print(f"  종목수: {params['triple_screen_params']['num_top_stocks']}개")
+            print(f"  최소추세강도: {params['triple_screen_params']['min_trend_strength']}")
         
         # 손절매 파라미터 출력
         if 'stop_loss_params' in params:

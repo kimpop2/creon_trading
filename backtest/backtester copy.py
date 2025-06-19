@@ -16,7 +16,7 @@ logger.setLevel(logging.DEBUG) # 테스트 시 DEBUG로 설정하여 모든 로�
 class Backtester:
     def __init__(self, api_client, initial_cash):
         self.api_client = api_client
-        self.broker = Broker(initial_cash, commission_rate=0.0003) # 수수료 0.03%
+        self.broker = Broker(initial_cash, commission_rate=0.0016, slippage_rate=0.0004) # 커미션 0.16% + 슬리피지 0.04% = 총 0.2%
         self.data_store = {'daily': {}, 'minute': {}} # {stock_code: DataFrame}
         self.portfolio_values = [] # (datetime, value) 튜플 저장
         self.initial_cash = initial_cash

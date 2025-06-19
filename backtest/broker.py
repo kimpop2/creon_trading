@@ -5,14 +5,14 @@ from typing import Dict
 logger = logging.getLogger(__name__)
 # logger.setLevel(logging.DEBUG) # 테스트 시 DEBUG로 설정하여 모든 로그 출력 - 제거
 class Broker:
-    def __init__(self, initial_cash, commission_rate=0.0003, slippage_rate=0.0):
+    def __init__(self, initial_cash, commission_rate=0.0016, slippage_rate=0.0004):
         self.cash = initial_cash
         self.positions = {}  # {stock_code: {'size': int, 'avg_price': float, 'entry_date': datetime.date, 'highest_price': float}}
         self.transaction_log = [] # (date, stock_code, type, price, quantity, commission, net_amount)
         self.commission_rate = commission_rate
         self.slippage_rate = slippage_rate
         self.stop_loss_params = None
-        logging.info(f"브로커 초기화: 초기 현금 {self.cash:,.0f}원, 수수료율 {self.commission_rate*100:.2f}%")
+        logging.info(f"브로커 초기화: 초기 현금 {self.cash:,.0f}원, 수수료율 {self.commission_rate*100:.2f}%, 슬리피지율 {self.slippage_rate*100:.2f}%")
 
         # 손절매 관련 파라미터
         # self.stop_loss_ratio = None
@@ -69,7 +69,7 @@ class Broker:
                 logging.info(f"[{current_dt.isoformat()}] {stock_code}: {quantity}주 매수. 가격: {price:,.0f}원 (실제: {effective_price:,.0f}원), 수수료: {commission:,.0f}원. 남은 현금: {self.cash:,.0f}원")
                 return True
             else:
-                logging.warning(f"[{current_dt.isoformat()}] {stock_code}: 현금 부족으로 매수 불가. 필요: {total_cost:,.0f}원, 현재: {self.cash:,.0f}원")
+                logging.debug(f"[{current_dt.isoformat()}] {stock_code}: 현금 부족으로 매수 불가. 필요: {total_cost:,.0f}원, 현재: {self.cash:,.0f}원")
                 return False
         
         elif order_type == 'sell':

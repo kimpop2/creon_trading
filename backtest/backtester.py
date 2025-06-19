@@ -30,7 +30,7 @@ class Backtester:
                  data_manager: DataManager, reporter: Reporter, stock_selector: StockSelector,
                  save_to_db: bool = True):  # DB 저장 여부 파라미터 추가
         self.api_client = api_client
-        self.broker = Broker(initial_cash, commission_rate=0.0003) # 수수료 0.03%
+        self.broker = Broker(initial_cash, commission_rate=0.0016, slippage_rate=0.0004) # 커미션 0.16% + 슬리피지 0.04% = 총 0.2%
         self.data_store = {'daily': {}, 'minute': {}} # {stock_code: DataFrame}
         self.portfolio_values = [] # (datetime, value) 튜플 저장
         self.initial_cash = initial_cash
@@ -165,9 +165,9 @@ class Backtester:
                         if has_stop_loss:
                             current_positions = set(self.broker.positions.keys())
                             stocks_to_load.update(current_positions)
-                        
+
                         logging.info(f"[{current_date.isoformat()}] 분봉 데이터 로드 시작: {len(stocks_to_load)}개 종목")
-                        
+
                         # 필요한 종목들의 분봉 데이터를 로드
                         for stock_code in stocks_to_load:
                             # signals_to_execute_today에 있는 종목은 해당 신호의 signal_date 사용
@@ -181,14 +181,14 @@ class Backtester:
                             else:
                                 # 현재 보유 중인 종목이지만 신호가 없는 경우 (손절매 체크용)
                                 signal_date = current_date
-                                
+
                             # DataManager를 사용하여 분봉 데이터 로드
                             minute_df = self.data_manager.cache_minute_ohlcv(
-                                stock_code, 
-                                signal_date, 
+                                stock_code,
+                                signal_date,
                                 current_date
                             )
-                            
+
                             # 기존 백테스터와 동일하게 날짜별로 분봉 데이터 저장
                             if not minute_df.empty:
                                 if stock_code not in self.data_store['minute']:
@@ -198,7 +198,7 @@ class Backtester:
                                     if not date_data.empty:
                                         self.data_store['minute'][stock_code][date] = date_data
                                         logging.debug(f"{stock_code} 종목의 {date} 분봉 데이터 로드 완료. 데이터 수: {len(date_data)}행")
-                        
+
                         # 1-2. 모든 시그널을 분봉 전략에 한 번에 업데이트
                         self.minute_strategy.update_signals(signals_to_execute_today)
                         logging.debug(f"[{current_date.isoformat()}] 분봉 전략에 {len(signals_to_execute_today)}개의 시그널 업데이트 완료.")
@@ -206,17 +206,15 @@ class Backtester:
                         # 1-3. 분봉 매매 로직 실행
                         # 실제로 매매가 필요한 종목들만 선별
                         stocks_to_trade = set()
-                        
                         # 매수/매도 신호가 있는 종목들 추가
                         for stock_code, signal_info in signals_to_execute_today.items():
                             if signal_info['signal'] in ['buy', 'sell']:
                                 stocks_to_trade.add(stock_code)
-                        
                         # 현재 보유 중인 종목들 추가 (손절매 체크용)
                         if has_stop_loss:
                             current_positions = set(self.broker.positions.keys())
                             stocks_to_trade.update(current_positions)
-                        
+
                         for stock_code in stocks_to_trade:
                             # signals_to_execute_today에 있는 종목은 해당 신호 정보 사용
                             if stock_code in signals_to_execute_today:
@@ -232,18 +230,14 @@ class Backtester:
                             # 기존 백테스터와 동일하게 날짜별로 저장된 분봉 데이터 사용
                             if stock_code in self.data_store['minute'] and current_date in self.data_store['minute'][stock_code]:
                                 minute_data_today = self.data_store['minute'][stock_code][current_date]
-                                
                                 if not minute_data_today.empty:
                                     logging.debug(f"[{current_date.isoformat()}] {stock_code}: {len(minute_data_today)}개의 분봉 데이터로 매매 시도.")
-                                    
                                     # 모든 분봉에서 매매 및 손절매 체크
                                     for minute_dt in minute_data_today.index:
                                         if minute_dt.date() > end_date:
                                             logging.info(f"[{current_date.isoformat()}] 백테스트 종료일 {end_date}를 넘어섰습니다. 백테스트 종료.")
                                             break
-                                        
                                         self.minute_strategy.run_minute_logic(stock_code, minute_dt)
-                                        
                                         if self.minute_strategy.signals.get(stock_code, {}).get('traded_today', False):
                                             logging.debug(f"[{current_date.isoformat()}] {stock_code}: 분봉 매매 완료 (traded_today=True), 다음 분봉 틱 건너뜁니다.")
                                             break

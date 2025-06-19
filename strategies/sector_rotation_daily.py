@@ -43,36 +43,31 @@ class SectorRotationDaily(DailyStrategy):
                    f"리밸런싱요일={self.strategy_params['rebalance_weekday']}, "
                    f"상위섹터수={self.strategy_params['num_top_sectors']}개")
     
-    def calculate_signals(self, current_date: datetime.date) -> Dict[str, Dict[str, Any]]:
-        """
-        섹터 로테이션 신호 계산
-        """
-        signals = {}
-        
+    def run_daily_logic(self, current_date: datetime.date):
         try:
-            # 리밸런싱 날짜 확인
+            logger.info(f'[{current_date.isoformat()}] --- 섹터 로테이션 전략 실행 중 ---')
             if not self._should_rebalance(current_date):
-                logger.info(f"[{current_date}] 리밸런싱 날짜가 아닙니다.")
-                return {}
-            
+                return
             # 1. 섹터별 모멘텀 계산
             sector_momentums = self._calculate_sector_momentums(current_date)
-            
-            # 2. 상위 섹터 선택
+            # 2. 상위 섹터 선정
             top_sectors = self._select_top_sectors(sector_momentums)
-            
-            # 3. 섹터별 상위 종목 선택
+            # 3. 섹터별 상위 종목 선정
             sector_stocks = self._select_sector_stocks(top_sectors, current_date)
-            
-            # 4. 매매 신호 생성
-            signals = self._generate_trading_signals(sector_stocks, current_date)
-            
-            logger.info(f"[{current_date}] 섹터 로테이션 신호 생성 완료: {len(signals)}개 종목")
-            
+            # 4. 전체 매수 후보 종목 리스트 생성
+            buy_candidates = set()
+            for stocks in sector_stocks.values():
+                buy_candidates.update(stocks)
+            # 5. 점수 기준 정렬 (여기서는 모멘텀 점수 없음, 임의로 1.0 부여)
+            sorted_stocks = [(code, 1.0) for code in buy_candidates]
+            # 6. 신호 생성 및 업데이트 (부모 클래스 메서드 사용)
+            current_positions = self._generate_signals(current_date, buy_candidates, sorted_stocks)
+            # 7. 리밸런싱 계획 요약 로깅
+            self._log_rebalancing_summary(current_date, buy_candidates, current_positions)
         except Exception as e:
-            logger.error(f"섹터 로테이션 신호 계산 중 오류: {str(e)}")
-        
-        return signals
+            logger.error(f"섹터 로테이션 전략 실행 중 오류: {str(e)}")
+            import traceback
+            logger.error(f"상세 오류: {traceback.format_exc()}")
     
     def _should_rebalance(self, current_date: datetime.date) -> bool:
         """리밸런싱 여부 확인"""
@@ -193,74 +188,4 @@ class SectorRotationDaily(DailyStrategy):
                     logger.info(f"  {sector} 섹터 종목 {i+1}: {stock_code} ({stock_name}) "
                                f"(모멘텀: {momentum:.4f})")
         
-        return sector_stocks
-    
-    def _generate_trading_signals(self, sector_stocks: Dict[str, List[str]], 
-                                current_date: datetime.date) -> Dict[str, Dict[str, Any]]:
-        """매매 신호 생성"""
-        signals = {}
-        
-        # 현재 포트폴리오 상태 확인
-        current_positions = set(self.broker.positions.keys())
-        
-        # 목표 종목 목록 생성
-        target_stocks = []
-        for sector, stocks in sector_stocks.items():
-            target_stocks.extend(stocks)
-        
-        # 매수 신호 생성 (목표 종목 중 포트폴리오에 없는 종목)
-        for stock_code in target_stocks:
-            if stock_code not in current_positions:
-                current_price = self._get_current_price(stock_code, current_date)
-                if current_price > 0:
-                    # 섹터별 동일 비중 배분
-                    target_amount = self.broker.cash / len(target_stocks)
-                    target_quantity = int(target_amount / current_price)
-                    
-                    if target_quantity > 0:
-                        signals[stock_code] = {
-                            'signal': 'buy',
-                            'quantity': target_quantity,
-                            'price': current_price,
-                            'signal_date': current_date,
-                            'strategy': self.strategy_name
-                        }
-                        logger.info(f"매수 신호 - {stock_code}: 목표수량 {target_quantity}주")
-        
-        # 매도 신호 생성 (포트폴리오에 있지만 목표 종목이 아닌 경우)
-        for stock_code in current_positions:
-            if (stock_code not in target_stocks and 
-                stock_code != self.strategy_params['safe_asset_code']):
-                current_quantity = self.broker.get_position_size(stock_code)
-                if current_quantity > 0:
-                    signals[stock_code] = {
-                        'signal': 'sell',
-                        'quantity': current_quantity,
-                        'price': self._get_current_price(stock_code, current_date),
-                        'signal_date': current_date,
-                        'strategy': self.strategy_name
-                    }
-                    logger.info(f"매도 신호 - {stock_code}: 전체수량 {current_quantity}주")
-        
-        return signals
-    
-    def _get_current_price(self, stock_code: str, current_date: datetime.date) -> float:
-        """현재가 조회"""
-        if stock_code not in self.data_store['daily']:
-            return 0.0
-        
-        df = self.data_store['daily'][stock_code]
-        if df.empty:
-            return 0.0
-        
-        # 해당 날짜의 종가 반환
-        date_data = df[df.index.date == current_date]
-        if not date_data.empty:
-            return date_data.iloc[-1]['close']
-        
-        # 해당 날짜가 없으면 최근 종가 반환
-        recent_data = df[df.index.date <= current_date]
-        if not recent_data.empty:
-            return recent_data.iloc[-1]['close']
-        
-        return 0.0 
+        return sector_stocks 

@@ -69,6 +69,24 @@ class BayesianOptimizationStrategy(OptimizationStrategy):
                         'num_top_stocks': [2, 8],          # 실제 신호 발생 가능한 범위
                     }
                 },
+                'dual_momentum_daily': {
+                    'parameter_ranges': {
+                        'momentum_period': [5, 30],        # 모멘텀 계산 기간
+                        'rebalance_weekday': [0, 4],       # 월~금 (0=월요일, 4=금요일)
+                        'num_top_stocks': [2, 10],         # 선택 종목 수
+                    }
+                },
+                'triple_screen_daily': {
+                    'parameter_ranges': {
+                        'trend_ma_period': [15, 60],       # 장기 추세 이동평균
+                        'momentum_rsi_period': [10, 25],   # RSI 기간
+                        'momentum_rsi_oversold': [20, 35], # RSI 과매도 기준
+                        'momentum_rsi_overbought': [65, 85], # RSI 과매수 기준
+                        'volume_ma_period': [5, 20],       # 거래량 이동평균
+                        'num_top_stocks': [3, 10],         # 상위 종목 수
+                        'min_trend_strength': [0.01, 0.08] # 최소 추세 강도
+                    }
+                },
                 'rsi_daily': {
                     'parameter_ranges': {
                         'rsi_period': [10, 60],           # 연속 범위
@@ -147,6 +165,36 @@ class BayesianOptimizationStrategy(OptimizationStrategy):
                                                              sma_ranges['volume_ma_period'][1])),
                     'num_top_stocks': int(np.random.uniform(sma_ranges['num_top_stocks'][0], 
                                                            sma_ranges['num_top_stocks'][1])),
+                    'safe_asset_code': 'A439870'
+                }
+            elif daily_strategy == 'dual_momentum_daily':
+                dual_ranges = config['strategy_params']['dual_momentum_daily']['parameter_ranges']
+                params['dual_momentum_params'] = {
+                    'momentum_period': int(np.random.uniform(dual_ranges['momentum_period'][0], 
+                                                            dual_ranges['momentum_period'][1])),
+                    'rebalance_weekday': int(np.random.uniform(dual_ranges['rebalance_weekday'][0], 
+                                                              dual_ranges['rebalance_weekday'][1])),
+                    'num_top_stocks': int(np.random.uniform(dual_ranges['num_top_stocks'][0], 
+                                                           dual_ranges['num_top_stocks'][1])),
+                    'safe_asset_code': 'A439870'
+                }
+            elif daily_strategy == 'triple_screen_daily':
+                triple_ranges = config['strategy_params']['triple_screen_daily']['parameter_ranges']
+                params['triple_screen_params'] = {
+                    'trend_ma_period': int(np.random.uniform(triple_ranges['trend_ma_period'][0], 
+                                                            triple_ranges['trend_ma_period'][1])),
+                    'momentum_rsi_period': int(np.random.uniform(triple_ranges['momentum_rsi_period'][0], 
+                                                                triple_ranges['momentum_rsi_period'][1])),
+                    'momentum_rsi_oversold': int(np.random.uniform(triple_ranges['momentum_rsi_oversold'][0], 
+                                                                  triple_ranges['momentum_rsi_oversold'][1])),
+                    'momentum_rsi_overbought': int(np.random.uniform(triple_ranges['momentum_rsi_overbought'][0], 
+                                                                    triple_ranges['momentum_rsi_overbought'][1])),
+                    'volume_ma_period': int(np.random.uniform(triple_ranges['volume_ma_period'][0], 
+                                                             triple_ranges['volume_ma_period'][1])),
+                    'num_top_stocks': int(np.random.uniform(triple_ranges['num_top_stocks'][0], 
+                                                           triple_ranges['num_top_stocks'][1])),
+                    'min_trend_strength': np.random.uniform(triple_ranges['min_trend_strength'][0], 
+                                                           triple_ranges['min_trend_strength'][1]),
                     'safe_asset_code': 'A439870'
                 }
             
@@ -239,6 +287,26 @@ class BayesianOptimizationStrategy(OptimizationStrategy):
                 (sma_ranges['num_top_stocks'][0], sma_ranges['num_top_stocks'][1])
             ])
         
+        if daily_strategy == 'dual_momentum_daily':
+            dual_ranges = config['strategy_params']['dual_momentum_daily']['parameter_ranges']
+            bounds.extend([
+                (dual_ranges['momentum_period'][0], dual_ranges['momentum_period'][1]),
+                (dual_ranges['rebalance_weekday'][0], dual_ranges['rebalance_weekday'][1]),
+                (dual_ranges['num_top_stocks'][0], dual_ranges['num_top_stocks'][1])
+            ])
+        
+        if daily_strategy == 'triple_screen_daily':
+            triple_ranges = config['strategy_params']['triple_screen_daily']['parameter_ranges']
+            bounds.extend([
+                (triple_ranges['trend_ma_period'][0], triple_ranges['trend_ma_period'][1]),
+                (triple_ranges['momentum_rsi_period'][0], triple_ranges['momentum_rsi_period'][1]),
+                (triple_ranges['momentum_rsi_oversold'][0], triple_ranges['momentum_rsi_oversold'][1]),
+                (triple_ranges['momentum_rsi_overbought'][0], triple_ranges['momentum_rsi_overbought'][1]),
+                (triple_ranges['volume_ma_period'][0], triple_ranges['volume_ma_period'][1]),
+                (triple_ranges['num_top_stocks'][0], triple_ranges['num_top_stocks'][1]),
+                (triple_ranges['min_trend_strength'][0], triple_ranges['min_trend_strength'][1])
+            ])
+        
         if minute_strategy == 'open_minute':
             rsi_ranges = config['minute_params']['open_minute']['parameter_ranges']
             bounds.extend([
@@ -272,6 +340,26 @@ class BayesianOptimizationStrategy(OptimizationStrategy):
                 'safe_asset_code': 'A439870'
             }
             idx += 4
+        elif daily_strategy == 'dual_momentum_daily':
+            params['dual_momentum_params'] = {
+                'momentum_period': int(x[idx]),
+                'rebalance_weekday': int(x[idx + 1]),
+                'num_top_stocks': int(x[idx + 2]),
+                'safe_asset_code': 'A439870'
+            }
+            idx += 3
+        elif daily_strategy == 'triple_screen_daily':
+            params['triple_screen_params'] = {
+                'trend_ma_period': int(x[idx]),
+                'momentum_rsi_period': int(x[idx + 1]),
+                'momentum_rsi_oversold': int(x[idx + 2]),
+                'momentum_rsi_overbought': int(x[idx + 3]),
+                'volume_ma_period': int(x[idx + 4]),
+                'num_top_stocks': int(x[idx + 5]),
+                'min_trend_strength': x[idx + 6],
+                'safe_asset_code': 'A439870'
+            }
+            idx += 7
         
         if minute_strategy == 'open_minute':
             params['rsi_params'] = {
@@ -319,6 +407,24 @@ class BayesianOptimizationStrategy(OptimizationStrategy):
                 sma['long_sma_period'],
                 sma['volume_ma_period'],
                 sma['num_top_stocks']
+            ])
+        elif 'dual_momentum_params' in params:
+            dual = params['dual_momentum_params']
+            vector.extend([
+                dual['momentum_period'],
+                dual['rebalance_weekday'],
+                dual['num_top_stocks']
+            ])
+        elif 'triple_screen_params' in params:
+            triple = params['triple_screen_params']
+            vector.extend([
+                triple['trend_ma_period'],
+                triple['momentum_rsi_period'],
+                triple['momentum_rsi_oversold'],
+                triple['momentum_rsi_overbought'],
+                triple['volume_ma_period'],
+                triple['num_top_stocks'],
+                triple['min_trend_strength']
             ])
         
         if 'rsi_params' in params:

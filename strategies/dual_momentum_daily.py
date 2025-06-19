@@ -79,21 +79,15 @@ class DualMomentumDaily(DailyStrategy): # DailyStrategy 상속
         # 3. 매수 대상 종목 선정
         buy_candidates, sorted_stocks = self._select_buy_candidates(momentum_scores, safe_asset_momentum)
         buy_candidates = set()
-
         for rank, (stock_code, _) in enumerate(sorted_stocks, 1):
             if rank <= self.strategy_params['num_top_stocks']:
                 buy_candidates.add(stock_code)
-
         if not buy_candidates:
             return
-        
-        # 4. 신호 생성 및 업데이트
+        # 4. 신호 생성 및 업데이트 (부모 클래스 메서드 사용)
         current_positions = self._generate_signals(current_daily_date, buy_candidates, sorted_stocks)
-
         # 5. 리밸런싱 계획 요약 로깅
         self._log_rebalancing_summary(current_daily_date, buy_candidates, current_positions)
-
-        #self.last_rebalance_date = current_daily_date
 
     def calculate_signals(self, current_date: datetime.date) -> Dict[str, Dict[str, Any]]:
         """
