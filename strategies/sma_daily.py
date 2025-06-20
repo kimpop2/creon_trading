@@ -77,7 +77,6 @@ class SMADaily(DailyStrategy):
         for stock_code in all_stock_codes:
             if stock_code == self.strategy_params.get('safe_asset_code'):
                 continue
-            # 수정: prev_trading_day까지만 사용하여 장전 판단
             historical_data = self._get_historical_data_up_to('daily', stock_code, prev_trading_day, lookback_period=max(self.strategy_params['long_sma_period'], self.strategy_params['volume_ma_period']) + 1)
             if historical_data.empty or len(historical_data) < max(self.strategy_params['long_sma_period'], self.strategy_params['volume_ma_period']) + 1:
                 continue
@@ -89,24 +88,21 @@ class SMADaily(DailyStrategy):
             current_volume = historical_data['volume'].iloc[-1]
             volume_ma = calculate_volume_ma_incremental(historical_data, self.strategy_params['volume_ma_period'], self.volume_cache)[0]
             
-            # 골든크로스 + 거래량 조건 (매수 신호)
-            if short_sma > long_sma and prev_short_sma <= prev_long_sma and current_volume > volume_ma * 1.2:
+            # 골든크로스 + 거래량 조건 완화 (1.0배 이상)
+            if short_sma > long_sma and prev_short_sma <= prev_long_sma and current_volume > volume_ma * 1.0:
                 score = (short_sma - long_sma) / long_sma * 100
                 buy_scores[stock_code] = score
-            # 추가 매수 조건(강한 상승 추세)
-            elif short_sma > long_sma and current_volume > volume_ma * 1.5:
+            # 추가 매수 조건(강한 상승 완화)
+            elif short_sma > long_sma and current_volume > volume_ma * 1.2:
                 score = (short_sma - long_sma) / long_sma * 50
                 buy_scores[stock_code] = score
-                
-            # 수정: 데드크로스 조건 추가 (매도 신호)
-            if short_sma < long_sma and prev_short_sma >= prev_long_sma:
+            
+            # 데드크로스 + 거래량 조건이 모두 충족될 때만 매도 신호
+            if short_sma < long_sma and prev_short_sma >= prev_long_sma and current_volume > volume_ma * 1.0:
                 score = (long_sma - short_sma) / long_sma * 100
                 sell_scores[stock_code] = score
-            # 추가 매도 조건(강한 하락 추세)
-            elif short_sma < long_sma and current_volume > volume_ma * 1.2:
-                score = (long_sma - short_sma) / long_sma * 50
-                sell_scores[stock_code] = score
-                
+            # 강한 하락(추가 매도)은 제외(신호 완화)
+
         # 2. 매수 후보 종목 선정
         sorted_buy_stocks = sorted(buy_scores.items(), key=lambda x: x[1], reverse=True)
         buy_candidates = set()
@@ -114,22 +110,24 @@ class SMADaily(DailyStrategy):
             if rank <= self.strategy_params['num_top_stocks']:
                 buy_candidates.add(stock_code)
                 
-        # 수정: 매도 후보 종목도 선정 (보유 중인 종목 중에서)
+        # 매도 후보 종목 선정 (보유 중인데 매수 후보에 없는 종목은 일정 기간(3일) 이상 홀딩 후에만 매도 후보로 추가)
         current_positions = set(self.broker.positions.keys())
         sell_candidates = set()
-        
-        # 방법 1: 데드크로스 조건을 만족하는 보유 종목들
+        min_holding_days = self.strategy_params.get('min_holding_days', 3)
         for stock_code in current_positions:
+            # 데드크로스+거래량 조건이 충족된 경우
             if stock_code in sell_scores:
                 sell_candidates.add(stock_code)
-                logging.info(f"데드크로스 매도 후보 추가: {stock_code}")
-        
-        # 방법 2: 매수 후보에 포함되지 않은 보유 종목들도 매도 후보로 추가
-        for stock_code in current_positions:
-            if stock_code not in buy_candidates:
-                sell_candidates.add(stock_code)
-                logging.info(f"매수 후보 제외로 인한 매도 후보 추가: {stock_code}")
-        
+                logging.info(f"데드크로스+거래량 매도 후보 추가: {stock_code}")
+            # 매수 후보에서 빠진 종목은 일정 기간 홀딩 후 매도 후보
+            elif stock_code not in buy_candidates:
+                position_info = self.broker.positions.get(stock_code, {})
+                entry_date = position_info.get('entry_date', prev_trading_day)
+                holding_days = (prev_trading_day - entry_date).days if entry_date else 0
+                if holding_days >= min_holding_days:
+                    sell_candidates.add(stock_code)
+                    logging.info(f"매수 후보 제외+홀딩기간 경과로 매도 후보 추가: {stock_code}")
+
         logging.info(f"매도 후보 최종 선정: {sorted(sell_candidates)}")
         
         # 3. 신호 생성 및 업데이트 (부모 메서드) - 전일 데이터 기준

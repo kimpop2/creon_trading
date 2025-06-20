@@ -62,7 +62,7 @@ if __name__ == '__main__':
     logging.info("삼중창 전략 백테스트를 실행합니다.")
 
     # 백테스트 기간 설정 (최적화 기간과 동일)
-    backtest_start_date     = datetime.datetime(2025, 1, 1, 9, 0, 0).date()
+    backtest_start_date     = datetime.datetime(2025, 5, 1, 9, 0, 0).date()
     backtest_end_date       = datetime.datetime(2025, 6, 20, 3, 30, 0).date()
 
     # 일봉 데이터 가져오기 시작일을 백테스트 시작일 한 달 전으로 자동 설정
@@ -93,11 +93,11 @@ if __name__ == '__main__':
         data_store=backtester_instance.data_store,
         strategy_params={
             'trend_ma_period': 20,          # 유지
-            'momentum_rsi_period': 22,      # 유지
+            'momentum_rsi_period': 7,      # 유지
             'momentum_rsi_oversold': 35,    # 30 → 35 (매수 조건 더 보수적)
             'momentum_rsi_overbought': 65,  # 70 → 65 (매도 조건 더 보수적)
-            'volume_ma_period': 19,         # 유지
-            'num_top_stocks': 3,            # 5 → 3 (집중 투자로 승률 향상)
+            'volume_ma_period': 7,         # 유지
+            'num_top_stocks': 7,            # 5 → 3 (집중 투자로 승률 향상)
             'safe_asset_code': 'A439870',   # 안전자산 코드 (국고채 ETF)
             'min_trend_strength': 0.02,     # 기본값: 0.02 (2% 추세)
         },
@@ -110,7 +110,7 @@ if __name__ == '__main__':
         strategy_params={
             'momentum_period': 15,         #  15일
             'rebalance_weekday': 0,        #  월요일 (0)
-            'num_top_stocks': 5,           #  5개
+            'num_top_stocks': 7,           #  5개
             'safe_asset_code': 'A439870',  # 안전자산 코드 (국고채 ETF)
         },
         broker=backtester_instance.broker
@@ -130,10 +130,10 @@ if __name__ == '__main__':
     sma_daily_strategy = SMADaily(
         data_store=backtester_instance.data_store,
         strategy_params={
-            'short_sma_period': 1,          #  4일
-            'long_sma_period': 8,          #  10일
-            'volume_ma_period': 2,          #  6일
-            'num_top_stocks': 7,            #  5개
+            'short_sma_period': 4,          #  4일
+            'long_sma_period': 15,          #  10일
+            'volume_ma_period': 6,          #  6일
+            'num_top_stocks': 5,            #  5개
             'safe_asset_code': 'A439870',   # 안전자산 코드
         },
         broker=backtester_instance.broker
@@ -164,11 +164,16 @@ if __name__ == '__main__':
     )
 
     # 전략 설정 (삼중창 일봉 + RSI 분봉 전략 사용)
-    #backtester_instance.set_strategies(daily_strategy=triple_screen_daily_strategy, minute_strategy=rsi_minute_strategy)
+    # 전환 14.91
+    backtester_instance.set_strategies(daily_strategy=triple_screen_daily_strategy, minute_strategy=rsi_minute_strategy)
+    # 전환 57.51
     #backtester_instance.set_strategies(daily_strategy=dual_daily_strategy, minute_strategy=rsi_minute_strategy)
+    # 전환 84.41%
     #backtester_instance.set_strategies(daily_strategy=temp_daily_strategy, minute_strategy=rsi_minute_strategy)
+    # 전환 -4.75 
     #backtester_instance.set_strategies(daily_strategy=sma_daily_strategy, minute_strategy=rsi_minute_strategy)
-    backtester_instance.set_strategies(daily_strategy=sma_daily_strategy, minute_strategy=open_minute_strategy)
+    # 전환 83.11
+    #backtester_instance.set_strategies(daily_strategy=dual_daily_strategy, minute_strategy=open_minute_strategy)
     
     # Broker에 손절매 파라미터 설정 (기본 설정)
     stop_loss_params = {

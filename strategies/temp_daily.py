@@ -76,21 +76,26 @@ class TempletDaily(DailyStrategy):
         safe_asset_momentum = self._calculate_safe_asset_momentum(prev_trading_day)
 
         # 3. 매수 대상 종목 선정
-        buy_candidates, sorted_stocks = self._select_buy_candidates(momentum_scores, safe_asset_momentum)
+        sorted_stocks = sorted(momentum_scores.items(), key=lambda x: x[1], reverse=True)
         buy_candidates = set()
-
         for rank, (stock_code, _) in enumerate(sorted_stocks, 1):
             if rank <= self.strategy_params['num_top_stocks']:
                 buy_candidates.add(stock_code)
-
         if not buy_candidates:
             return
         
-        # 4. 신호 생성 및 업데이트 (부모 클래스의 _generate_signals 사용) - 전일 데이터 기준
-        current_positions = self._generate_signals(prev_trading_day, buy_candidates, sorted_stocks)
-
-        # 5. 리밸런싱 계획 요약 로깅 (전일 데이터 기준)
-        self._log_rebalancing_summary(prev_trading_day, buy_candidates, current_positions)
+        # 4. 매도 후보 선정 (보유 중인데 매수 후보에 없는 종목)
+        current_positions = set(self.broker.positions.keys())
+        sell_candidates = set()
+        for stock_code in current_positions:
+            if stock_code not in buy_candidates:
+                sell_candidates.add(stock_code)
+        
+        # 5. 신호 생성 및 업데이트 (부모 클래스의 _generate_signals 사용) - 전일 데이터 기준
+        final_positions = self._generate_signals(prev_trading_day, buy_candidates, sorted_stocks, sell_candidates)
+        
+        # 6. 리밸런싱 계획 요약 로깅 (전일 데이터 기준)
+        self._log_rebalancing_summary(prev_trading_day, buy_candidates, final_positions, sell_candidates)
 
         #self.last_rebalance_date = current_daily_date
 

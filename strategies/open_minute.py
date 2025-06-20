@@ -60,7 +60,7 @@ class OpenMinute(MinuteStrategy):
         """
         self.signals = {
             stock_code: {**info, 'traded_today': False}
-            for stock_code, info in signals.items()
+            for stock_code, info in signals.items() #### info 에 set() 아이템 설정
         }
 
     def _calculate_rsi(self, historical_data, stock_code):

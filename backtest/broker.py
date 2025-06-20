@@ -1,10 +1,11 @@
 import datetime
 import logging
 from typing import Dict
+from backtest.abstract_broker import AbstractBroker
 # --- 로거 설정 (스크립트 최상단에서 설정하여 항상 보이도록 함) ---
 logger = logging.getLogger(__name__)
 # logger.setLevel(logging.DEBUG) # 테스트 시 DEBUG로 설정하여 모든 로그 출력 - 제거
-class Broker:
+class Broker(AbstractBroker):
     def __init__(self, initial_cash, commission_rate=0.0003, slippage_rate=0.0):
         self.cash = initial_cash
         self.positions = {}  # {stock_code: {'size': int, 'avg_price': float, 'entry_date': datetime.date, 'highest_price': float}}
@@ -12,26 +13,14 @@ class Broker:
         self.commission_rate = commission_rate
         self.slippage_rate = slippage_rate
         self.stop_loss_params = None
-        logging.info(f"브로커 초기화: 초기 현금 {self.cash:,.0f}원, 수수료율 {self.commission_rate*100:.2f}%")
-
-        # 손절매 관련 파라미터
-        # self.stop_loss_ratio = None
-        # self.trailing_stop_ratio = None
-        # self.early_stop_loss = None
-        # self.portfolio_stop_loss = None
-        # self.max_losing_positions = None
         self.initial_portfolio_value = initial_cash # 포트폴리오 손절을 위한 초기값
+        logging.info(f"브로커 초기화: 초기 현금 {self.cash:,.0f}원, 수수료율 {self.commission_rate*100:.2f}%")
 
     def set_stop_loss_params(self, stop_loss_params):
         """손절매 관련 파라미터를 설정합니다."""
         if stop_loss_params is None:
             return
         self.stop_loss_params = stop_loss_params
-        # self.stop_loss_ratio = stop_loss_params.get('stop_loss_ratio')
-        # self.trailing_stop_ratio = stop_loss_params.get('trailing_stop_ratio')
-        # self.early_stop_loss = stop_loss_params.get('early_stop_loss')
-        # self.portfolio_stop_loss = stop_loss_params.get('portfolio_stop_loss')
-        # self.max_losing_positions = stop_loss_params.get('max_losing_positions')
         logging.info(f"브로커 손절매 파라미터 설정 완료: {stop_loss_params}")
 
     
@@ -65,7 +54,7 @@ class Broker:
                 self.cash -= total_cost
                 commission = 0  # 매수 시 커미션 없음
                 self.transaction_log.append((current_dt, stock_code, 'buy', price, quantity, commission, total_cost))
-                logging.info(f"[{current_dt.isoformat()}] {stock_code}: {quantity}주 매수. 가격: {price:,.0f}원 (실제: {effective_price:,.0f}원), 수수료: {commission:,.0f}원. 남은 현금: {self.cash:,.0f}원")
+                logging.info(f"[{current_dt.isoformat()}] {stock_code}: {quantity}주 매수. 실제 가격: {effective_price:,.0f}원, 수수료: {commission:,.0f}원, 매매대금: {total_cost:,.0f}원, ")
                 return True
             else:
                 logging.warning(f"[{current_dt.isoformat()}] {stock_code}: 현금 부족으로 매수 불가. 필요: {total_cost:,.0f}원, 현재: {self.cash:,.0f}원")
@@ -76,12 +65,16 @@ class Broker:
                 actual_quantity = min(quantity, self.positions[stock_code]['size'])
                 commission = effective_price * actual_quantity * self.commission_rate  # 매도 시에만 커미션
                 revenue = effective_price * actual_quantity - commission
+                # 수익금/수익률 계산
+                avg_price = self.positions[stock_code]['avg_price']
+                profit = (effective_price - avg_price) * actual_quantity
+                profit_rate = ((effective_price - avg_price) / avg_price * 100) if avg_price > 0 else 0
                 self.cash += revenue
                 self.transaction_log.append((current_dt, stock_code, 'sell', price, actual_quantity, commission, revenue))
                 self.positions[stock_code]['size'] -= actual_quantity
                 if self.positions[stock_code]['size'] == 0:
                     del self.positions[stock_code]
-                logging.info(f"[{current_dt.isoformat()}] {stock_code}: {actual_quantity}주 매도. 가격: {price:,.0f}원 (실제: {effective_price:,.0f}원), 수수료: {commission:,.0f}원. 남은 현금: {self.cash:,.0f}원")
+                logging.info(f"[{current_dt.isoformat()}] {stock_code}: {actual_quantity}주 매도. 실제 가격: {effective_price:,.0f}원, 수익금: {profit:,.0f}원, 수익률: {profit_rate:.2f}%, 수수료: {commission:,.0f}원. 매매대금: {revenue:,.0f}원")
                 return True
             else:
                 logging.warning(f"[{current_dt.isoformat()}] {stock_code}: 보유하지 않은 종목 또는 수량 부족으로 매도 불가.")

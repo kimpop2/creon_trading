@@ -679,46 +679,34 @@ class TripleScreenDaily(DailyStrategy):
             # 2. 매수 후보 종목 선정 (점수 기준 상위 N개)
             sorted_stocks = sorted(triple_screen_scores.items(), key=lambda x: x[1], reverse=True)
             buy_candidates = set()
-            
             for i, (stock_code, score) in enumerate(sorted_stocks):
                 if i < self.strategy_params['num_top_stocks']:
                     buy_candidates.add(stock_code)
                     logger.info(f'매수 후보 {i+1}: {stock_code} (점수: {score:.3f})')
-            
             if not buy_candidates:
                 logger.warning('매수 후보 종목이 없습니다.')
                 return
             
-            # 3. 매도 후보 종목 선정 (현재 보유 중인 종목 중에서 매도 조건 확인)
+            # 3. 매도 후보 종목 선정 (매수 후보에서 제외된 보유 종목 + 명시적 매도 조건)
             sell_candidates = set()
             current_positions = set(self.broker.positions.keys())
-            
             for stock_code in current_positions:
                 if stock_code == self.strategy_params['safe_asset_code']:
                     continue
-                
-                # 매도 조건 확인 (전일 데이터 기준)
-                if self._should_sell_stock(stock_code, prev_trading_day):
+                # 매수 후보에서 빠진 종목은 무조건 매도 후보
+                if stock_code not in buy_candidates:
+                    sell_candidates.add(stock_code)
+                    logger.info(f'매수 후보 제외로 인한 매도 후보 추가: {stock_code}')
+                # 명시적 매도 조건도 추가
+                elif self._should_sell_stock(stock_code, prev_trading_day):
                     sell_candidates.add(stock_code)
                     logger.info(f'매도 후보: {stock_code} (매도 조건 만족)')
             
             # 4. 신호 생성 및 업데이트 (부모 클래스 메서드 사용) - 전일 데이터 기준
-            current_positions = self._generate_signals(prev_trading_day, buy_candidates, sorted_stocks)
+            final_positions = self._generate_signals(prev_trading_day, buy_candidates, sorted_stocks, sell_candidates)
             
-            # 5. 매도 신호 추가 (전일 데이터 기준)
-            for stock_code in sell_candidates:
-                current_position_size = self.broker.get_position_size(stock_code)
-                if current_position_size > 0:
-                    self.signals[stock_code] = {
-                        'signal': 'sell',
-                        'signal_date': prev_trading_day,  # 수정: 전일 날짜 사용
-                        'traded_today': False,
-                        'target_quantity': current_position_size
-                    }
-                    logger.info(f'매도 신호 - {stock_code} (보유중): {current_position_size}주')
-            
-            # 6. 리밸런싱 계획 요약 로깅 (전일 데이터 기준)
-            self._log_rebalancing_summary(prev_trading_day, buy_candidates, current_positions)
+            # 5. 리밸런싱 계획 요약 로깅 (전일 데이터 기준)
+            self._log_rebalancing_summary(prev_trading_day, buy_candidates, final_positions, sell_candidates)
             
             logger.info(f"[{prev_trading_day}] 삼중창 시스템 일봉 로직 실행 완료: {len(buy_candidates)}개 신호")
             
