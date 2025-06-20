@@ -1,9 +1,0 @@
-diff a/run_backtest.py b/run_backtest.py	(rejected hunks)
-@@ -101,7 +101,6 @@
-     }
-     
-     # 백테스트 기간 설정
--    daily_data_fetch_start = '20250301' 
-     daily_data_fetch_start = datetime.datetime(2024, 3, 1, 9, 0, 0).date()
-     backtest_start_date = datetime.datetime(2024, 4, 1, 9, 0, 0).date()
-     backtest_end_date = datetime.datetime(2025, 6, 4, 3, 30, 0).date()

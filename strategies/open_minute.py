@@ -30,20 +30,29 @@ class OpenMinute(MinuteStrategy):
         self.rsi_cache = {}  # RSI 캐시 추가
         self.last_prices = {}  # 마지막 가격 캐시 추가
         self.last_rsi_values = {}  # 마지막 RSI 값 캐시 추가
-        
+        # 가상 분봉 범위 캐시 추가
+        self.virtual_range_cache = {}
         # 파라미터 검증
         self._validate_parameters()
         
     def _validate_parameters(self):
         """전략 파라미터 검증"""
-        required_params = ['num_top_stocks']  # RSI 파라미터 제거
-        
+        required_params = [
+            'num_top_stocks',
+            'minute_rsi_period',
+            'minute_rsi_oversold',
+            'minute_rsi_overbought'
+        ]
         for param in required_params:
             if param not in self.strategy_params:
                 raise ValueError(f"필수 파라미터 누락: {param}")
-        
-        logger.info(f"OpenMinute 전략 파라미터 검증 완료: "
-                   f"선택종목수={self.strategy_params['num_top_stocks']}")
+        logger.info(
+            f"OpenMinute 전략 파라미터 검증 완료: "
+            f"선택종목수={self.strategy_params['num_top_stocks']}, "
+            f"RSI기간={self.strategy_params['minute_rsi_period']}, "
+            f"과매도={self.strategy_params['minute_rsi_oversold']}, "
+            f"과매수={self.strategy_params['minute_rsi_overbought']}"
+        )
 
     def update_signals(self, signals):
         """
@@ -53,12 +62,6 @@ class OpenMinute(MinuteStrategy):
             stock_code: {**info, 'traded_today': False}
             for stock_code, info in signals.items()
         }
-        logging.debug(f"OpenMinute: {len(self.signals)}개의 시그널로 업데이트 완료. 첫 종목: {next(iter(self.signals), 'N/A')}")
-        
-        # 디버그: 신호 정보 상세 출력
-        for stock_code, signal_info in self.signals.items():
-            if signal_info.get('signal') in ['buy', 'sell']:
-                logging.debug(f"OpenMinute 신호 업데이트 - {stock_code}: signal={signal_info.get('signal')}, target_quantity={signal_info.get('target_quantity', 'N/A')}")
 
     def _calculate_rsi(self, historical_data, stock_code):
         """
@@ -208,143 +211,129 @@ class OpenMinute(MinuteStrategy):
             logger.error(f"과거 분봉 데이터 생성 오류 ({stock_code}): {str(e)}")
             return pd.DataFrame()
 
-    def _calculate_daily_rsi(self, stock_code, current_date):
-        """
-        일봉 데이터로 RSI를 계산합니다.
-        """
-        try:
-            # 과거 일봉 데이터로 RSI 계산
-            historical_daily = self._get_historical_data_up_to('daily', stock_code, current_date, lookback_period=14)
-            
-            if len(historical_daily) < 14:
-                return None
-            
-            # RSI 계산
-            delta = historical_daily['close'].diff()
-            gains = delta.where(delta > 0, 0)
-            losses = -delta.where(delta < 0, 0)
-            
-            avg_gain = gains.rolling(window=14, min_periods=1).mean().iloc[-1]
-            avg_loss = losses.rolling(window=14, min_periods=1).mean().iloc[-1]
-            
-            if avg_loss == 0:
-                rsi = 100
-            else:
-                rs = avg_gain / avg_loss
-                rsi = 100 - (100 / (1 + rs))
-            
-            return rsi
-            
-        except Exception as e:
-            logger.error(f"일봉 RSI 계산 오류 ({stock_code}): {str(e)}")
-            return None
-
-    def _estimate_rsi_threshold_prices(self, prev_close, today_high, today_low, rsi_period=14, overbought=70, oversold=30):
-        """
-        전일 종가와 오늘 고가/저가를 이용해 RSI 과매수/과매도 가격을 근사적으로 계산합니다.
-        (단순히 오늘 변동폭이 모두 상승/하락이라고 가정)
-        """
-        # 상승만 일어났을 때의 RSI
-        gain = today_high - prev_close if today_high > prev_close else 0
-        loss = prev_close - today_low if today_low < prev_close else 0
-        # 평균상승/하락폭을 단일 변화로 근사
-        avg_gain = gain / rsi_period
-        avg_loss = loss / rsi_period
-        # 과매수 가격: RSI=overbought가 되는 가격
-        if avg_loss == 0:
-            price_overbought = today_high
-        else:
-            rs = avg_gain / avg_loss if avg_loss > 0 else 100
-            rsi = 100 - (100 / (1 + rs))
-            # 역산 불가, 그냥 고가 사용
-            price_overbought = today_high
-        # 과매도 가격: RSI=oversold가 되는 가격
-        if avg_gain == 0:
-            price_oversold = today_low
-        else:
-            rs = avg_gain / avg_loss if avg_loss > 0 else 0.01
-            rsi = 100 - (100 / (1 + rs))
-            # 역산 불가, 그냥 저가 사용
-            price_oversold = today_low
-        return price_overbought, price_oversold
-
-    def run_minute_logic(self, current_dt, stock_code):
+    def run_minute_logic(self, current_dt, stock_code): # current_dt 현재날짜시각
         """
         OpenMinute 전략: 분봉 데이터 없이 일봉만으로 RSI 매매/강제매매 시뮬레이션
+        하루에 1번만 매매가 가능하도록 traded_today 체크를 강화
         """
-        current_minutes = current_dt.hour * 60 + current_dt.minute
-        if current_minutes != 9 * 60 + 1:
+        # 조건문 단축: 신호 없거나 이미 거래했거나, 신호가 buy/sell이 아니면 바로 return
+        if (
+            stock_code not in self.signals or
+            self.signals[stock_code].get('traded_today', False) or
+            self.signals[stock_code].get('signal') not in ['buy', 'sell']
+        ):
             return
+        signal_info = self.signals[stock_code]
+        momentum_signal = signal_info.get('signal')
+        # 캐시 키
+        cache_key = (stock_code, current_dt.date())
+        if cache_key in self.virtual_range_cache:
+            virtual_high, virtual_low = self.virtual_range_cache[cache_key]
+        else:
+            # 가상 분봉 범위 계산 (기존 코드)
+            daily_df = self.data_store['daily'].get(stock_code)
+            if daily_df is None or daily_df.empty:
+                return
+            date_data = daily_df[daily_df.index.date == current_dt.date()]
+            if date_data.empty:
+                return
+            current_price = date_data['open'].iloc[0]
+            prev_data = daily_df[daily_df.index.date < current_dt.date()]
+            if prev_data.empty:
+                return
+            prev_close = prev_data['close'].iloc[-1]
+            N = 5
+            virtual_range_ratio = 0.3
+            if len(prev_data) < N:
+                return
+            recent_highs = prev_data['high'].iloc[-N:]
+            recent_lows = prev_data['low'].iloc[-N:]
+            avg_range = (recent_highs - recent_lows).mean()
+            virtual_range = avg_range * virtual_range_ratio
+            virtual_high = prev_close + virtual_range
+            virtual_low = prev_close - virtual_range
+            self.virtual_range_cache[cache_key] = (virtual_high, virtual_low)
+
+        # 매일 루프 시작 시 캐시 초기화 필요 (벡터화/메모리 관리)
+        self.reset_virtual_range_cache()
+        # 보유종목 수
         current_position_size = self.broker.get_position_size(stock_code)
+        # 목표가 (전일 종가 기준)
+        target_price = signal_info.get('target_price')
+        # 오늘 일봉
         daily_df = self.data_store['daily'].get(stock_code)
         if daily_df is None or daily_df.empty:
             return
         date_data = daily_df[daily_df.index.date == current_dt.date()]
         if date_data.empty:
             return
+        
+        # 시가==현재가
         current_price = date_data['open'].iloc[0]
         today_high = date_data['high'].iloc[0]
         today_low = date_data['low'].iloc[0]
+        
         # 전일 종가 필요
         prev_data = daily_df[daily_df.index.date < current_dt.date()]
         if prev_data.empty:
             return
         prev_close = prev_data['close'].iloc[-1]
-        # 최근 5일 변동폭 평균 계산 및 가상 고가/저가 비율 상수화
-        N = 5
-        virtual_range_ratio = 0.3  # 상수로 고정
-        if len(prev_data) < N:
-            return  # 데이터 부족 시 매매하지 않음
-        recent_highs = prev_data['high'].iloc[-N:]
-        recent_lows = prev_data['low'].iloc[-N:]
-        avg_range = (recent_highs - recent_lows).mean()
-        virtual_range = avg_range * virtual_range_ratio
-        virtual_high = current_price + virtual_range
-        virtual_low = current_price - virtual_range
-
-        # 1. 손절매 (모든 보유 종목)
+        
+        # 1. 손절매 (모든 보유 종목) - 하루에 1번만 실행
         if current_position_size > 0:
             stop_loss_ratio = self.broker.stop_loss_params.get('stop_loss_ratio', 0.05)
             trailing_stop_ratio = self.broker.stop_loss_params.get('trailing_stop_ratio', 0.02)
+
             position_info = self.broker.positions.get(stock_code, {})
             avg_price = position_info.get('avg_price', 0)
             fixed_stop_price = avg_price * (1 - stop_loss_ratio) if avg_price > 0 else 0
             highest_price = position_info.get('highest_price', current_price)
             trailing_stop_price = highest_price * (1 - trailing_stop_ratio)
+
             if current_price <= trailing_stop_price:
                 logging.info(f'[트레일링 매도] {current_dt.isoformat()} - {stock_code} 현재가: {current_price:,.0f}원, 트레일링손절: {trailing_stop_price:,.0f}원, 수량: {current_position_size}주')
                 if self.broker.execute_order(stock_code, 'sell', current_price, current_position_size, current_dt):
                     self.reset_signal(stock_code)
-                    return
+                
             elif current_price <= fixed_stop_price and fixed_stop_price > 0:
                 logging.info(f'[손절매] {current_dt.isoformat()} - {stock_code} 현재가: {current_price:,.0f}원, 고정손절: {fixed_stop_price:,.0f}원, 수량: {current_position_size}주')
                 if self.broker.execute_order(stock_code, 'sell', current_price, current_position_size, current_dt):
                     self.reset_signal(stock_code)
-                    return
-        # 2. 신호가 있는 종목만 RSI/강제매매
+                
+        # 2. 신호가 있는 종목만 RSI/강제매매 - 하루에 1번만 실행
         if stock_code not in self.signals:
             return
-        signal_info = self.signals[stock_code]
+        
+        # signal_info = self.signals[stock_code]
         momentum_signal = signal_info.get('signal')
         if momentum_signal not in ['buy', 'sell']:
             return
+        
+        # 추가 체크: 이미 거래했는지 다시 확인
         if signal_info.get('traded_today', False):
+            logging.debug(f"[{current_dt.isoformat()}] {stock_code}: 이미 오늘 거래 완료. 신호 매매 건너뜀.")
             return
+            
         # 3. RSI 매매 시뮬레이션 (가상 고가/저가 사용)
         if momentum_signal == 'buy' and current_position_size == 0:
-            if virtual_low <= current_price <= virtual_high:
+            if virtual_low <= target_price <= virtual_high:
                 target_quantity = signal_info.get('target_quantity', 0)
+                
                 if target_quantity > 0:
                     logging.info(f'[RSI 매수] {current_dt.isoformat()} - {stock_code} 가상저가: {virtual_low:,.0f}원, 시가: {current_price:,.0f}원, 수량: {target_quantity}주')
-                    if self.broker.execute_order(stock_code, 'buy', current_price, target_quantity, current_dt):
+                    if self.broker.execute_order(stock_code, 'buy', virtual_low, target_quantity, current_dt):
                         self.reset_signal(stock_code)
-                        return
             else:
-                if virtual_low > current_price or virtual_high < current_price:
-                    logging.info(f'[미체결][매수 연기] {current_dt.isoformat()} - {stock_code} 목표가: {virtual_low:,.0f}~{virtual_high:,.0f}원 범위 이탈 (사유: 현금 부족/범위 이탈 등)')
-        # 9:01에 신호 상태 로그 남기기
-        if stock_code in self.signals:
-            signal_info = self.signals[stock_code]
-            logging.debug(f"[시그널체크] {current_dt.isoformat()} - {stock_code} signal={signal_info.get('signal')}, qty={signal_info.get('target_quantity')}, traded_today={signal_info.get('traded_today')}, position={current_position_size}")
-        else:
-            logging.debug(f"[시그널체크] {current_dt.isoformat()} - {stock_code} 신호 없음, position={current_position_size}") 
+                logging.info(f'[매수 취소] {current_dt.isoformat()} - {stock_code} 목표가: {target_price} {virtual_low:,.0f}~{virtual_high:,.0f}원 범위 이탈 (사유: 현금 부족/범위 이탈 등)')
+
+        if momentum_signal == 'sell' and current_position_size > 0:
+            if virtual_low <= target_price <= virtual_high:
+                #target_quantity = signal_info.get('target_quantity', 0)
+                logging.info(f'[RSI 매도] {current_dt.isoformat()} - {stock_code} 가상고가: {virtual_high:,.0f}원, 시가: {current_price:,.0f}원, 수량: {current_position_size}주')
+                if self.broker.execute_order(stock_code, 'sell', virtual_high, current_position_size, current_dt):
+                    self.reset_signal(stock_code)
+            else:
+                logging.info(f'[매도 취소] {current_dt.isoformat()} - {stock_code} 목표가: {target_price} {virtual_low:,.0f}~{virtual_high:,.0f}원 범위 이탈 (사유: 범위 이탈 등)')
+
+    def reset_virtual_range_cache(self):
+        self.virtual_range_cache = {} 

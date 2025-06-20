@@ -603,17 +603,33 @@ class TripleScreenDaily(DailyStrategy):
     def run_daily_logic(self, current_date: datetime.date):
         """
         일봉 데이터를 기반으로 삼중창 시스템 전략 로직을 실행합니다.
+        수정: 전일 데이터까지만 사용하여 장전 판단이 가능하도록 함
         
         Args:
             current_date: 현재 날짜
         """
         try:
-            logger.info(f'[{current_date.isoformat()}] --- 일간 삼중창 시스템 로직 실행 중 ---')
+            logger.info(f'[{current_date.isoformat()}] --- 일간 삼중창 시스템 로직 실행 중 (전일 데이터 기준) ---')
+            
+            # 수정: 전일 영업일 계산
+            prev_trading_day = None
+            for stock_code in self.data_store['daily']:
+                df = self.data_store['daily'][stock_code]
+                if not df.empty and current_date in df.index.date:
+                    idx = list(df.index.date).index(current_date)
+                    if idx > 0:
+                        prev_trading_day = df.index.date[idx-1]
+                        break
+            
+            # 수정: 전일 데이터가 없으면 실행하지 않음
+            if prev_trading_day is None:
+                logger.warning(f'{current_date}: 전일 데이터를 찾을 수 없어 삼중창 전략을 건너뜁니다.')
+                return
             
             # signals 초기화
             self._initialize_signals_for_all_stocks()
             
-            # 1. 모든 종목의 삼중창 점수 계산
+            # 1. 모든 종목의 삼중창 점수 계산 (전일 데이터 기준)
             triple_screen_scores = {}
             for stock_code in self.data_store['daily']:
                 if stock_code == self.strategy_params['safe_asset_code']:
@@ -631,8 +647,9 @@ class TripleScreenDaily(DailyStrategy):
                     self.strategy_params['volume_ma_period']
                 )
                 
+                # 수정: prev_trading_day까지만 사용하여 장전 판단
                 historical_data = self._get_historical_data_up_to(
-                    'daily', stock_code, current_date, lookback_period=required_periods + 1
+                    'daily', stock_code, prev_trading_day, lookback_period=required_periods + 1
                 )
                 
                 if len(historical_data) < required_periods:
@@ -642,8 +659,8 @@ class TripleScreenDaily(DailyStrategy):
                 # 캐시 초기화 (증분 계산을 위해)
                 self._initialize_caches(stock_code, historical_data)
                 
-                # 삼중창 필터링 통과 여부 확인
-                screen_result = self._apply_triple_screen(stock_code, current_date)
+                # 삼중창 필터링 통과 여부 확인 (전일 데이터 기준)
+                screen_result = self._apply_triple_screen(stock_code, prev_trading_day)
                 
                 if screen_result['passed']:
                     # 종합 점수 계산
@@ -653,7 +670,7 @@ class TripleScreenDaily(DailyStrategy):
                         screen_result['screen3']['pattern_score'] * TripleScreenConstants.PATTERN_SCORE_WEIGHT
                     )
                     triple_screen_scores[stock_code] = total_score
-                    logger.info(f"[{current_date}] {stock_code}: 삼중창 통과 (점수: {total_score:.3f})")
+                    logger.info(f"[{prev_trading_day}] {stock_code}: 삼중창 통과 (점수: {total_score:.3f})")
             
             if not triple_screen_scores:
                 logger.warning('계산된 삼중창 점수가 없습니다.')
@@ -680,30 +697,30 @@ class TripleScreenDaily(DailyStrategy):
                 if stock_code == self.strategy_params['safe_asset_code']:
                     continue
                 
-                # 매도 조건 확인
-                if self._should_sell_stock(stock_code, current_date):
+                # 매도 조건 확인 (전일 데이터 기준)
+                if self._should_sell_stock(stock_code, prev_trading_day):
                     sell_candidates.add(stock_code)
                     logger.info(f'매도 후보: {stock_code} (매도 조건 만족)')
             
-            # 4. 신호 생성 및 업데이트 (부모 클래스 메서드 사용)
-            current_positions = self._generate_signals(current_date, buy_candidates, sorted_stocks)
+            # 4. 신호 생성 및 업데이트 (부모 클래스 메서드 사용) - 전일 데이터 기준
+            current_positions = self._generate_signals(prev_trading_day, buy_candidates, sorted_stocks)
             
-            # 5. 매도 신호 추가
+            # 5. 매도 신호 추가 (전일 데이터 기준)
             for stock_code in sell_candidates:
                 current_position_size = self.broker.get_position_size(stock_code)
                 if current_position_size > 0:
                     self.signals[stock_code] = {
                         'signal': 'sell',
-                        'signal_date': current_date,
+                        'signal_date': prev_trading_day,  # 수정: 전일 날짜 사용
                         'traded_today': False,
                         'target_quantity': current_position_size
                     }
                     logger.info(f'매도 신호 - {stock_code} (보유중): {current_position_size}주')
             
-            # 6. 리밸런싱 계획 요약 로깅
-            self._log_rebalancing_summary(current_date, buy_candidates, current_positions)
+            # 6. 리밸런싱 계획 요약 로깅 (전일 데이터 기준)
+            self._log_rebalancing_summary(prev_trading_day, buy_candidates, current_positions)
             
-            logger.info(f"[{current_date}] 삼중창 시스템 일봉 로직 실행 완료: {len(buy_candidates)}개 신호")
+            logger.info(f"[{prev_trading_day}] 삼중창 시스템 일봉 로직 실행 완료: {len(buy_candidates)}개 신호")
             
         except Exception as e:
             logger.error(f"삼중창 시스템 일봉 로직 실행 중 오류: {str(e)}")

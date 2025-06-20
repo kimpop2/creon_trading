@@ -44,26 +44,46 @@ class SectorRotationDaily(DailyStrategy):
                    f"상위섹터수={self.strategy_params['num_top_sectors']}개")
     
     def run_daily_logic(self, current_date: datetime.date):
+        """
+        섹터 로테이션 전략 실행
+        수정: 전일 데이터까지만 사용하여 장전 판단이 가능하도록 함
+        """
         try:
-            logger.info(f'[{current_date.isoformat()}] --- 섹터 로테이션 전략 실행 중 ---')
-            if not self._should_rebalance(current_date):
+            logger.info(f'[{current_date.isoformat()}] --- 섹터 로테이션 전략 실행 중 (전일 데이터 기준) ---')
+            
+            # 수정: 전일 영업일 계산
+            prev_trading_day = None
+            for stock_code in self.data_store['daily']:
+                df = self.data_store['daily'][stock_code]
+                if not df.empty and current_date in df.index.date:
+                    idx = list(df.index.date).index(current_date)
+                    if idx > 0:
+                        prev_trading_day = df.index.date[idx-1]
+                        break
+
+            # 수정: 전일 데이터가 없으면 실행하지 않음
+            if prev_trading_day is None:
+                logger.warning(f'{current_date}: 전일 데이터를 찾을 수 없어 섹터 로테이션 전략을 건너뜁니다.')
                 return
-            # 1. 섹터별 모멘텀 계산
-            sector_momentums = self._calculate_sector_momentums(current_date)
+            
+            if not self._should_rebalance(prev_trading_day):  # 수정: prev_trading_day 사용
+                return
+            # 1. 섹터별 모멘텀 계산 (전일 데이터 기준)
+            sector_momentums = self._calculate_sector_momentums(prev_trading_day)  # 수정: prev_trading_day 사용
             # 2. 상위 섹터 선정
             top_sectors = self._select_top_sectors(sector_momentums)
-            # 3. 섹터별 상위 종목 선정
-            sector_stocks = self._select_sector_stocks(top_sectors, current_date)
+            # 3. 섹터별 상위 종목 선정 (전일 데이터 기준)
+            sector_stocks = self._select_sector_stocks(top_sectors, prev_trading_day)  # 수정: prev_trading_day 사용
             # 4. 전체 매수 후보 종목 리스트 생성
             buy_candidates = set()
             for stocks in sector_stocks.values():
                 buy_candidates.update(stocks)
             # 5. 점수 기준 정렬 (여기서는 모멘텀 점수 없음, 임의로 1.0 부여)
             sorted_stocks = [(code, 1.0) for code in buy_candidates]
-            # 6. 신호 생성 및 업데이트 (부모 클래스 메서드 사용)
-            current_positions = self._generate_signals(current_date, buy_candidates, sorted_stocks)
-            # 7. 리밸런싱 계획 요약 로깅
-            self._log_rebalancing_summary(current_date, buy_candidates, current_positions)
+            # 6. 신호 생성 및 업데이트 (부모 클래스 메서드 사용) - 전일 데이터 기준
+            current_positions = self._generate_signals(prev_trading_day, buy_candidates, sorted_stocks)  # 수정: prev_trading_day 사용
+            # 7. 리밸런싱 계획 요약 로깅 (전일 데이터 기준)
+            self._log_rebalancing_summary(prev_trading_day, buy_candidates, current_positions)  # 수정: prev_trading_day 사용
         except Exception as e:
             logger.error(f"섹터 로테이션 전략 실행 중 오류: {str(e)}")
             import traceback

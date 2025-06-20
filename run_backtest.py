@@ -11,6 +11,13 @@ import numpy as np
 import time
 import sys
 import os 
+import codecs
+
+# Windows 환경에서 한글 출력을 위한 콘솔 인코딩 설정
+if sys.platform.startswith('win'):
+    import locale
+    # 콘솔 출력 인코딩을 UTF-8로 설정
+    sys.stdout.reconfigure(encoding='utf-8')
 
 # 현재 스크립트의 경로를 sys.path에 추가하여 모듈 임포트 가능하게 함
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -31,20 +38,32 @@ from selector.stock_selector import StockSelector
 from config.sector_config import sector_stocks  # 공통 설정 파일에서 import
 
 # --- 로깅 설정 ---
-logging.basicConfig(level=logging.INFO,
-                    format='%(asctime)s - %(levelname)s - %(message)s',
-                    datefmt='%Y-%m-%d %H:%M:%S',
-                    handlers=[ 
-                        logging.FileHandler("backtest_run.log", encoding='utf-8'), 
-                        logging.StreamHandler(sys.stdout) 
-                    ])
+# UTF-8 인코딩으로 콘솔 출력을 위한 StreamHandler 생성
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setLevel(logging.INFO)
+console_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+console_handler.setFormatter(console_formatter)
+
+# 파일 핸들러 생성
+file_handler = logging.FileHandler("backtest_run.log", encoding='utf-8')
+file_handler.setLevel(logging.DEBUG)
+file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+file_handler.setFormatter(file_formatter)
+
+# 로거 설정
+logging.basicConfig(
+    level=logging.DEBUG,
+    handlers=[file_handler, console_handler]
+)
+
+
 
 if __name__ == '__main__':
     logging.info("삼중창 전략 백테스트를 실행합니다.")
 
     # 백테스트 기간 설정 (최적화 기간과 동일)
-    backtest_start_date     = datetime.datetime(2025, 12, 1, 9, 0, 0).date()
-    backtest_end_date       = datetime.datetime(2025, 4, 1, 3, 30, 0).date()
+    backtest_start_date     = datetime.datetime(2025, 1, 1, 9, 0, 0).date()
+    backtest_end_date       = datetime.datetime(2025, 6, 20, 3, 30, 0).date()
 
     # 일봉 데이터 가져오기 시작일을 백테스트 시작일 한 달 전으로 자동 설정
     daily_data_fetch_start = (backtest_start_date - datetime.timedelta(days=30)).replace(day=1)
@@ -89,9 +108,9 @@ if __name__ == '__main__':
     dual_daily_strategy = DualMomentumDaily(
         data_store=backtester_instance.data_store,
         strategy_params={
-            'momentum_period': 15,         # 최적화 결과: 15일
-            'rebalance_weekday': 0,        # 최적화 결과: 월요일 (0)
-            'num_top_stocks': 5,           # 최적화 결과: 5개
+            'momentum_period': 15,         #  15일
+            'rebalance_weekday': 0,        #  월요일 (0)
+            'num_top_stocks': 5,           #  5개
             'safe_asset_code': 'A439870',  # 안전자산 코드 (국고채 ETF)
         },
         broker=backtester_instance.broker
@@ -101,7 +120,7 @@ if __name__ == '__main__':
         data_store=backtester_instance.data_store,
         strategy_params={
             'momentum_period': 15,         # 듀얼 모멘텀처럼 기간 설정이 필요하다면 추가
-            'num_top_stocks': 5,           # 최적화 결과: 5개
+            'num_top_stocks': 5,           #  5개
             'safe_asset_code': 'A439870', # 안전자산 코드
         },
         broker=backtester_instance.broker 
@@ -111,10 +130,10 @@ if __name__ == '__main__':
     sma_daily_strategy = SMADaily(
         data_store=backtester_instance.data_store,
         strategy_params={
-            'short_sma_period': 4,          # 최적화 결과: 4일
-            'long_sma_period': 10,          # 최적화 결과: 10일
-            'volume_ma_period': 6,          # 최적화 결과: 6일
-            'num_top_stocks': 5,            # 최적화 결과: 5개
+            'short_sma_period': 1,          #  4일
+            'long_sma_period': 8,          #  10일
+            'volume_ma_period': 2,          #  6일
+            'num_top_stocks': 7,            #  5개
             'safe_asset_code': 'A439870',   # 안전자산 코드
         },
         broker=backtester_instance.broker
@@ -124,7 +143,10 @@ if __name__ == '__main__':
     open_minute_strategy = OpenMinute(
         data_store=backtester_instance.data_store,
         strategy_params={
-            'num_top_stocks': 3,            # 일봉 전략과 동일한 값으로 설정
+            'minute_rsi_period': 52,        #  52분
+            'minute_rsi_oversold': 34,      # 과매도 
+            'minute_rsi_overbought': 70,    # 과매수
+            'num_top_stocks': 7,            # 일봉 전략과 동일한 값으로 설정
         },
         broker=backtester_instance.broker
     )
@@ -133,10 +155,10 @@ if __name__ == '__main__':
     rsi_minute_strategy = RSIMinute(
         data_store=backtester_instance.data_store,
         strategy_params={
-            'minute_rsi_period': 52,        # 최적화 결과: 52분
-            'minute_rsi_oversold': 34,      # 최적화 결과: 34
-            'minute_rsi_overbought': 74,    # 최적화 결과: 74
-            'num_top_stocks': 5,            # 일봉 전략과 동일한 값으로 설정
+            'minute_rsi_period': 52,        #  52분
+            'minute_rsi_oversold': 34,      # 과매도 
+            'minute_rsi_overbought': 70,    # 과매수
+            'num_top_stocks': 7,            # 일봉 전략과 동일한 값으로 설정
         },
         broker=backtester_instance.broker
     )
@@ -145,15 +167,16 @@ if __name__ == '__main__':
     #backtester_instance.set_strategies(daily_strategy=triple_screen_daily_strategy, minute_strategy=rsi_minute_strategy)
     #backtester_instance.set_strategies(daily_strategy=dual_daily_strategy, minute_strategy=rsi_minute_strategy)
     #backtester_instance.set_strategies(daily_strategy=temp_daily_strategy, minute_strategy=rsi_minute_strategy)
-    backtester_instance.set_strategies(daily_strategy=sma_daily_strategy, minute_strategy=rsi_minute_strategy)
+    #backtester_instance.set_strategies(daily_strategy=sma_daily_strategy, minute_strategy=rsi_minute_strategy)
+    backtester_instance.set_strategies(daily_strategy=sma_daily_strategy, minute_strategy=open_minute_strategy)
     
     # Broker에 손절매 파라미터 설정 (기본 설정)
     stop_loss_params = {
-        'stop_loss_ratio': -5.0,         # 기본값: -5.0% (충분한 여유)
-        'trailing_stop_ratio': -3.0,     # 기본값: -3.0% (표준 트레일링)
-        'portfolio_stop_loss': -5.0,     # 기본값: -5.0% (포트폴리오 손절)
-        'early_stop_loss': -5.0,         # 기본값: -5.0% (조기 손절)
-        'max_losing_positions': 3,       # 기본값: 3개 (적당한 손실 허용)
+        'stop_loss_ratio': -2.5,         # 기본값: -5.0% (충분한 여유)
+        'trailing_stop_ratio': -2.5,     # 기본값: -3.0% (표준 트레일링)
+        'portfolio_stop_loss': -2.0,     # 기본값: -5.0% (포트폴리오 손절)
+        'early_stop_loss': -2.5,         # 기본값: -5.0% (조기 손절)
+        'max_losing_positions': 2,       # 기본값: 3개 (적당한 손실 허용)
     }
     backtester_instance.set_broker_stop_loss_params(stop_loss_params)
     

@@ -44,14 +44,35 @@ class BollingerRSIDaily(DailyStrategy):
                    f"RSI기간={self.strategy_params['rsi_period']}일")
     
     def run_daily_logic(self, current_date: datetime.date):
+        """
+        볼린저+RSI 전략 실행
+        수정: 전일 데이터까지만 사용하여 장전 판단이 가능하도록 함
+        """
         try:
-            logger.info(f'[{current_date.isoformat()}] --- 볼린저+RSI 전략 실행 중 ---')
-            # 1. 모든 종목 신호 계산
+            logger.info(f'[{current_date.isoformat()}] --- 볼린저+RSI 전략 실행 중 (전일 데이터 기준) ---')
+            
+            # 수정: 전일 영업일 계산
+            prev_trading_day = None
+            for stock_code in self.data_store['daily']:
+                df = self.data_store['daily'][stock_code]
+                if not df.empty and current_date in df.index.date:
+                    idx = list(df.index.date).index(current_date)
+                    if idx > 0:
+                        prev_trading_day = df.index.date[idx-1]
+                        break
+
+            # 수정: 전일 데이터가 없으면 실행하지 않음
+            if prev_trading_day is None:
+                logger.warning(f'{current_date}: 전일 데이터를 찾을 수 없어 볼린저+RSI 전략을 건너뜁니다.')
+                return
+            
+            # 1. 모든 종목 신호 계산 (전일 데이터 기준)
             signals = {}
             for stock_code in self.data_store['daily']:
                 if stock_code == self.strategy_params['safe_asset_code']:
                     continue
-                signal = self._calculate_stock_signal(stock_code, current_date)
+                # 수정: prev_trading_day 사용
+                signal = self._calculate_stock_signal(stock_code, prev_trading_day)
                 if signal and signal['signal'] == 'buy':
                     signals[stock_code] = signal
             # 2. 상위 신호만 추출 (점수 기준 정렬)
@@ -64,10 +85,10 @@ class BollingerRSIDaily(DailyStrategy):
             if not buy_candidates:
                 logger.warning('매수 후보 종목이 없습니다.')
                 return
-            # 3. 신호 생성 및 업데이트 (부모 클래스 메서드 사용)
-            current_positions = self._generate_signals(current_date, buy_candidates, sorted_stocks)
-            # 4. 리밸런싱 계획 요약 로깅
-            self._log_rebalancing_summary(current_date, buy_candidates, current_positions)
+            # 3. 신호 생성 및 업데이트 (부모 클래스 메서드 사용) - 전일 데이터 기준
+            current_positions = self._generate_signals(prev_trading_day, buy_candidates, sorted_stocks)
+            # 4. 리밸런싱 계획 요약 로깅 (전일 데이터 기준)
+            self._log_rebalancing_summary(prev_trading_day, buy_candidates, current_positions)
         except Exception as e:
             logger.error(f"볼린저+RSI 전략 실행 중 오류: {str(e)}")
             import traceback

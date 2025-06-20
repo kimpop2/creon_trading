@@ -5,14 +5,14 @@ from typing import Dict
 logger = logging.getLogger(__name__)
 # logger.setLevel(logging.DEBUG) # 테스트 시 DEBUG로 설정하여 모든 로그 출력 - 제거
 class Broker:
-    def __init__(self, initial_cash, commission_rate=0.0016, slippage_rate=0.0004):
+    def __init__(self, initial_cash, commission_rate=0.0003, slippage_rate=0.0):
         self.cash = initial_cash
         self.positions = {}  # {stock_code: {'size': int, 'avg_price': float, 'entry_date': datetime.date, 'highest_price': float}}
         self.transaction_log = [] # (date, stock_code, type, price, quantity, commission, net_amount)
         self.commission_rate = commission_rate
         self.slippage_rate = slippage_rate
         self.stop_loss_params = None
-        logging.info(f"브로커 초기화: 초기 현금 {self.cash:,.0f}원, 수수료율 {self.commission_rate*100:.2f}%, 슬리피지율 {self.slippage_rate*100:.2f}%")
+        logging.info(f"브로커 초기화: 초기 현금 {self.cash:,.0f}원, 수수료율 {self.commission_rate*100:.2f}%")
 
         # 손절매 관련 파라미터
         # self.stop_loss_ratio = None
@@ -42,10 +42,9 @@ class Broker:
             return False
 
         effective_price = price * (1 + self.slippage_rate if order_type == 'buy' else 1 - self.slippage_rate)
-        commission = effective_price * quantity * self.commission_rate
 
         if order_type == 'buy':
-            total_cost = effective_price * quantity + commission
+            total_cost = effective_price * quantity  # 커미션 없이
             if self.cash >= total_cost:
                 # 기존 포지션이 있으면 평균 단가 계산
                 if stock_code in self.positions and self.positions[stock_code]['size'] > 0:
@@ -55,36 +54,33 @@ class Broker:
                     new_avg_price = (current_avg_price * current_size + effective_price * quantity) / new_size
                     self.positions[stock_code]['size'] = new_size
                     self.positions[stock_code]['avg_price'] = new_avg_price
-                    # 매수 시점에 최고가도 현재가로 초기화 (트레일링 스탑을 위해)
                     self.positions[stock_code]['highest_price'] = effective_price
                 else:
                     self.positions[stock_code] = {
                         'size': quantity,
                         'avg_price': effective_price,
                         'entry_date': current_dt.date(),
-                        'highest_price': effective_price # 초기 최고가
+                        'highest_price': effective_price
                     }
                 self.cash -= total_cost
+                commission = 0  # 매수 시 커미션 없음
                 self.transaction_log.append((current_dt, stock_code, 'buy', price, quantity, commission, total_cost))
                 logging.info(f"[{current_dt.isoformat()}] {stock_code}: {quantity}주 매수. 가격: {price:,.0f}원 (실제: {effective_price:,.0f}원), 수수료: {commission:,.0f}원. 남은 현금: {self.cash:,.0f}원")
                 return True
             else:
-                logging.debug(f"[{current_dt.isoformat()}] {stock_code}: 현금 부족으로 매수 불가. 필요: {total_cost:,.0f}원, 현재: {self.cash:,.0f}원")
+                logging.warning(f"[{current_dt.isoformat()}] {stock_code}: 현금 부족으로 매수 불가. 필요: {total_cost:,.0f}원, 현재: {self.cash:,.0f}원")
                 return False
         
         elif order_type == 'sell':
             if stock_code in self.positions and self.positions[stock_code]['size'] > 0:
-                # 매도 수량이 현재 보유 수량보다 많으면, 보유 수량만큼만 매도
                 actual_quantity = min(quantity, self.positions[stock_code]['size'])
-                
+                commission = effective_price * actual_quantity * self.commission_rate  # 매도 시에만 커미션
                 revenue = effective_price * actual_quantity - commission
                 self.cash += revenue
                 self.transaction_log.append((current_dt, stock_code, 'sell', price, actual_quantity, commission, revenue))
-
                 self.positions[stock_code]['size'] -= actual_quantity
                 if self.positions[stock_code]['size'] == 0:
-                    del self.positions[stock_code] # 포지션 청산
-
+                    del self.positions[stock_code]
                 logging.info(f"[{current_dt.isoformat()}] {stock_code}: {actual_quantity}주 매도. 가격: {price:,.0f}원 (실제: {effective_price:,.0f}원), 수수료: {commission:,.0f}원. 남은 현금: {self.cash:,.0f}원")
                 return True
             else:
@@ -209,11 +205,15 @@ class Broker:
         """포트폴리오 전체 청산을 실행합니다."""
         for stock_code in list(self.positions.keys()):
             if self.positions[stock_code]['size'] > 0:
-                self.execute_order(stock_code, 'sell', current_prices[stock_code], 
-                                 self.positions[stock_code]['size'], current_dt)
-
+                #current_prices[stock_code]
+                self.positions[stock_code]['size']
+                # self.execute_order(stock_code, 'sell', current_prices[stock_code], 
+                #                   self.positions[stock_code]['size'], current_dt)
+                
     def reset_daily_transactions(self):
         """일일 거래 초기화를 수행합니다. 현재는 빈 메서드로 두어 향후 확장 가능하도록 합니다."""
         # 일일 거래 관련 상태를 초기화하는 로직이 필요할 때 여기에 추가
         # 예: 일일 거래 횟수 제한, 일일 손실 한도 등
         pass
+
+
