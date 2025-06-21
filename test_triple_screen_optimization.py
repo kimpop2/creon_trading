@@ -42,7 +42,7 @@ def test_triple_screen_grid_search():
     
     # 백테스트 기간 설정
     start_date = datetime.datetime(2025, 3, 1).date()
-    end_date = datetime.datetime(2025, 4, 1).date()
+    end_date = datetime.datetime(2025, 6, 20).date()
     
     # 그리드서치 최적화 실행
     optimizer = GridSearchOptimizer(

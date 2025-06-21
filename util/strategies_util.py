@@ -512,3 +512,27 @@ def calculate_performance_metrics(portfolio_values, risk_free_rate=0.03):
         'win_rate': win_rate,
         'profit_factor': profit_factor
     }
+
+def calculate_ema(series, period):
+    """지수이동평균(EMA)을 계산합니다."""
+    return series.ewm(span=period, adjust=False).mean()
+
+def calculate_macd(series, short_period=12, long_period=26, signal_period=9):
+    """
+    MACD (Moving Average Convergence Divergence)를 계산합니다.
+    MACD 라인, 시그널 라인, 히스토그램을 포함하는 DataFrame을 반환합니다.
+    """
+    ema_short = calculate_ema(series, period=short_period)
+    ema_long = calculate_ema(series, period=long_period)
+    
+    macd_line = ema_short - ema_long
+    signal_line = calculate_ema(macd_line, period=signal_period)
+    histogram = macd_line - signal_line
+    
+    macd_df = pd.DataFrame({
+        'macd': macd_line,
+        'macd_signal': signal_line,
+        'macd_histogram': histogram
+    })
+    
+    return macd_df
