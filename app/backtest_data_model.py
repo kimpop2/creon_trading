@@ -31,27 +31,42 @@ class BacktestDataModel:
         # 현재 선택된 run_id에 종속된 데이터
         self.current_trades = pd.DataFrame()
 
-    def load_all_backtest_runs(self):
+    def load_all_backtest_runs(self, progress_callback=None):
         """모든 백테스트 실행 정보를 로드하고 캐싱합니다."""
+        if progress_callback:
+            progress_callback(25, "백테스트 실행 정보를 데이터베이스에서 조회하는 중입니다...")
+        
         self.all_backtest_runs = self.backtest_manager.fetch_backtest_runs()
-        # 전략 파라미터를 미리 파싱하여 딕셔너리에 저장
-        for _, row in self.all_backtest_runs.iterrows():
-            run_id = row['run_id']
-            daily_params = row.get('params_json_daily', {})
-            minute_params = row.get('params_json_minute', {})
-            
-            if not isinstance(daily_params, dict): daily_params = {}
-            if not isinstance(minute_params, dict): minute_params = {}
-
-            self.run_strategy_params[run_id] = {
-                'daily': daily_params.copy(),
-                'minute': minute_params.copy()
-            }
-            # 시각화를 위해 전략 이름도 추가
-            self.run_strategy_params[run_id]['daily']['strategy_name'] = row.get('strategy_daily', '')
-            self.run_strategy_params[run_id]['minute']['strategy_name'] = row.get('strategy_minute', '')
-            
+        
+        if progress_callback:
+            progress_callback(70, "백테스트 실행 목록을 로딩하는 중입니다...")
+        
         return self.all_backtest_runs
+
+    def _get_strategy_params(self, run_id: int):
+        """특정 run_id의 전략 파라미터를 지연 로딩으로 가져옵니다."""
+        if run_id not in self.run_strategy_params:
+            run_info = self.all_backtest_runs[self.all_backtest_runs['run_id'] == run_id]
+            if not run_info.empty:
+                row = run_info.iloc[0]
+                
+                daily_params = row.get('params_json_daily', {})
+                minute_params = row.get('params_json_minute', {})
+                
+                if not isinstance(daily_params, dict): 
+                    daily_params = {}
+                if not isinstance(minute_params, dict): 
+                    minute_params = {}
+                
+                daily_params['strategy_name'] = row.get('strategy_daily', '')
+                minute_params['strategy_name'] = row.get('strategy_minute', '')
+                
+                self.run_strategy_params[run_id] = {
+                    'daily': daily_params,
+                    'minute': minute_params
+                }
+        
+        return self.run_strategy_params.get(run_id, {'daily': {}, 'minute': {}})
 
     def set_selected_run_id(self, run_id: int):
         """선택된 백테스트 run_id를 설정하고 관련 거래 데이터를 미리 로드합니다."""
@@ -92,7 +107,7 @@ class BacktestDataModel:
             
         start_date = run_info['start_date'].iloc[0]
         end_date = run_info['end_date'].iloc[0]
-        daily_params = self.run_strategy_params.get(self.current_run_id, {}).get('daily', {})
+        daily_params = self._get_strategy_params(self.current_run_id)['daily']
         
         daily_ohlcv = self.backtest_manager.fetch_daily_ohlcv_with_indicators(
             stock_code, start_date, end_date, daily_params
@@ -107,7 +122,7 @@ class BacktestDataModel:
         if not self.current_run_id or not trade_date:
             return pd.DataFrame(), pd.DataFrame(), {}
 
-        minute_params = self.run_strategy_params.get(self.current_run_id, {}).get('minute', {})
+        minute_params = self._get_strategy_params(self.current_run_id)['minute']
         
         minute_ohlcv = self.backtest_manager.fetch_minute_ohlcv_with_indicators(
             stock_code, trade_date, minute_params

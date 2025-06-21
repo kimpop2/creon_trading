@@ -256,51 +256,7 @@ class DBManager:
 
     def drop_backtest_tables(self):
         return self.execute_sql_file('drop_backtest_tables')
-    def fetch_backtest_run(self, run_id: int = None, start_date: date = None, end_date: date = None):
-        conn = self.get_db_connection()
-        if not conn: return pd.DataFrame()
-        
-        sql = """
-        SELECT run_id, start_date, end_date, initial_capital, final_capital, total_profit_loss, 
-               cumulative_return, max_drawdown, strategy_daily, strategy_minute, 
-               params_json_daily, params_json_minute, created_at
-        FROM backtest_run
-        WHERE 1=1
-        """
-        params = []
-        if run_id is not None:
-            sql += " AND run_id = %s"
-            params.append(run_id)
-        if start_date:
-            sql += " AND start_date >= %s"
-            params.append(start_date)
-        if end_date:
-            sql += " AND end_date <= %s"
-            params.append(end_date)
-        sql += " ORDER BY created_at DESC"
 
-        try:
-            # execute_sql 함수를 fetch=True로 호출하여 결과를 가져옵니다.
-            # (만약 execute_sql이 fetch를 인자로 받지 않는다면 이 부분을 수정해야 합니다.)
-            result = self.execute_sql(sql, tuple(params) if params else None, fetch=True) 
-            if result:
-                df = pd.DataFrame(result)
-                
-                # DECIMAL 타입 컬럼들을 float로 명시적으로 변환 (오류 방지)
-                numeric_cols = [
-                    'initial_capital', 'final_capital', 'total_profit_loss', 
-                    'cumulative_return', 'max_drawdown'
-                ]
-                for col in numeric_cols:
-                    if col in df.columns:
-                        # errors='coerce'는 변환 실패 시 NaN으로 처리하여 오류 발생 방지
-                        df[col] = pd.to_numeric(df[col], errors='coerce') 
-                return df
-            else:
-                return pd.DataFrame()
-        except Exception as e:
-            logger.error(f"백테스트 실행 정보 조회 오류 (run_id: {run_id}): {e}", exc_info=True)
-            return pd.DataFrame()
 
     def fetch_backtest_performance(self, run_id: int):
         conn = self.get_db_connection()

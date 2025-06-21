@@ -3,7 +3,8 @@
 import pandas as pd
 from datetime import date
 import logging
-from PyQt5.QtCore import QModelIndex, Qt
+from PyQt5.QtCore import QModelIndex, Qt, QTimer, QElapsedTimer
+from PyQt5.QtWidgets import QProgressDialog
 
 logger = logging.getLogger(__name__)
 
@@ -11,6 +12,8 @@ class BacktestController:
     def __init__(self, view, model):
         self.view = view
         self.model = model
+        self.loading_dialog = None
+        self.is_loading = False  # 로딩 중 상태 플래그 추가
         
         # 시그널을 먼저 연결하고, 그 다음에 데이터를 로드하여
         # 초기 선택 이벤트가 정상적으로 발생하도록 순서를 변경합니다.
@@ -26,95 +29,193 @@ class BacktestController:
         # 일봉 차트 클릭 이벤트 연결
         self.view.daily_chart_canvas.mpl_connect('button_press_event', self.on_daily_chart_click)
 
+    def show_loading_dialog(self, message="데이터를 로딩하는 중입니다..."):
+        """로딩 다이얼로그를 표시합니다."""
+        if self.loading_dialog is None:
+            self.loading_dialog = QProgressDialog(message, None, 0, 100, self.view)
+            self.loading_dialog.setWindowTitle("데이터 로딩 중...")
+            self.loading_dialog.setWindowModality(Qt.WindowModal)
+            self.loading_dialog.setCancelButton(None)
+            self.loading_dialog.setMinimumDuration(0)
+            
+            # 창 크기 조정
+            self.loading_dialog.resize(350, 120)
+            
+            # 타이머를 사용하여 프로그레스 바 애니메이션
+            self.loading_timer = QTimer(self.loading_dialog)
+            self.progress_value = 0
+
+            def advance_progress():
+                self.progress_value = (self.progress_value + 5) % 101 # 0~100 반복
+                self.loading_dialog.setValue(self.progress_value)
+
+            self.loading_timer.timeout.connect(advance_progress)
+            self.loading_timer.start(200) # 0.2초마다 업데이트
+        
+        self.loading_dialog.setLabelText(message)
+        self.loading_dialog.setValue(0)
+        self.loading_dialog.show()
+        from PyQt5.QtWidgets import QApplication
+        QApplication.instance().processEvents()
+
+    def hide_loading_dialog(self):
+        """로딩 다이얼로그를 숨깁니다."""
+        if self.loading_dialog:
+            self.loading_timer.stop()
+            self.loading_dialog.close()
+            self.loading_dialog = None
+
     def load_initial_data(self):
         """애플리케이션 시작 시 초기 데이터를 로드합니다."""
-        all_runs_df = self.model.load_all_backtest_runs()
-        self.view.update_run_list(all_runs_df)
-        if not all_runs_df.empty:
-            # 첫 번째 행을 자동으로 선택
-            self.view.run_table_view.selectRow(0)
+        self.show_loading_dialog("백테스트 실행 목록을 로딩하는 중입니다...")
+        try:
+            def update_progress(value, message):
+                if self.loading_dialog:
+                    self.loading_dialog.setValue(value)
+                    self.loading_dialog.setLabelText(message)
+                    from PyQt5.QtWidgets import QApplication
+                    QApplication.instance().processEvents()
+            
+            all_runs_df = self.model.load_all_backtest_runs(progress_callback=update_progress)
+            self.view.update_run_list(all_runs_df)
+            if not all_runs_df.empty:
+                # 첫 번째 행을 자동으로 선택
+                self.view.run_table_view.selectRow(0)
+        finally:
+            self.hide_loading_dialog()
 
     def on_run_search(self):
         """백테스트 실행 목록 검색 버튼 클릭 시 호출됩니다."""
         search_text = self.view.run_search_input.text()
-        filtered_df = self.model.search_backtest_runs(search_text)
-        self.view.update_run_list(filtered_df)
-        
-        # 검색 결과에 따라 뷰 상태 초기화
-        if filtered_df.empty:
-            # 검색 결과가 없으면 모든 뷰를 초기화
-            self.view.update_performance_list(pd.DataFrame(), -1)
-            self.view.update_traded_stocks_list(pd.DataFrame())
-            self.view.update_daily_chart(pd.DataFrame(), pd.DataFrame(), "N/A", {})
-            self.view.update_minute_chart(pd.DataFrame(), pd.DataFrame(), "N/A", date.today(), {})
+        self.show_loading_dialog("검색 결과를 로딩하는 중입니다...")
+        try:
+            filtered_df = self.model.search_backtest_runs(search_text)
+            self.view.update_run_list(filtered_df)
+            
+            # 검색 결과에 따라 뷰 상태 초기화
+            if filtered_df.empty:
+                # 검색 결과가 없으면 모든 뷰를 초기화
+                self.view.update_performance_list(pd.DataFrame(), -1)
+                self.view.update_traded_stocks_list(pd.DataFrame())
+                self.view.update_daily_chart(pd.DataFrame(), pd.DataFrame(), "N/A", {})
+                self.view.update_minute_chart(pd.DataFrame(), pd.DataFrame(), "N/A", date.today(), {})
+        finally:
+            self.hide_loading_dialog()
 
     def on_run_selected(self):
         """백테스트 실행 목록에서 특정 항목을 선택했을 때 호출됩니다."""
-        selected_indexes = self.view.run_table_view.selectionModel().selectedRows()
-        if not selected_indexes:
-            return
-
-        selected_row_index = selected_indexes[0].row()
-        run_data = self.view.run_table_view.model().get_row_data(selected_row_index)
+        if self.is_loading:
+            return  # 이미 로딩 중이면 무시
         
-        if run_data is None:
-            logger.warning(f"선택된 행({selected_row_index})의 데이터를 가져올 수 없습니다.")
-            return
-
-        run_id = run_data['run_id']
-        self.model.set_selected_run_id(run_id)
-
-        # 일별 성능 데이터 로드 및 뷰 업데이트
-        performance_df = self.model.load_performance_data(run_id)
-        self.view.update_performance_list(performance_df, run_id)
-
-        # 매매 종목 요약 정보 로드 및 뷰 업데이트
-        traded_stocks_df = self.model.load_traded_stocks_summary(run_id)
-        self.view.update_traded_stocks_list(traded_stocks_df)
+        self.is_loading = True
+        self.show_loading_dialog("백테스트 상세 데이터를 로딩하는 중입니다...")
         
-        if not traded_stocks_df.empty:
-            # 첫 번째 종목을 자동으로 선택
-            self.view.traded_stocks_table_view.selectRow(0)
-        else:
-            # 매매 종목이 없으면 차트 초기화
-            self.view.update_daily_chart(pd.DataFrame(), pd.DataFrame(), "N/A", {})
-            self.view.update_minute_chart(pd.DataFrame(), pd.DataFrame(), "N/A", date.today(), {})
+        try:
+            selected_indexes = self.view.run_table_view.selectionModel().selectedRows()
+            if not selected_indexes:
+                return
+
+            run_data = self.view.run_table_view.model().get_row_data(selected_indexes[0].row())
+            if run_data is None:
+                return
+
+            run_id = run_data['run_id']
+            self.model.set_selected_run_id(run_id)
+
+            # 데이터 로딩
+            self.loading_dialog.setLabelText("일별 성능 및 종목 요약 로딩 중...")
+            performance_df = self.model.load_performance_data(run_id)
+            traded_stocks_df = self.model.load_traded_stocks_summary(run_id)
+
+            # 뷰 업데이트
+            self.view.update_performance_list(performance_df, run_id)
+            self.view.update_traded_stocks_list(traded_stocks_df)
+            
+            if not traded_stocks_df.empty:
+                # 첫 종목 차트 로딩
+                self.loading_dialog.setLabelText("첫 종목 차트 데이터 로딩 중...")
+                stock_code = traded_stocks_df.iloc[0]['stock_code']
+                self.model.set_selected_stock_code(stock_code)
+                
+                daily_df, daily_trades, daily_params = self.model.load_daily_chart_data(stock_code)
+                self.view.update_daily_chart(daily_df, daily_trades, stock_code, daily_params)
+
+                # 첫 매매일자에 수직선, 없으면 첫 봉
+                selected_date = None
+                if not daily_trades.empty and 'trade_datetime' in daily_trades.columns:
+                    first_trade_date = pd.to_datetime(daily_trades['trade_datetime']).dt.date.min()
+                    if first_trade_date in daily_df.index.date:
+                        selected_date = first_trade_date
+                if selected_date is None and not daily_df.empty:
+                    selected_date = daily_df.index[0].date()
+                
+                if selected_date:
+                    self.model.set_selected_daily_date(selected_date)
+                    minute_df, minute_trades, minute_params = self.model.load_minute_chart_data(stock_code, selected_date)
+                    self.view.update_minute_chart(minute_df, minute_trades, stock_code, selected_date, minute_params)
+                    self.view.draw_selected_date_line(selected_date)
+
+                # '매매 종목 목록'의 첫 행만 자동 선택하여 관련 차트를 로드합니다.
+                self.view.traded_stocks_table_view.selectRow(0)
+                # '일별 성능 목록'의 자동 선택은 주석 처리하여 수직선 이동 문제를 방지합니다.
+                # self.view.performance_table_view.selectRow(0)
+            else:
+                self.view.update_daily_chart(pd.DataFrame(), pd.DataFrame(), "N/A", {})
+                self.view.update_minute_chart(pd.DataFrame(), pd.DataFrame(), "N/A", date.today(), {})
+                self.view.draw_selected_date_line(None)
+        finally:
+            self.hide_loading_dialog()
+            self.is_loading = False
 
     def on_stock_selected(self):
         """매매 종목 목록에서 특정 종목을 선택했을 때 호출됩니다."""
+        if self.is_loading:
+            return  # 로딩 중에는 새 선택 무시
+            
         selected_indexes = self.view.traded_stocks_table_view.selectionModel().selectedRows()
-        
-        stock_data = None
-        if selected_indexes:
-            # 사용자가 직접 선택한 경우
-            selected_row_index = selected_indexes[0].row()
-            stock_data = self.view.traded_stocks_table_view.model().get_row_data(selected_row_index)
-        else:
-            # 프로그램에 의해 첫 행이 선택되었으나 selectionModel에 반영되기 전일 경우, 첫 번째 행 데이터를 직접 가져옴
-            model = self.view.traded_stocks_table_view.model()
-            if model and model.rowCount() > 0:
-                stock_data = model.get_row_data(0)
-
-        if stock_data is None:
-            # 차트 초기화 또는 오류 처리
-            self.view.update_daily_chart(pd.DataFrame(), pd.DataFrame(), "N/A", {})
-            self.view.update_minute_chart(pd.DataFrame(), pd.DataFrame(), "N/A", date.today(), {})
+        if not selected_indexes:
             return
 
+        stock_data = self.view.traded_stocks_table_view.model().get_row_data(selected_indexes[0].row())
+        if stock_data is None:
+            return
+            
         stock_code = stock_data['stock_code']
-        self.model.set_selected_stock_code(stock_code)
+        if self.model.current_stock_code == stock_code:
+            return  # 이미 선택된 종목이면 무시
 
-        # 일봉 차트 데이터 로드 및 뷰 업데이트
-        daily_df, trades_df, daily_params = self.model.load_daily_chart_data(stock_code)
-        self.view.update_daily_chart(daily_df, trades_df, stock_code, daily_params)
+        self.is_loading = True
+        self.show_loading_dialog(f"{stock_code} 종목 차트를 로딩하는 중입니다...")
         
-        # 첫 번째 일별 성능 데이터를 기준으로 분봉 차트 업데이트
-        performance_model = self.view.performance_table_view.model()
-        if performance_model and performance_model.rowCount() > 0:
-            self.view.performance_table_view.selectRow(0)
-            self.on_performance_date_selected() # 슬롯 강제 호출
-        else:
-            self.view.update_minute_chart(pd.DataFrame(), pd.DataFrame(), "N/A", date.today(), {})
+        try:
+            self.model.set_selected_stock_code(stock_code)
+            
+            # 차트 데이터 로드 및 업데이트
+            daily_df, daily_trades, daily_params = self.model.load_daily_chart_data(stock_code)
+            self.view.update_daily_chart(daily_df, daily_trades, stock_code, daily_params)
+
+            # 첫 매매일자에 수직선, 없으면 첫 봉
+            selected_date = None
+            if not daily_trades.empty and 'trade_datetime' in daily_trades.columns:
+                first_trade_date = pd.to_datetime(daily_trades['trade_datetime']).dt.date.min()
+                if first_trade_date in daily_df.index.date:
+                    selected_date = first_trade_date
+            if selected_date is None and not daily_df.empty:
+                selected_date = daily_df.index[0].date()
+
+            if selected_date:
+                self.model.set_selected_daily_date(selected_date)
+                minute_df, minute_trades, minute_params = self.model.load_minute_chart_data(stock_code, selected_date)
+                self.view.update_minute_chart(minute_df, minute_trades, stock_code, selected_date, minute_params)
+                self.view.draw_selected_date_line(selected_date)
+                # 자동 선택 코드를 제거하여 2차 호출 방지
+                # self.view.performance_table_view.selectRow(0)
+            else:
+                self.view.update_minute_chart(pd.DataFrame(), pd.DataFrame(), "N/A", date.today(), {})
+                self.view.draw_selected_date_line(None)
+        finally:
+            self.hide_loading_dialog()
+            self.is_loading = False
 
     def on_performance_date_selected(self):
         """일별 성능 목록에서 특정 날짜를 선택했을 때 호출됩니다."""
@@ -137,6 +238,8 @@ class BacktestController:
         trade_date = pd.to_datetime(performance_data['date']).date()
         self.model.set_selected_daily_date(trade_date)
         
+        # 선 그리기 및 분봉 차트 업데이트
+        self.view.draw_selected_date_line(trade_date)
         self.update_minute_chart_for_date(trade_date)
 
     def on_daily_chart_click(self, event):
@@ -144,11 +247,16 @@ class BacktestController:
         if event.xdata is None or self.model.current_stock_code is None:
             return
         
-        # Matplotlib 날짜 숫자를 datetime 객체로 변환
-        from matplotlib.dates import num2date
-        trade_date = num2date(event.xdata).date()
+        # 캔들 중심으로 스냅
+        snapped_date = self.view.snap_to_nearest_date(event.xdata)
+        if snapped_date is None:
+            return
+        trade_date = pd.to_datetime(snapped_date).date()
         
         self.model.set_selected_daily_date(trade_date)
+        
+        # 선 그리기 및 분봉/테이블 업데이트
+        self.view.draw_selected_date_line(trade_date)
         self.update_minute_chart_for_date(trade_date)
         
         # 해당 날짜를 performance_table_view에서 찾아 선택
@@ -166,5 +274,11 @@ class BacktestController:
         if self.model.current_stock_code is None:
             return
 
-        minute_df, trades_df, minute_params = self.model.load_minute_chart_data(self.model.current_stock_code, trade_date)
-        self.view.update_minute_chart(minute_df, trades_df, self.model.current_stock_code, trade_date, minute_params)
+        self.show_loading_dialog("분봉 캔들을 로딩하는 중입니다...")
+        try:
+            self.loading_dialog.setValue(0)
+            minute_df, trades_df, minute_params = self.model.load_minute_chart_data(self.model.current_stock_code, trade_date)
+            self.view.update_minute_chart(minute_df, trades_df, self.model.current_stock_code, trade_date, minute_params)
+            self.loading_dialog.setValue(100)
+        finally:
+            self.hide_loading_dialog()

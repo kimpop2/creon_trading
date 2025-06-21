@@ -151,6 +151,11 @@ class BacktestView(QWidget):
         self.run_list_model = BacktestModel()
         self.performance_model = BacktestModel()
         self.traded_stocks_model = BacktestModel()
+        self.daily_selected_line = None  # 선택된 날짜를 표시하는 고정선
+        self.daily_hover_line = None     # 마우스 커서를 따라다니는 임시선
+        self.daily_chart_dates = None    # 일봉 차트의 날짜 인덱스 저장
+        self.last_hover_date = None      # 마지막으로 호버링된 날짜 (중복 방지용)
+        self.daily_ax1 = None            # 일봉 차트의 주가 축
         self.init_ui()
 
     def init_ui(self):
@@ -307,6 +312,9 @@ class BacktestView(QWidget):
 
         self.show() # 지정된 크기로 실행
 
+        # 일봉 차트의 마우스 이벤트 직접 연결
+        self.daily_chart_canvas.mpl_connect('motion_notify_event', self._on_daily_chart_hover)
+
     def update_run_list(self, df: pd.DataFrame):
         """백테스트 실행 목록 테이블을 업데이트합니다."""
         # 2줄 헤더 설정
@@ -377,67 +385,74 @@ class BacktestView(QWidget):
 
         self.daily_chart_label.setText(f"종목 일봉 차트 ({stock_code})")
         self.daily_chart_figure.clear()
+        self.daily_ax1 = None
+        self.last_hover_date = None
 
         if ohlcv_df.empty:
+            self.daily_chart_dates = None
             self.daily_chart_canvas.draw()
             return
+            
+        # 반드시 DatetimeIndex로 저장
+        self.daily_chart_dates = pd.DatetimeIndex(ohlcv_df.index)
 
         # 1. 차트 영역 분할
         if 'macd' in ohlcv_df.columns:
             # MACD가 있을 경우 3분할 (가격:MACD:거래량 = 5:2:1)
             gs = gridspec.GridSpec(3, 1, height_ratios=[5, 2, 1])
-            ax_macd = self.daily_chart_figure.add_subplot(gs[1])
-            ax_vol = self.daily_chart_figure.add_subplot(gs[2], sharex=ax_macd)
-            ax_macd.tick_params(axis='x', which='both', bottom=False, labelbottom=False)
-            ax_macd.set_ylabel("MACD", fontsize=10)
+            self.ax_macd = self.daily_chart_figure.add_subplot(gs[1])
+            ax_vol = self.daily_chart_figure.add_subplot(gs[2], sharex=self.ax_macd)
+            self.ax_macd.tick_params(axis='x', which='both', bottom=False, labelbottom=False)
+            self.ax_macd.set_ylabel("MACD", fontsize=10)
         else:
             # MACD가 없을 경우 2분할 (가격:거래량 = 5:1)
             gs = gridspec.GridSpec(2, 1, height_ratios=[5, 1])
             ax_vol = self.daily_chart_figure.add_subplot(gs[1])
+            self.ax_macd = None
         
-        ax1 = self.daily_chart_figure.add_subplot(gs[0], sharex=ax_vol)
-        ax1.tick_params(axis='x', which='both', bottom=False, labelbottom=False)
-        ax1.set_ylabel("주가", fontsize=10)
+        self.daily_ax1 = self.daily_chart_figure.add_subplot(gs[0], sharex=ax_vol)
+        self.daily_ax1.tick_params(axis='x', which='both', bottom=False, labelbottom=False)
+        self.daily_ax1.set_ylabel("주가", fontsize=10)
         ax_vol.set_ylabel("거래량", fontsize=10)
 
-        # 2. 가격 차트 그리기 (ax1)
+        # 2. 가격 차트 그리기 (self.daily_ax1)
         from mplfinance.original_flavor import candlestick_ohlc
         ohlc_data = ohlcv_df[['open', 'high', 'low', 'close']].copy()
         ohlc_data.reset_index(inplace=True)
         ohlc_data['Date'] = ohlc_data['Date'].map(plt.matplotlib.dates.date2num)
-        candlestick_ohlc(ax1, ohlc_data.values, width=0.6, colorup='red', colordown='blue', alpha=0.8)
+        candlestick_ohlc(self.daily_ax1, ohlc_data.values, width=0.6, colorup='red', colordown='blue', alpha=0.8)
 
         # 3. 거래량 차트 그리기 (ax_vol)
         volume_colors = ['red' if c >= o else 'blue' for o, c in zip(ohlcv_df['open'], ohlcv_df['close'])]
         ax_vol.bar(ohlcv_df.index, ohlcv_df['volume'], color=volume_colors, width=0.8, alpha=0.7)
         ax_vol.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, pos: f'{int(x/1000):,}k'))
 
-        # 4. 보조 지표 및 매매 시점 그리기 (ax1)
+        # 4. 보조 지표 및 매매 시점 그리기 (self.daily_ax1)
         strategy_name = daily_strategy_params.get('strategy_name')
         if strategy_name == 'SMADaily':
             short_period = daily_strategy_params.get('short_sma_period')
             long_period = daily_strategy_params.get('long_sma_period')
             if f'SMA_{short_period}' in ohlcv_df.columns:
-                ax1.plot(ohlcv_df.index, ohlcv_df[f'SMA_{short_period}'], color='orange', linewidth=1, label=f'SMA {short_period}')
+                self.daily_ax1.plot(ohlcv_df.index, ohlcv_df[f'SMA_{short_period}'], color='orange', linewidth=1, label=f'SMA {short_period}')
             if f'SMA_{long_period}' in ohlcv_df.columns:
-                ax1.plot(ohlcv_df.index, ohlcv_df[f'SMA_{long_period}'], color='purple', linewidth=1, label=f'SMA {long_period}')
+                self.daily_ax1.plot(ohlcv_df.index, ohlcv_df[f'SMA_{long_period}'], color='purple', linewidth=1, label=f'SMA {long_period}')
         elif strategy_name == 'TripleScreenDaily':
             ema_short_period = daily_strategy_params.get('ema_short_period', 12)
             ema_long_period = daily_strategy_params.get('ema_long_period', 26)
             if f'EMA_{ema_short_period}' in ohlcv_df.columns:
-                ax1.plot(ohlcv_df.index, ohlcv_df[f'EMA_{ema_short_period}'], color='orange', linewidth=1, label=f'EMA {ema_short_period}')
+                self.daily_ax1.plot(ohlcv_df.index, ohlcv_df[f'EMA_{ema_short_period}'], color='orange', linewidth=1, label=f'EMA {ema_short_period}')
             if f'EMA_{ema_long_period}' in ohlcv_df.columns:
-                ax1.plot(ohlcv_df.index, ohlcv_df[f'EMA_{ema_long_period}'], color='purple', linewidth=1, label=f'EMA {ema_long_period}')
+                self.daily_ax1.plot(ohlcv_df.index, ohlcv_df[f'EMA_{ema_long_period}'], color='purple', linewidth=1, label=f'EMA {ema_long_period}')
             
-            # MACD 차트 그리기 (ax_macd)
-            if 'macd' in ohlcv_df.columns and ax_macd:
-                ax_macd.plot(ohlcv_df.index, ohlcv_df['macd'], color='blue', linewidth=1, label='MACD')
-                ax_macd.plot(ohlcv_df.index, ohlcv_df['macd_signal'], color='red', linestyle='--', linewidth=1, label='Signal')
+            # MACD 차트 그리기 (self.ax_macd)
+            if 'macd' in ohlcv_df.columns and self.ax_macd:
+                self.ax_macd.plot(ohlcv_df.index, ohlcv_df['macd'], color='blue', linewidth=1, label='MACD')
+                self.ax_macd.plot(ohlcv_df.index, ohlcv_df['macd_signal'], color='red', linestyle='--', linewidth=1, label='Signal')
                 histogram_colors = ['red' if h >= 0 else 'blue' for h in ohlcv_df['macd_histogram']]
-                ax_macd.bar(ohlcv_df.index, ohlcv_df['macd_histogram'], color=histogram_colors, width=0.8, alpha=0.7, label='Histogram')
-                ax_macd.axhline(0, color='gray', linestyle='-', linewidth=0.5)
-                ax_macd.legend(loc='upper left', fontsize='small')
-                ax_macd.grid(True, alpha=0.3)
+                self.ax_macd.bar(ohlcv_df.index, ohlcv_df['macd_histogram'], color=histogram_colors, width=0.8, alpha=0.7, label='Histogram')
+                self.ax_macd.axhline(0, color='gray', linestyle='-', linewidth=0.5)
+                self.ax_macd.legend(loc='upper left', fontsize='small')
+                self.ax_macd.grid(True, alpha=0.3)
         
         if not trades_df.empty:
             buy_trades = trades_df[trades_df['trade_type'] == 'BUY']
@@ -448,20 +463,20 @@ class BacktestView(QWidget):
                 ohlc_row = ohlcv_df[ohlcv_df.index.date == trade_date]
                 if not ohlc_row.empty:
                     price = ohlc_row['low'].iloc[0] * 0.98
-                    ax1.scatter(ohlc_row.index[0], price, marker='^', s=100, color='green', zorder=5)
+                    self.daily_ax1.scatter(ohlc_row.index[0], price, marker='^', s=100, color='green', zorder=5)
             for trade_date in sell_dates:
                 ohlc_row = ohlcv_df[ohlcv_df.index.date == trade_date]
                 if not ohlc_row.empty:
                     price = ohlc_row['high'].iloc[0] * 1.02
-                    ax1.scatter(ohlc_row.index[0], price, marker='v', s=100, color='red', zorder=5)
+                    self.daily_ax1.scatter(ohlc_row.index[0], price, marker='v', s=100, color='red', zorder=5)
 
         # 5. 차트 스타일 및 레이아웃 설정
-        ax1.set_title(f"{stock_code} 일봉 차트", fontsize=12, fontweight='bold')
-        ax1.grid(True, alpha=0.3)
+        self.daily_ax1.set_title(f"{stock_code} 일봉 차트", fontsize=12, fontweight='bold')
+        self.daily_ax1.grid(True, alpha=0.3)
         ax_vol.grid(True, alpha=0.3)
         
-        handles, labels = ax1.get_legend_handles_labels()
-        if handles: ax1.legend()
+        handles, labels = self.daily_ax1.get_legend_handles_labels()
+        if handles: self.daily_ax1.legend()
         
         # X축 포맷터는 공유 X축의 최종인 ax_vol에 설정
         locator = AutoDateLocator(minticks=5, maxticks=10)
@@ -469,19 +484,19 @@ class BacktestView(QWidget):
         ax_vol.xaxis.set_major_formatter(DateFormatter('%Y-%m-%d'))
         
         # 주가(%) Y축 설정 (ax2)
-        ax2 = ax1.twinx()
+        ax2 = self.daily_ax1.twinx()
         ref_price = ohlcv_df['open'].iloc[0]
-        y1_lim = ax1.get_ylim()
+        y1_lim = self.daily_ax1.get_ylim()
         y2_lim = ((y1_lim[0] - ref_price) / ref_price * 100, (y1_lim[1] - ref_price) / ref_price * 100)
         ax2.set_ylim(y2_lim)
         ax2.set_ylabel("주가 (%)", fontsize=10)
         ax2.yaxis.set_major_formatter(mticker.FormatStrFormatter('%.1f%%'))
         
-        ax1.yaxis.set_label_position('right')
-        ax1.yaxis.tick_right()
+        self.daily_ax1.yaxis.set_label_position('right')
+        self.daily_ax1.yaxis.tick_right()
         ax2.yaxis.set_label_position('left')
         ax2.yaxis.tick_left()
-        ax1.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, pos: f'{int(x):,}'))
+        self.daily_ax1.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, pos: f'{int(x):,}'))
 
         self.daily_chart_figure.autofmt_xdate()
         self.daily_chart_figure.tight_layout()
@@ -601,6 +616,82 @@ class BacktestView(QWidget):
         self.minute_chart_figure.tight_layout()
         self.minute_chart_figure.subplots_adjust(hspace=0.05) # 서브플롯 간격 조정
         self.minute_chart_canvas.draw()
+
+    def draw_selected_date_line(self, selected_date):
+        """일봉 차트에서 선택된 날짜에 고정된 세로선을 그립니다."""
+        if not self.daily_ax1:
+            return
+
+        # 이전에 그렸던 고정선이 있다면 제거
+        if self.daily_selected_line:
+            self.daily_selected_line.remove()
+            self.daily_selected_line = None
+
+        if selected_date:
+            self.daily_selected_line = self.daily_ax1.axvline(
+                selected_date, color='red', linestyle='--', linewidth=1.2, label='선택된 날짜', zorder=5
+            )
+        self.daily_chart_canvas.draw_idle()
+
+    def _on_daily_chart_hover(self, event):
+        """일봉 차트 위에서 마우스가 움직일 때 가장 가까운 캔들 중심에 실시간 세로선을 그립니다."""
+        # 마우스가 차트 안에 있고, 데이터가 유효한지 확인
+        if (self.daily_ax1 is None or
+                event.inaxes != self.daily_ax1 or
+                self.daily_chart_dates is None or
+                self.daily_chart_dates.empty or
+                event.xdata is None):
+            
+            # 마우스가 영역을 벗어나면 선을 지우고 마지막 날짜를 초기화
+            if self.daily_hover_line:
+                self.daily_hover_line.remove()
+                self.daily_hover_line = None
+                self.last_hover_date = None
+                self.daily_chart_canvas.draw_idle()
+            return
+
+        from matplotlib.dates import num2date
+        try:
+            # 이벤트의 x좌표(matplotlib 숫자)를 datetime 객체로 변환
+            hover_date_dt = num2date(event.xdata).replace(tzinfo=None)
+            
+            # 가장 가까운 날짜 인덱스 찾기
+            nearest_idx_arr = self.daily_chart_dates.get_indexer([hover_date_dt], method='nearest')
+            if len(nearest_idx_arr) == 0 or nearest_idx_arr[0] < 0 or nearest_idx_arr[0] >= len(self.daily_chart_dates):
+                return
+            snapped_date = self.daily_chart_dates[nearest_idx_arr[0]]
+        except Exception:
+            return # 차트 가장자리를 벗어나는 등 오류 발생 시 무시
+
+        # 이전에 그렸던 캔들과 동일하면 다시 그리지 않음 (성능 최적화)
+        if self.last_hover_date == snapped_date:
+            return
+        self.last_hover_date = snapped_date
+
+        # 이전에 그렸던 임시선이 있다면 제거
+        if self.daily_hover_line:
+            self.daily_hover_line.remove()
+            self.daily_hover_line = None
+        
+        # 가장 가까운 날짜에 새로운 임시선 그리기 (스타일은 기존대로, zorder만 5)
+        self.daily_hover_line = self.daily_ax1.axvline(
+            snapped_date, color='gray', linestyle=':', linewidth=1, zorder=5
+        )
+        self.daily_chart_canvas.draw_idle()
+
+    def snap_to_nearest_date(self, xdata):
+        """matplotlib xdata(숫자)를 받아 가장 가까운 캔들 날짜(DatetimeIndex)로 스냅하여 반환"""
+        from matplotlib.dates import num2date
+        if self.daily_chart_dates is None or self.daily_chart_dates.empty or xdata is None:
+            return None
+        try:
+            hover_date_dt = num2date(xdata).replace(tzinfo=None)
+            nearest_idx_arr = self.daily_chart_dates.get_indexer([hover_date_dt], method='nearest')
+            if len(nearest_idx_arr) == 0 or nearest_idx_arr[0] < 0 or nearest_idx_arr[0] >= len(self.daily_chart_dates):
+                return None
+            return self.daily_chart_dates[nearest_idx_arr[0]]
+        except Exception:
+            return None
 
     def show_message_box(self, title, message):
         """사용자에게 메시지 박스를 표시합니다."""
