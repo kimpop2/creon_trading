@@ -4,7 +4,6 @@ import datetime
 import logging
 from typing import Dict, Any
 from trader.abstract_broker import AbstractBroker
-from api.creon_api_live import CreonAPIClientLive # 실전 API 클라이언트
 from manager.business_manager import BusinessManager # BusinessManager 추가
 
 logger = logging.getLogger(__name__)
@@ -14,9 +13,9 @@ class Brokerage(AbstractBroker):
     실전 자동매매를 위한 증권사 브로커 클래스.
     AbstractBroker를 상속받아 실제 증권사 API 연동을 구현합니다.
     """
-    def __init__(self, api_client_live: CreonAPIClientLive, business_manager: BusinessManager, 
-                 commission_rate: float = 0.0003, slippage_rate: float = 0.0):
-        self.api_client_live = api_client_live
+    def __init__(self, business_manager: BusinessManager, 
+                 commission_rate: float = 0.0016, slippage_rate: float = 0.0004):
+        self.api_client = business_manager.api_client
         self.business_manager = business_manager
         self.commission_rate = commission_rate
         self.slippage_rate = slippage_rate
@@ -36,12 +35,12 @@ class Brokerage(AbstractBroker):
         증권사 API로부터 최신 현금 잔고와 보유 종목 정보를 동기화합니다.
         매매 시작 전, 그리고 주기적으로 호출하여 최신 정보를 반영합니다.
         """
-        if not self.api_client_live.is_connected():
+        if not self.api_client.is_connected():
             logger.error("Creon API is not connected. Cannot sync account info.")
             return False
 
         # 현금 잔고 동기화
-        balance = self.api_client_live.get_account_balance()
+        balance = self.api_client.get_account_balance()
         if balance:
             self.cash = float(balance.get("cash", 0.0))
             logger.info(f"계좌 현금 잔고 동기화 완료: {self.cash:,.0f}원")
@@ -50,7 +49,7 @@ class Brokerage(AbstractBroker):
             return False
 
         # 보유 종목 동기화
-        live_positions_list = self.api_client_live.get_portfolio_positions()
+        live_positions_list = self.api_client.get_portfolio_positions()
         new_positions = {}
         for pos in live_positions_list:
             stock_code = pos['stock_code']
@@ -76,7 +75,7 @@ class Brokerage(AbstractBroker):
         실전에서는 실제 증권사 API를 통해 주문을 전송합니다.
         price는 보통가 주문 시 사용, 시장가 주문 시에는 무시될 수 있습니다.
         """
-        if not self.api_client_live.is_connected():
+        if not self.api_client.is_connected():
             logger.error("Creon API is not connected. Order execution failed.")
             return
 
@@ -93,7 +92,7 @@ class Brokerage(AbstractBroker):
 
         logger.info(f"[주문 요청] {current_dt.isoformat()} - {stock_code} {order_type.upper()} {quantity}주 @ {actual_price:,.0f}원 (원가: {price:,.0f}원)")
         
-        order_id = self.api_client_live.send_order(stock_code, order_type, actual_price, quantity, order_kind)
+        order_id = self.api_client.send_order(stock_code, order_type, actual_price, quantity, order_kind)
 
         if order_id:
             logger.info(f"주문 성공: {stock_code}, 주문번호: {order_id}. 체결 대기 중...")

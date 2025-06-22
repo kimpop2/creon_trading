@@ -6,13 +6,13 @@ from datetime import datetime, date, time, timedelta
 import time as time_module # time 모듈과 충돌 방지
 import sys
 import os
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 # sys.path에 프로젝트 루트 추가
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, project_root)
 
-from trade.brokerage import Brokerage
+from trader.brokerage import Brokerage
 from manager.business_manager import BusinessManager
 from strategies.strategy import DailyStrategy, MinuteStrategy # 전략 추상 클래스 임포트
 from util.strategies_util import get_next_weekday # 유틸리티 함수
@@ -172,7 +172,7 @@ class Trader:
                     if minute_data_df is not None and not minute_data_df.empty:
                         # 분봉 전략의 data_store를 현재 분봉 데이터로 설정
                         self.minute_strategy.data_store = {stock_code: minute_data_df}
-                        self.minute_strategy.process_minute_data(stock_code, current_dt)
+                        self.minute_strategy.run_minute_logic(current_dt, stock_code)
                     else:
                         logger.warning(f"{stock_code}의 실시간 분봉 데이터를 가져올 수 없습니다. 분봉 전략 건너뜀.")
                 

@@ -6,7 +6,7 @@ from trader.abstract_broker import AbstractBroker
 logger = logging.getLogger(__name__)
 # logger.setLevel(logging.DEBUG) # 테스트 시 DEBUG로 설정하여 모든 로그 출력 - 제거
 class Broker(AbstractBroker):
-    def __init__(self, initial_cash, commission_rate=0.0003, slippage_rate=0.0):
+    def __init__(self, initial_cash, commission_rate=0.0016, slippage_rate=0.0004):
         self.cash = initial_cash
         self.positions = {}  # {stock_code: {'size': int, 'avg_price': float, 'entry_date': datetime.date, 'highest_price': float}}
         self.transaction_log = [] # (date, stock_code, type, price, quantity, commission, net_amount)
