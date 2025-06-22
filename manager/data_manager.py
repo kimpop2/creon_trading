@@ -26,6 +26,11 @@ class DataManager:
         self.api_client = CreonAPIClient()
         logger.info("DataManager 초기화 완료: DBManager 및 CreonAPIClient 연결")
 
+    def close(self):
+        """DBManager의 연결을 종료합니다."""
+        if self.db_manager:
+            self.db_manager.close()
+            logger.info("DataManager를 통해 DB 연결을 종료했습니다.")
 
     def load_market_calendar_initial_data(self, years: int = 3):
         """
@@ -244,3 +249,138 @@ class DataManager:
         except Exception as e:
             logger.error(f"API 호출 실패: {stock_code} - {str(e)}")
             return pd.DataFrame()
+
+    def get_stock_info_map(self) -> dict:
+        """
+        DB의 stock_info 테이블에서 모든 종목의 코드와 이름을 가져와
+        {'종목코드': '종목명'} 형태의 딕셔너리로 반환합니다.
+        """
+        logger.debug("종목 정보 맵(딕셔너리) 로딩 시작")
+        try:
+            # fetch_stock_info()를 인자 없이 호출하여 모든 종목 정보를 가져옵니다.
+            stock_info_df = self.db_manager.fetch_stock_info() 
+            if not stock_info_df.empty:
+                # 'stock_code'를 인덱스로, 'stock_name'을 값으로 하는 딕셔너리 생성
+                stock_map = pd.Series(stock_info_df.stock_name.values, index=stock_info_df.stock_code).to_dict()
+                logger.debug(f"{len(stock_map)}개의 종목 정보 로딩 완료")
+                return stock_map
+            else:
+                logger.warning("DB에서 종목 정보를 가져오지 못했습니다. stock_info 테이블이 비어있을 수 있습니다.")
+                return {}
+        except Exception as e:
+            logger.error(f"종목 정보 로딩 중 오류 발생: {e}")
+            return {}
+        
+    def update_all_stock_info(self):
+        """
+        Creon API에서 모든 종목 정보를 가져와 DB의 stock_info 테이블에 저장/업데이트합니다.
+        매매의 기본이 되는 모든 종목의 기본 정보를 셋업합니다.
+        """
+        logger.info("모든 종목 기본 정보 업데이트를 시작합니다.")
+        if not self.api_client.connected:
+            logger.error("Creon API가 연결되어 있지 않아 종목 정보를 가져올 수 없습니다.")
+            return False
+
+        try:
+            filtered_codes = self.api_client.get_filtered_stock_list()
+            stock_info_list = []
+            for code in filtered_codes:
+                name = self.api_client.get_stock_name(code)
+                market_type = 'KOSPI' if code in self.api_client.cp_code_mgr.GetStockListByMarket(1) else 'KOSDAQ'
+
+                stock_info_list.append({
+                    'stock_code': code,
+                    'stock_name': name,
+                    'market_type': market_type,
+                    'sector': None, # CpCodeMgr.GetStockSector() 등으로 가져올 수 있으나, 현재는 제외
+                    'per': None, 'pbr': None, 'eps': None, 'roe': None, 'debt_ratio': None, # 초기값 None
+                    'sales': None, 'operating_profit': None, 'net_profit': None,
+                    'recent_financial_date': None
+                })
+
+            if stock_info_list:
+                # 직접 DBManager를 통해 저장
+                if self.db_manager.save_stock_info(stock_info_list):
+                    logger.info(f"{len(stock_info_list)}개의 종목 기본 정보를 성공적으로 DB에 업데이트했습니다.")
+                    return True
+                else:
+                    logger.error("종목 기본 정보 DB 저장에 실패했습니다.")
+                    return False
+            else:
+                logger.warning("가져올 종목 정보가 없습니다. Creon HTS 연결 상태 및 종목 필터링 조건을 확인하세요.")
+                return False
+        except Exception as e:
+            logger.error(f"모든 종목 기본 정보 업데이트 중 오류 발생: {e}", exc_info=True)
+            return False
+
+    def update_market_calendar(self, start_date: date = None, end_date: date = None):
+        """
+        주식시장 캘린더 정보를 업데이트합니다.
+        :param start_date: 시작 날짜 (기본값: 1년 전)
+        :param end_date: 종료 날짜 (기본값: 1년 후)
+        """
+        logger.info("주식시장 캘린더 업데이트를 시작합니다.")
+        
+        if not start_date:
+            start_date = date.today() - timedelta(days=365)
+        if not end_date:
+            end_date = date.today() + timedelta(days=365)
+            
+        try:
+            # Creon API에서 거래일 정보 가져오기
+            trading_days = self.api_client.get_all_trading_days_from_api(start_date, end_date)
+            
+            calendar_data = []
+            current_date = start_date
+            while current_date <= end_date:
+                is_holiday = current_date not in trading_days
+                calendar_data.append({
+                    'date': current_date,
+                    'is_holiday': is_holiday,
+                    'description': '공휴일' if is_holiday else '거래일'
+                })
+                current_date += timedelta(days=1)
+            
+            if calendar_data:
+                # 리스트를 DataFrame으로 변환하고 중복 키 오류 방지를 위해 "replace" 옵션 사용
+                calendar_df = pd.DataFrame(calendar_data)
+                if self.db_manager.save_market_calendar(calendar_df, option="replace"):
+                    logger.info(f"주식시장 캘린더 {len(calendar_data)}개 데이터를 성공적으로 업데이트했습니다.")
+                    return True
+                else:
+                    logger.error("주식시장 캘린더 DB 저장에 실패했습니다.")
+                    return False
+            else:
+                logger.warning("업데이트할 캘린더 데이터가 없습니다.")
+                return True
+        except Exception as e:
+            logger.error(f"주식시장 캘린더 업데이트 중 오류 발생: {e}", exc_info=True)
+            return False
+
+    def update_financial_data_for_stock_info(self, stock_code):
+        """
+        특정 종목의 최신 재무 데이터를 CreonAPIClient (MarketEye)에서 가져와
+        DB의 stock_info 테이블에 업데이트합니다.
+        """
+        logger.info(f"{stock_code} stock_info 테이블의 최신 재무 데이터 업데이트 중...")
+        
+        try:
+            # Creon API Client에서 최신 재무 데이터 가져오기
+            finance_df = self.api_client.get_latest_financial_data(stock_code)
+
+            if finance_df.empty:
+                logger.info(f"{stock_code} Creon API에서 조회된 재무 데이터가 없습니다.")
+                return
+
+            # MarketEye에서 가져온 DataFrame을 stock_info 테이블의 컬럼에 맞게 조정
+            finance_df['operating_profit'] = finance_df['operating_profit'] / 1_000_000
+            finance_df['net_profit'] = finance_df['net_profit'] / 1_000_000
+
+            # 직접 DBManager를 통해 저장
+            self.db_manager.save_stock_info(finance_df.to_dict(orient='records'))
+
+            logger.info(f"{stock_code} stock_info 테이블의 최신 재무 데이터가 성공적으로 업데이트되었습니다.")
+
+        except Exception as e:
+            logger.error(f"stock_info 재무 데이터 업데이트 중 오류 발생: {e}", exc_info=True)
+        logger.info(f"{stock_code} 재무 데이터 업데이트 완료.")
