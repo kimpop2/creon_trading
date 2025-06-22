@@ -15,9 +15,6 @@ class BacktestController:
         self.loading_dialog = None
         self.is_loading = False  # 로딩 중 상태 플래그 추가
         
-        # view의 stock_dic을 model의 stock_dic으로 설정
-        self.view.stock_dic = self.model.stock_dic
-        
         # 시그널을 먼저 연결하고, 그 다음에 데이터를 로드하여
         # 초기 선택 이벤트가 정상적으로 발생하도록 순서를 변경합니다.
         self._connect_signals()
@@ -69,7 +66,7 @@ class BacktestController:
             self.loading_dialog = None
 
     def load_initial_data(self):
-        """애플리케이션 시작 시 초기 데이터를 로드합니다. 성능을 위해 점진적으로 로드합니다."""
+        """애플리케이션 시작 시 초기 데이터를 로드합니다."""
         self.show_loading_dialog("백테스트 실행 목록을 로딩하는 중입니다...")
         try:
             def update_progress(value, message):
@@ -80,57 +77,11 @@ class BacktestController:
                     QApplication.instance().processEvents()
             
             all_runs_df = self.model.load_all_backtest_runs(progress_callback=update_progress)
-
-            if all_runs_df.empty:
-                self.view.update_run_list(all_runs_df)
-                self.hide_loading_dialog()
-                return
-
-            # 1. 최초 50건만 먼저 로드하여 UI 반응성 확보
-            initial_load_df = all_runs_df.iloc[:50]
-            self.view.update_run_list(initial_load_df)
-            
-            self.hide_loading_dialog()
-
-            # 2. 첫 번째 행을 자동으로 선택하여 다른 UI 요소들의 로딩을 유발
-            if not initial_load_df.empty:
+            self.view.update_run_list(all_runs_df)
+            if not all_runs_df.empty:
+                # 첫 번째 행을 자동으로 선택
                 self.view.run_table_view.selectRow(0)
-
-            # 3. 나머지 데이터를 백그라운드에서 로드하도록 스케줄링
-            def load_remaining_data():
-                logger.info("나머지 백테스트 실행 목록을 백그라운드에서 로드합니다.")
-                
-                # 현재 선택된 run_id를 저장
-                selected_indexes = self.view.run_table_view.selectionModel().selectedRows()
-                selected_run_id = None
-                if selected_indexes:
-                    run_data = self.view.run_table_view.model().get_row_data(selected_indexes[0].row())
-                    if run_data is not None:
-                        selected_run_id = run_data['run_id']
-
-                # 전체 데이터로 모델을 업데이트
-                self.view.update_run_list(all_runs_df)
-
-                # 이전 선택을 복원
-                if selected_run_id is not None:
-                    matches = all_runs_df.index[all_runs_df['run_id'] == selected_run_id].tolist()
-                    if matches:
-                        model = self.view.run_table_view.model()
-                        try:
-                            logical_row = all_runs_df.index.get_loc(matches[0])
-                            is_two_line_layout = model._headers and isinstance(model._headers[0], tuple)
-                            view_row = logical_row * 2 if is_two_line_layout else logical_row
-                            self.view.run_table_view.selectRow(view_row)
-                            self.view.run_table_view.scrollTo(model.index(view_row, 0))
-                        except (KeyError, IndexError):
-                            pass
-
-            remaining_df = all_runs_df.iloc[50:]
-            if not remaining_df.empty:
-                QTimer.singleShot(100, load_remaining_data)
-
-        except Exception as e:
-            logger.error(f"초기 데이터 로딩 중 오류 발생: {e}")
+        finally:
             self.hide_loading_dialog()
 
     def on_run_search(self):
