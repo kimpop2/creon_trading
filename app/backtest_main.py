@@ -12,7 +12,7 @@ sys.path.insert(0, project_root)
 from app.backtest_view import BacktestView
 from app.backtest_controller import BacktestController
 from app.backtest_model import BacktestModel
-from manager.backtest_manager import BacktestManager
+from manager.business_manager import BusinessManager
 from manager.data_manager import DataManager
 
 def setup_logging():
@@ -77,12 +77,12 @@ def main():
         progress.setLabelText("백테스트 매니저를 초기화하는 중입니다...")
         progress.setValue(10)
         app.processEvents()
-        backtest_manager = BacktestManager(data_manager)
+        business_manager = BusinessManager(data_manager)
         
         progress.setLabelText("데이터 모델을 초기화하는 중입니다...")
         progress.setValue(15)
         app.processEvents()
-        model = BacktestModel(backtest_manager)
+        model = BacktestModel(business_manager)
         
         # --- 실행목록 로딩 (전체 70%까지 진행) ---
         progress.setLabelText("백테스트 실행목록을 로딩하는 중입니다...")

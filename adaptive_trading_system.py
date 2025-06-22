@@ -18,12 +18,12 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from api.creon_api import CreonAPIClient
 from manager.data_manager import DataManager
 from manager.db_manager import DBManager
-from backtest.reporter import Reporter
+from trader.reporter import Reporter
 from selector.stock_selector import StockSelector
 from optimizer.progressive_refinement_optimizer import ProgressiveRefinementOptimizer, GridSearchStrategy
 from strategies.sma_daily import SMADaily
 from strategies.rsi_minute import RSIMinute
-from backtest.backtester import Backtester
+from trader.backtester import Backtester
 from strategies.open_minute import OpenMinute
 
 # 로깅 설정

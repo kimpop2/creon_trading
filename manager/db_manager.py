@@ -9,6 +9,7 @@ import sys
 import json # JSON 직렬화를 위해 추가
 import re
 from decimal import Decimal # Decimal 타입 처리용
+from typing import Dict, Any, Optional
 # --- 로거 설정 (스크립트 최상단에서 설정하여 항상 보이도록 함) ---
 logger = logging.getLogger(__name__)
 from config.settings import DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
@@ -1049,119 +1050,127 @@ class DBManager:
     def drop_trade_tables(self):
         return self.execute_sql_file('drop_trade_tables')
 
-    # ----------------------------------------------------------------------------
-    # 아이디어 차원
-    # ----------------------------------------------------------------------------
-    # # --- insert_df_to_db 함수 수정 (upsert 옵션 추가) ---
-    # def insert_df_to_db(self, table_name: str, df: pd.DataFrame, option: str = "append", is_index: bool = False):
-    #     """
-    #     DataFrame을 MariaDB에 삽입하는 메서드 (직접 SQL 쿼리 사용).
-    #     'append', 'upsert' 모드를 지원합니다. 'replace' 또는 'fail' 모드는 직접 지원하지 않습니다.
-        
-    #     :param table_name: 데이터를 삽입할 테이블 이름
-    #     :param df: 삽입할 데이터가 담긴 Pandas DataFrame
-    #     :param option: 테이블 존재 시 처리 방식 ('append', 'upsert')
-    #                    'append': 중복 시 오류 발생 (PRIMARY KEY/UNIQUE 위반 시)
-    #                    'upsert': 중복 시 기존 레코드를 업데이트
-    #     :param is_index: DataFrame의 인덱스를 DB 컬럼으로 저장할지 여부 (인덱스 이름이 컬럼명으로 사용됨)
-    #     """
-    #     table_name = table_name.lower()
-    #     if not isinstance(df, pd.DataFrame):
-    #         logger.error("insert_df_to_db: 입력 데이터가 pandas DataFrame이 아닙니다.")
-    #         return False
+    # --- BusinessManager에서 이동: 신호/포트폴리오/거래 로그 관련 메서드 ---
+    def save_daily_signals(self, signals: Dict[str, Any], signal_date: date):
+        table_name = "daily_signals"
+        self.execute_sql(f"DELETE FROM {table_name} WHERE signal_date = '{signal_date.isoformat()}'")
+        logger.info(f"이전 날짜({signal_date.isoformat()})의 일봉 신호 삭제 완료.")
+        if not signals:
+            logger.info(f"{signal_date.isoformat()}에 저장할 일봉 신호가 없습니다.")
+            return
+        data_to_insert = []
+        for stock_code, signal_info in signals.items():
+            data_to_insert.append({
+                "signal_date": signal_date,
+                "stock_code": stock_code,
+                "signal_type": signal_info.get("signal_type"),
+                "signal_price": float(signal_info.get("signal_price")),
+                "volume_ratio": float(signal_info.get("volume_ratio", 0.0)),
+                "strategy_name": signal_info.get("strategy_name"),
+                "params_json": str(signal_info.get("params_json", "{}"))
+            })
+        df = pd.DataFrame(data_to_insert)
+        if not df.empty:
+            if self.insert_df_to_db(df, table_name, option="append"):
+                logger.info(f"{len(df)}개의 일봉 신호가 DB 테이블 '{table_name}'에 성공적으로 저장되었습니다.")
+            else:
+                logger.error(f"일봉 신호 {table_name} 저장에 실패했습니다.")
+        else:
+            logger.info(f"저장할 일봉 신호 데이터프레임이 비어 있습니다.")
 
-    #     if option not in ["append", "upsert"]:
-    #         logger.error(f"insert_df_to_db: option must be 'append' or 'upsert', but got '{option}'.")
-    #         return False
+    def load_daily_signals_for_today(self, signal_date: date) -> Dict[str, Any]:
+        table_name = "daily_signals"
+        query = f"SELECT * FROM {table_name} WHERE signal_date = '{signal_date.isoformat()}'"
+        signals_df = self.fetch_data(query)
+        if signals_df.empty:
+            logger.info(f"{signal_date.isoformat()}에 로드할 일봉 신호가 없습니다.")
+            return {}
+        loaded_signals = {}
+        for _, row in signals_df.iterrows():
+            stock_code = row['stock_code']
+            loaded_signals[stock_code] = {
+                "signal_type": row['signal_type'],
+                "signal_price": float(row['signal_price']),
+                "volume_ratio": float(row['volume_ratio']),
+                "strategy_name": row['strategy_name'],
+                "params_json": eval(row['params_json'])
+            }
+        logger.info(f"{len(loaded_signals)}개의 일봉 신호가 {signal_date.isoformat()}에 성공적으로 로드되었습니다.")
+        return loaded_signals
 
-    #     if df.empty:
-    #         logger.info(f"DataFrame이 비어있어 테이블 '{table_name}'에 삽입할 데이터가 없습니다.")
-    #         return True # 데이터 없으면 성공으로 간주
+    def save_trade_log(self, log_entry: Dict[str, Any]):
+        table_name = "transaction_log"
+        df = pd.DataFrame([log_entry])
+        if self.insert_df_to_db(df, table_name, option="append"):
+            logger.info(f"거래 로그가 DB 테이블 '{table_name}'에 성공적으로 저장되었습니다: {log_entry.get('stock_code')} {log_entry.get('type')} {log_entry.get('quantity')}")
+        else:
+            logger.error(f"거래 로그 {table_name} 저장에 실패했습니다: {log_entry}")
 
-    #     # 1. 컬럼 목록 및 플레이스홀더 동적 생성
-    #     columns = df.columns.tolist()
-    #     if is_index and df.index.name:
-    #         index_column_name = df.index.name
-    #         columns.insert(0, index_column_name) # 인덱스를 첫 번째 컬럼으로 추가
-    #     elif is_index and not df.index.name:
-    #         logger.warning("insert_df_to_db: is_index=True 이지만 DataFrame 인덱스 이름이 없습니다. 'index'로 기본 설정.")
-    #         index_column_name = 'index' # 기본 인덱스 이름
-    #         columns.insert(0, index_column_name)
-    #     else:
-    #         index_column_name = None # 인덱스를 컬럼으로 사용하지 않음
-            
-    #     placeholders = ', '.join(['%s'] * len(columns))
-    #     column_names = ', '.join(columns)
+    def save_daily_portfolio_snapshot(self, snapshot_date: date, portfolio_value: float, cash: float, positions: Dict[str, Any]):
+        table_name = "daily_portfolio_snapshot"
+        self.execute_sql(f"DELETE FROM {table_name} WHERE snapshot_date = '{snapshot_date.isoformat()}'")
+        data_to_insert = {
+            "snapshot_date": snapshot_date,
+            "portfolio_value": float(portfolio_value),
+            "cash": float(cash),
+            "positions_json": str(positions)
+        }
+        df = pd.DataFrame([data_to_insert])
+        if self.insert_df_to_db(df, table_name, option="append"):
+            logger.info(f"일일 포트폴리오 스냅샷이 DB 테이블 '{table_name}'에 성공적으로 저장되었습니다: {snapshot_date}, 가치: {portfolio_value:,.0f}")
+        else:
+            logger.error(f"일일 포트폴리오 스냅샷 {table_name} 저장에 실패했습니다.")
 
-    #     # 2. SQL 쿼리 기본 부분 생성
-    #     sql = f"INSERT INTO {table_name} ({column_names}) VALUES ({placeholders})"
-        
-    #     # 3. 'upsert' 옵션일 경우 ON DUPLICATE KEY UPDATE 절 추가
-    #     if option == "upsert":
-    #         update_clauses = []
-    #         # 인덱스 컬럼을 제외한 모든 컬럼을 업데이트 대상으로 함
-    #         # 주의: 여기서 인덱스 컬럼이 PRIMARY KEY 또는 UNIQUE KEY라고 가정합니다.
-    #         # 만약 다른 컬럼들도 함께 키를 구성한다면, 해당 로직을 더 정교하게 만들어야 합니다.
-    #         # 가장 간단한 경우, INSERT 대상 컬럼에서 키 컬럼을 제외한 나머지를 업데이트합니다.
-            
-    #         # 여기서 update_columns는 실제로 INSERT 되는 모든 컬럼 (인덱스 포함) 중
-    #         # PRIMARY/UNIQUE KEY를 구성하는 컬럼을 제외한 컬럼들이어야 합니다.
-    #         # 일반화된 함수에서는 어떤 컬럼이 KEY인지 알 수 없으므로, 모든 일반 컬럼을 대상으로 합니다.
-            
-    #         # DataFrame의 실제 컬럼명 (인덱스 컬럼은 제외)
-    #         data_columns_for_update = df.columns.tolist()
+    def load_last_portfolio_snapshot(self) -> Optional[Dict[str, Any]]:
+        table_name = "daily_portfolio_snapshot"
+        query = f"SELECT * FROM {table_name} ORDER BY snapshot_date DESC LIMIT 1"
+        snapshot_df = self.fetch_data(query)
+        if snapshot_df.empty:
+            logger.info("로드할 포트폴리오 스냅샷이 없습니다.")
+            return None
+        snapshot = snapshot_df.iloc[0].to_dict()
+        snapshot['positions_json'] = eval(snapshot['positions_json'])
+        logger.info(f"최근 포트폴리오 스냅샷 로드 완료: {snapshot['snapshot_date']}, 가치: {snapshot['portfolio_value']:,.0f}")
+        return snapshot
 
-    #         for col in data_columns_for_update:
-    #             update_clauses.append(f"{col}=VALUES({col})")
-            
-    #         if update_clauses:
-    #             sql += " ON DUPLICATE KEY UPDATE " + ", ".join(update_clauses)
-    #         else:
-    #             logger.warning(f"테이블 '{table_name}'에 업데이트할 컬럼이 없습니다. UPSERT가 제대로 작동하지 않을 수 있습니다.")
+    def save_current_positions(self, positions: Dict[str, Any]):
+        table_name = "current_positions"
+        self.execute_sql(f"DELETE FROM {table_name}")
+        logger.info("기존 보유 종목 정보 삭제 완료.")
+        if not positions:
+            logger.info("저장할 보유 종목 정보가 없습니다.")
+            return
+        data_to_insert = []
+        for stock_code, position_info in positions.items():
+            if position_info['size'] > 0:
+                data_to_insert.append({
+                    "stock_code": stock_code,
+                    "size": int(position_info['size']),
+                    "avg_price": float(position_info['avg_price']),
+                    "entry_date": position_info['entry_date'],
+                    "highest_price": float(position_info.get('highest_price', 0.0))
+                })
+        df = pd.DataFrame(data_to_insert)
+        if not df.empty:
+            if self.insert_df_to_db(df, table_name, option="append"):
+                logger.info(f"{len(df)}개의 보유 종목 정보가 DB 테이블 '{table_name}'에 성공적으로 저장되었습니다.")
+            else:
+                logger.error(f"보유 종목 정보 {table_name} 저장에 실패했습니다.")
+        else:
+            logger.info(f"저장할 보유 종목 데이터프레임이 비어 있습니다.")
 
-    #     # 4. DataFrame을 SQL에 적합한 튜플 리스트로 변환
-    #     data_to_insert = []
-    #     for index_val, row in df.iterrows():
-    #         row_data = []
-    #         if is_index:
-    #             # 인덱스 값을 SQL에 맞게 변환 (DatetimeIndex -> datetime.datetime/date, 일반 인덱스 -> 그대로)
-    #             if isinstance(index_val, pd.Timestamp):
-    #                 if index_val.hour == 0 and index_val.minute == 0 and index_val.second == 0 and \
-    #                    index_val.microsecond == 0: # 시간 정보가 없는 순수 날짜 Timestamp
-    #                     row_data.append(index_val.date()) 
-    #                 else: # 시간 정보가 있는 Timestamp
-    #                     row_data.append(index_val.to_pydatetime()) 
-    #             else:
-    #                 row_data.append(index_val) # 다른 인덱스 타입은 그대로 추가
-
-    #         for col in df.columns:
-    #             val = row[col]
-    #             # Pandas 기본 타입(numpy 타입 포함)을 Python 기본 타입으로 변환
-    #             if pd.isna(val): # NaN 값은 None으로 변환
-    #                 row_data.append(None)
-    #             elif isinstance(val, (pd.Timestamp, datetime, date)):
-    #                 # datetime/date 객체는 그대로
-    #                 # Timestamp는 위 인덱스 처리에서 다루었으므로 여기서는 datetime.datetime/date를 주로 다룸
-    #                 row_data.append(val)
-    #             elif pd.api.types.is_integer_dtype(df[col]):
-    #                 row_data.append(int(val)) # 정수형은 int로 변환
-    #             elif pd.api.types.is_float_dtype(df[col]):
-    #                 row_data.append(float(val)) # 실수형은 float로 변환
-    #             else:
-    #                 row_data.append(val) # 그 외는 그대로 (문자열 등)
-            
-    #         data_to_insert.append(tuple(row_data))
-
-    #     try:
-    #         cursor = self.execute_sql(sql, data_to_insert)
-    #         if cursor:
-    #             if option == "upsert":
-    #                 logger.info(f"DataFrame 데이터 {len(df)}행을 테이블 '{table_name}'에 UPSERT 완료.")
-    #             else: # append
-    #                 logger.info(f"DataFrame 데이터 {len(df)}행을 테이블 '{table_name}'에 성공적으로 삽입했습니다.")
-    #             return True
-    #         else:
-    #             return False
-    #     except Exception as e:
-    #         logger.error(f"DataFrame 데이터를 테이블 '{table_name}'에 삽입 중 오류 발생: {e}", exc_info=True)
-    #         return False
+    def load_current_positions(self) -> Dict[str, Any]:
+        table_name = "current_positions"
+        query = f"SELECT * FROM {table_name}"
+        positions_df = self.fetch_data(query)
+        loaded_positions = {}
+        for _, row in positions_df.iterrows():
+            stock_code = row['stock_code']
+            loaded_positions[stock_code] = {
+                "size": int(row['size']),
+                "avg_price": float(row['avg_price']),
+                "entry_date": row['entry_date'].date() if isinstance(row['entry_date'], datetime) else row['entry_date'],
+                "highest_price": float(row['highest_price'])
+            }
+        logger.info(f"{len(loaded_positions)}개의 보유 종목 정보가 DB에서 로드되었습니다.")
+        return loaded_positions

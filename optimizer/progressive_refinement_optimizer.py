@@ -20,12 +20,12 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from api.creon_api import CreonAPIClient
-from backtest.backtester import Backtester
+from trader.backtester import Backtester
 from strategies.sma_daily import SMADaily
 from strategies.rsi_minute import RSIMinute
 from manager.data_manager import DataManager
 from manager.db_manager import DBManager
-from backtest.reporter import Reporter
+from trader.reporter import Reporter
 from selector.stock_selector import StockSelector
 
 # 로깅 설정 (콘솔 + 파일)

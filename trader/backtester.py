@@ -8,8 +8,8 @@ import time as time_module
 import sys
 import os
 
-from backtest.broker import Broker
-from backtest.reporter import Reporter # Reporter 타입 힌트를 위해 남겨둠
+from trader.broker import Broker
+from trader.reporter import Reporter # Reporter 타입 힌트를 위해 남겨둠
 from manager.data_manager import DataManager # DataManager 타입 힌트를 위해 남겨둠
 from util.strategies_util import calculate_performance_metrics, get_next_weekday 
 from strategies.strategy import DailyStrategy, MinuteStrategy 

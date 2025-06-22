@@ -15,9 +15,9 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from api.creon_api import CreonAPIClient
 from manager.data_manager import DataManager
 from manager.db_manager import DBManager
-from backtest.reporter import Reporter
+from trader.reporter import Reporter
 from selector.stock_selector import StockSelector
-from backtest.backtester import Backtester
+from trader.backtester import Backtester
 from strategies.dual_momentum_daily import DualMomentumDaily
 from strategies.bollinger_rsi_daily import BollingerRSIDaily
 from strategies.sector_rotation_daily import SectorRotationDaily

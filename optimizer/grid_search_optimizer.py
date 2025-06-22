@@ -20,12 +20,12 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from api.creon_api import CreonAPIClient
-from backtest.backtester import Backtester
+from trader.backtester import Backtester
 from strategies.sma_daily import SMADaily
 from strategies.triple_screen_daily import TripleScreenDaily
 from manager.data_manager import DataManager
 from manager.db_manager import DBManager
-from backtest.reporter import Reporter
+from trader.reporter import Reporter
 from selector.stock_selector import StockSelector
 from strategies.open_minute import OpenMinute
 

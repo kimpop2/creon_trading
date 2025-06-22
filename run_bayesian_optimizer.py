@@ -14,10 +14,10 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from api.creon_api import CreonAPIClient
 from manager.data_manager import DataManager
 from manager.db_manager import DBManager
-from backtest.reporter import Reporter
+from trader.reporter import Reporter
 from selector.stock_selector import StockSelector
 from optimizer.bayesian_optimizer import BayesianOptimizationStrategy
-from backtest.backtester import Backtester
+from trader.backtester import Backtester
 from config.sector_config import sector_stocks  # 공통 설정 파일에서 import
 
 # 로깅 설정

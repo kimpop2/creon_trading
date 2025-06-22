@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS daily_price (
     -- 기본 키 정의: 종목 코드와 날짜의 조합으로 고유성을 보장하는 복합 기본 키
     PRIMARY KEY (stock_code, date)
 )
-COMMENT='백테스트 일봉 주가 데이터'
+COMMENT='일봉 주가 데이터'
 PARTITION BY RANGE (YEAR(date)) (
     PARTITION p2020 VALUES LESS THAN (2021),
     PARTITION p2021 VALUES LESS THAN (2022),
@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS minute_price (
     -- 기본 키 정의: 종목 코드와 시각(날짜+시각)의 조합으로 고유성을 보장하는 복합 기본 키
     PRIMARY KEY (stock_code, datetime)
 )
-COMMENT='백테스트 분봉 주가 데이터'
+COMMENT='분봉 주가 데이터'
 PARTITION BY RANGE (YEAR(datetime)) (
     PARTITION p2020 VALUES LESS THAN (2021),
     PARTITION p2021 VALUES LESS THAN (2022),

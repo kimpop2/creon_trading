@@ -8,6 +8,7 @@ import pandas as pd
 #import datetime # datetime 모듈 전체를 임포트하여 datetime.timedelta 사용 가능
 import re
 from datetime import datetime, date, timedelta
+from typing import Optional, List, Dict, Any
 API_REQUEST_INTERVAL = 0.2
 
 # 로거 설정 (기존 설정 유지)
@@ -21,44 +22,89 @@ class CreonAPIClient:
         self.request_interval = API_REQUEST_INTERVAL
         self.stock_name_dic = {}
         self.stock_code_dic = {}
-        self._connect_creon()
+        self.account_number = None  # 계좌번호
+        self.account_flag = None    # 주식상품 구분
+
+        self._connect_creon_and_init_trade()  # 연결 및 거래 초기화 통합
         if self.connected:
             self.cp_code_mgr = win32com.client.Dispatch("CpUtil.CpCodeMgr")
             logger.info("CpCodeMgr COM object initialized.")
             self._make_stock_dic()
 
-    def _connect_creon(self):
-        """Creon Plus에 연결하고 COM 객체를 초기화합니다."""
-        if ctypes.windll.shell32.IsUserAnAdmin():
-            logger.info("Running with administrator privileges.")
-        else:
-            logger.warning("Not running with administrator privileges. Some Creon functions might be restricted.")
+    # def _connect_creon(self):
+    #     """Creon Plus에 연결하고 COM 객체를 초기화합니다."""
+    #     if ctypes.windll.shell32.IsUserAnAdmin():
+    #         logger.info("Running with administrator privileges.")
+    #     else:
+    #         logger.warning("Not running with administrator privileges. Some Creon functions might be restricted.")
+
+    #     self.cp_cybos = win32com.client.Dispatch("CpUtil.CpCybos")
+    #     if self.cp_cybos.IsConnect:
+    #         self.connected = True
+    #         logger.info("Creon Plus is already connected.")
+    #     else:
+    #         logger.info("Attempting to connect to Creon Plus...")
+    #         # self.cp_cybos.PlusConnect() # 보통 HTS가 실행되어 있으면 자동 연결되므로 주석 처리
+    #         max_retries = 10
+    #         for i in range(max_retries):
+    #             if self.cp_cybos.IsConnect:
+    #                 self.connected = True
+    #                 logger.info("Creon Plus connected successfully.")
+    #                 break
+    #             else:
+    #                 logger.warning(f"Waiting for Creon Plus connection... ({i+1}/{max_retries})")
+    #                 time.sleep(2)
+    #         if not self.connected:
+    #             logger.error("Failed to connect to Creon Plus. Please ensure HTS is running and logged in.")
+    #             raise ConnectionError("Creon Plus connection failed.")
+
+    def _connect_creon_and_init_trade(self):
+        """Creon Plus에 연결하고 COM 객체 및 거래 초기화를 수행합니다."""
+        if not ctypes.windll.shell32.IsUserAnAdmin():
+            logger.warning("관리자 권한으로 실행되지 않았습니다. 일부 Creon 기능이 제한될 수 있습니다.")
 
         self.cp_cybos = win32com.client.Dispatch("CpUtil.CpCybos")
         if self.cp_cybos.IsConnect:
             self.connected = True
-            logger.info("Creon Plus is already connected.")
+            logger.info("Creon Plus가 이미 연결되어 있습니다.")
         else:
-            logger.info("Attempting to connect to Creon Plus...")
-            # self.cp_cybos.PlusConnect() # 보통 HTS가 실행되어 있으면 자동 연결되므로 주석 처리
+            logger.info("Creon Plus 연결 시도 중...")
             max_retries = 10
             for i in range(max_retries):
                 if self.cp_cybos.IsConnect:
                     self.connected = True
-                    logger.info("Creon Plus connected successfully.")
+                    logger.info("Creon Plus 연결 성공.")
                     break
                 else:
-                    logger.warning(f"Waiting for Creon Plus connection... ({i+1}/{max_retries})")
+                    logger.warning(f"Creon Plus 연결 대기 중... ({i+1}/{max_retries})")
                     time.sleep(2)
             if not self.connected:
-                logger.error("Failed to connect to Creon Plus. Please ensure HTS is running and logged in.")
-                raise ConnectionError("Creon Plus connection failed.")
+                logger.error("Creon Plus 연결 실패. HTS가 실행 중이고 로그인되어 있는지 확인하세요.")
+                raise ConnectionError("Creon Plus 연결 실패.")
+
+        try:
+            cpTradeUtil = win32com.client.Dispatch('CpTrade.CpTdUtil')
+            if cpTradeUtil.TradeInit(0) != 0:
+                logger.error("주문 초기화 실패!")
+                raise RuntimeError("Creon TradeInit 실패.")
+
+            self.account_number = cpTradeUtil.AccountNumber[0]
+            # GoodsList는 튜플을 반환하므로 첫 번째 요소를 가져옴 (대부분 '1' for 주식)
+            self.account_flag = cpTradeUtil.GoodsList(self.account_number, 1)[0]
+            logger.info(f"Creon API 계좌 정보 확인: 계좌번호={self.account_number}, 상품구분={self.account_flag}")
+
+        except Exception as e:
+            logger.error(f"Creon TradeUtil 초기화 또는 계좌 정보 가져오는 중 오류 발생: {e}", exc_info=True)
+            raise  # 초기화 실패 시 예외 발생
+
 
     def _check_creon_status(self):
         """Creon API 사용 가능한지 상태를 확인합니다."""
         if not self.connected:
-            logger.error("Creon Plus is not connected.")
+            logger.error("Creon Plus가 연결되지 않았습니다.")
             return False
+        # 추가적인 요청 제한 확인 로직은 필요에 따라 여기에 구현
+        return True
 
         # 요청 제한 개수 확인 (현재는 사용하지 않음 - 단순 시뮬레이션 목적)
         # remain_count = self.cp_cybos.GetLimitRequestRemainTime()
@@ -133,17 +179,17 @@ class CreonAPIClient:
         except Exception as e:
             logger.error(f"_make_stock_dic 중 오류 발생: {e}", exc_info=True)
 
-    def get_stock_name(self, find_code):
+    def get_stock_name(self, find_code: str) -> Optional[str]:
         """종목코드로 종목명을 반환 합니다."""
         return self.stock_code_dic.get(find_code, None)
 
-    def get_stock_code(self, find_name):
+    def get_stock_code(self, find_name: str) -> Optional[str]:
         """종목명으로 종목목코드를 반환 합니다."""
         return self.stock_name_dic.get(find_name, None)
 
-    def get_filtered_stock_list(self):
-        """필터링된 모든 종목 코드를 리스트로 반환합니다."""
-        return list(self.stock_code_dic.keys())
+    # def get_filtered_stock_list(self):
+    #     """필터링된 모든 종목 코드를 리스트로 반환합니다."""
+    #     return list(self.stock_code_dic.keys())
 
     def _get_price_data(self, stock_code, period, from_date_str, to_date_str, interval=1):
         """
@@ -330,3 +376,310 @@ class CreonAPIClient:
         logger.info(f"Creon API로부터 총 {len(trading_days)}개의 거래일 캘린더 데이터를 가져왔습니다.")
         return trading_days
     
+
+    '''
+    # 중복 메서드, 통합 우선순위에 따라 주석처리
+    def get_market_calendar(self, from_date: date, to_date: date, stock_code: str = 'A005930') -> List[date]:
+        ...
+    '''
+    '''
+    # 중복 메서드, 통합 우선순위에 따라 주석처리
+    def get_price_data(self, stock_code: str, period: str, count: int) -> Optional[pd.DataFrame]:
+        ...
+    '''
+    def get_current_price(self, stock_code: str) -> Optional[float]:
+        """
+        실시간 현재가를 조회합니다 (CpSysDib.StockMst 사용).
+        """
+        logger.debug(f"Fetching current price for {stock_code}")
+        try:
+            objStockMst = win32com.client.Dispatch("CpSysDib.StockMst")
+            objStockMst.SetInputValue(0, stock_code)
+            
+            ret = objStockMst.BlockRequest()
+            if ret == 0:
+                # 필드 10: 현재가 (종가)
+                current_price = float(objStockMst.GetHeaderValue(11)) # 종가 (실시간은 보통 현재가와 동일)
+                logger.debug(f"Current price for {stock_code}: {current_price}")
+                return current_price
+            else:
+                logger.error(f"BlockRequest failed for current price {stock_code}: {ret}")
+                return None
+        except Exception as e:
+            logger.error(f"Error fetching current price for {stock_code}: {e}", exc_info=True)
+            return None
+
+    def get_current_minute_data(self, stock_code: str, count: int = 1) -> Optional[pd.DataFrame]:
+        """
+        실시간 1분봉 데이터를 조회합니다 (get_price_data 재활용).
+        실시간 스트리밍이 아닌 요청 시점의 가장 최신 1분봉 데이터를 가져오는 방식.
+        """
+        logger.debug(f"Fetching current minute data for {stock_code}, count={count}")
+        # CpSysDib.StockChart의 1분봉 조회 기능을 활용
+        df = self.get_price_data(stock_code, 'm', count)
+        if df is not None and not df.empty:
+            # 가장 최근 데이터만 필요하다면 (count=1 기준)
+            # df = df.tail(1)
+            return df
+        return None
+
+    def get_latest_financial_data(self, stock_code: str) -> pd.DataFrame:
+        """
+        종목의 최신 재무 데이터를 조회합니다 (CpSysDib.MarketEye 사용).
+        백테스팅의 creon_api.py의 get_latest_financial_data와 유사하게 구현.
+        """
+        logger.info(f"Fetching latest financial data for {stock_code}")
+        objMarketEye = win32com.client.Dispatch("CpSysDib.MarketEye")
+        
+        # 요청할 필드 설정 (주가, 재무제표 관련)
+        # CpSysDib.MarketEye.Get
+        # 1: 종목코드, 4: 종목명, 11:현재가, 20:PER, 21:PBR, 22:EPS, 67:ROE, 70:부채비율
+        # 110: 매출액(억), 111: 영업이익(억), 112: 당기순이익(억) (최근 분기)
+        # 161: 최근 결산년월
+        req_fields = [
+            0, # 종목코드
+            1, # 종목명
+            11, # 현재가
+            20, # PER
+            21, # PBR
+            22, # EPS
+            67, # ROE
+            70, # 부채비율
+            110, # 매출액
+            111, # 영업이익
+            112, # 당기순이익
+            161 # 최근 결산년월
+        ]
+        
+        objMarketEye.SetInputValue(0, req_fields) # 요청 필드
+        objMarketEye.SetInputValue(1, stock_code) # 종목 코드
+        
+        ret = objMarketEye.BlockRequest()
+        if ret != 0:
+            logger.error(f"BlockRequest failed for financial data {stock_code}: {ret}")
+            return pd.DataFrame() # 빈 DataFrame 반환
+        
+        status = objMarketEye.GetDibStatus()
+        msg = objMarketEye.GetDibMsg1()
+        if status != 0:
+            logger.error(f"Financial data request error {stock_code}: Status={status}, Msg={msg}")
+            return pd.DataFrame()
+
+        # 데이터 파싱
+        stock_code_res = objMarketEye.GetHeaderValue(0)
+        stock_name_res = objMarketEye.GetHeaderValue(1)
+        current_price = objMarketEye.GetHeaderValue(2)
+        per = objMarketEye.GetHeaderValue(3)
+        pbr = objMarketEye.GetHeaderValue(4)
+        eps = objMarketEye.GetHeaderValue(5)
+        roe = objMarketEye.GetHeaderValue(6)
+        debt_ratio = objMarketEye.GetHeaderValue(7)
+        sales = objMarketEye.GetHeaderValue(8) * 100_000_000 # 억 단위를 원 단위로
+        operating_profit = objMarketEye.GetHeaderValue(9) * 100_000_000
+        net_profit = objMarketEye.GetHeaderValue(10) * 100_000_000
+        recent_financial_date_str = str(objMarketEye.GetHeaderValue(11)) # YYYYMM
+
+        recent_financial_date = None
+        if len(recent_financial_date_str) == 6:
+            try:
+                recent_financial_date = datetime.strptime(recent_financial_date_str, '%Y%m').date()
+            except ValueError:
+                logger.warning(f"Could not parse financial date: {recent_financial_date_str}")
+        
+        data = [{
+            'stock_code': stock_code_res,
+            'stock_name': stock_name_res,
+            'current_price': float(current_price),
+            'per': float(per) if per != 0 else None,
+            'pbr': float(pbr) if pbr != 0 else None,
+            'eps': float(eps) if eps != 0 else None,
+            'roe': float(roe) if roe != 0 else None,
+            'debt_ratio': float(debt_ratio) if debt_ratio != 0 else None,
+            'sales': float(sales),
+            'operating_profit': float(operating_profit),
+            'net_profit': float(net_profit),
+            'recent_financial_date': recent_financial_date
+        }]
+        
+        df = pd.DataFrame(data)
+        logger.info(f"Successfully fetched financial data for {stock_code}.")
+        return df
+
+    # --- 주문 관련 메서드 ---
+    def send_order(self, stock_code: str, order_type: str, price: float, quantity: int, order_kind: str = '01', org_order_no: str = '') -> Optional[str]:
+        """
+        주문 전송 (매수/매도/정정/취소).
+        order_type: 'buy', 'sell'
+        order_kind: '01'(보통), '03'(시장가) 등 Creon 주문 종류 코드
+        org_order_no: 정정/취소 시 원주문번호
+        """
+        if not self.connected:
+            logger.error("Creon API is not connected. Cannot send order.")
+            return None
+
+        objOrder = win32com.client.Dispatch("CpTrade.CpTd0311")
+        
+        # 입력 값 설정
+        objOrder.SetInputValue(0, order_kind) # 주문 종류: 01-보통, 03-시장가
+        objOrder.SetInputValue(1, self.account_number) # 계좌번호
+        objOrder.SetInputValue(2, self.account_flag) # 상품구분
+        objOrder.SetInputValue(3, stock_code) # 종목코드
+        objOrder.SetInputValue(4, int(quantity)) # 주문수량
+        objOrder.SetInputValue(5, int(price)) # 주문단가 (시장가는 의미 없음)
+
+        if order_type == 'buy':
+            objOrder.SetInputValue(6, ord('2')) # '2': 매수
+        elif order_type == 'sell':
+            objOrder.SetInputValue(6, ord('1')) # '1': 매도
+        else:
+            logger.error(f"Unsupported order type: {order_type}")
+            return None
+        
+        # '보통' 주문 시에만 유효한 가격 필드
+        # objOrder.SetInputValue(7, "0")  # '0': 주문조건 구분 코드 (없음)
+        # objOrder.SetInputValue(8, "01") # '01': 신용주문 구분코드 (대출,신용 등은 01:보통)
+
+        # 정정/취소 주문 시 원주문번호 필요
+        if org_order_no:
+            objOrder.SetInputValue(9, org_order_no) # 원주문번호 (정정/취소 시 사용)
+
+        # 주문 요청
+        ret = objOrder.BlockRequest()
+        if ret != 0:
+            logger.error(f"Order BlockRequest failed for {stock_code} {order_type} {quantity}@{price}: {ret}")
+            return None
+        
+        status = objOrder.GetDibStatus()
+        msg = objOrder.GetDibMsg1()
+        if status != 0:
+            logger.error(f"Order request error for {stock_code}: Status={status}, Msg={msg}")
+            return None
+
+        # 주문 성공 시 반환 값
+        # GetHeaderValue(4) : 주문번호
+        # GetHeaderValue(5) : 주문수량
+        order_id = str(objOrder.GetHeaderValue(4))
+        order_qty = int(objOrder.GetHeaderValue(5))
+        logger.info(f"Order sent successfully: {order_type.upper()} {stock_code}, Qty: {order_qty}, Price: {price}, OrderID: {order_id}")
+        return order_id
+
+    def get_account_balance(self) -> Dict[str, float]:
+        """
+        계좌 잔고 (현금) 및 예수금 정보를 조회합니다.
+        """
+        logger.debug("Fetching account balance...")
+        try:
+            objCash = win32com.client.Dispatch("CpTrade.CpTdNew5331A")
+            objCash.SetInputValue(0, self.account_number)
+            objCash.SetInputValue(1, self.account_flag)
+            
+            ret = objCash.BlockRequest()
+            if ret != 0:
+                logger.error(f"BlockRequest failed for account balance: {ret}")
+                return {"cash": 0.0, "deposit": 0.0}
+
+            status = objCash.GetDibStatus()
+            msg = objCash.GetDibMsg1()
+            if status != 0:
+                logger.error(f"Account balance request error: Status={status}, Msg={msg}")
+                return {"cash": 0.0, "deposit": 0.0}
+
+            # 예수금, 매도 가능 금액 등 조회
+            cash = float(objCash.GetHeaderValue(9)) # 주문가능금액
+            deposit = float(objCash.GetHeaderValue(13)) # 예수금
+            logger.info(f"Account Balance: Cash={cash:,.0f}, Deposit={deposit:,.0f}")
+            return {"cash": cash, "deposit": deposit}
+        except Exception as e:
+            logger.error(f"Error fetching account balance: {e}", exc_info=True)
+            return {"cash": 0.0, "deposit": 0.0}
+
+    def get_portfolio_positions(self) -> List[Dict[str, Any]]:
+        """
+        현재 보유 종목 리스트 및 상세 정보를 조회합니다.
+        """
+        logger.debug("Fetching portfolio positions...")
+        try:
+            objRp = win32com.client.Dispatch("CpTrade.CpTd6033")
+            objRp.SetInputValue(0, self.account_number)
+            objRp.SetInputValue(1, self.account_flag)
+            objRp.SetInputValue(2, 50) # 요청할 개수 (최대 50개)
+
+            positions = []
+            while True:
+                ret = objRp.BlockRequest()
+                if ret != 0:
+                    logger.error(f"BlockRequest failed for portfolio positions: {ret}")
+                    break
+
+                status = objRp.GetDibStatus()
+                msg = objRp.GetDibMsg1()
+                if status != 0:
+                    logger.error(f"Portfolio positions request error: Status={status}, Msg={msg}")
+                    break
+
+                cnt = objRp.GetHeaderValue(7) # 수신 개수
+                for i in range(cnt):
+                    stock_code = objRp.GetDataValue(12, i) # 종목코드
+                    stock_name = objRp.GetDataValue(0, i) # 종목명
+                    current_qty = int(objRp.GetDataValue(7, i)) # 잔고수량
+                    avg_price = float(objRp.GetDataValue(9, i)) # 매입단가
+                    
+                    # 현재가는 별도로 조회 필요 (StockMst 사용)
+                    # 여기서는 일단 잔고 정보만 가져오고, 현재가는 BusinessManager에서 별도로 호출
+                    positions.append({
+                        'stock_code': stock_code,
+                        'stock_name': stock_name,
+                        'size': current_qty,
+                        'avg_price': avg_price
+                    })
+
+                if not objRp.Continue: # 연속 데이터가 없으면
+                    break
+                time.sleep(self.request_interval)
+
+            logger.info(f"Fetched {len(positions)} portfolio positions.")
+            return positions
+        except Exception as e:
+            logger.error(f"Error fetching portfolio positions: {e}", exc_info=True)
+            return []
+
+    def get_order_status(self, order_id: str) -> Dict[str, Any]:
+        """
+        특정 주문의 체결 상태를 조회합니다 (CpTrade.CpTd0311 - 주문확인).
+        order_id: 주문번호
+        """
+        logger.debug(f"Fetching order status for order ID: {order_id}")
+        try:
+            objReq = win32com.client.Dispatch("CpTrade.CpTd0311")
+            objReq.SetInputValue(0, self.account_number)
+            objReq.SetInputValue(1, self.account_flag)
+            objReq.SetInputValue(2, order_id) # 원주문번호 (조회할 주문번호)
+
+            ret = objReq.BlockRequest()
+            if ret != 0:
+                logger.error(f"BlockRequest failed for order status {order_id}: {ret}")
+                return {"status": "ERROR", "message": f"BlockRequest failed: {ret}"}
+            
+            status = objReq.GetDibStatus()
+            msg = objReq.GetDibMsg1()
+            if status != 0:
+                logger.error(f"Order status request error {order_id}: Status={status}, Msg={msg}")
+                return {"status": "ERROR", "message": f"API error: {msg}"}
+
+            # 반환 필드 확인 (CpTrade.CpTd0311 설명서 참고)
+            # 1: 주문상태 (접수, 체결, 확인, 거부 등)
+            # 5: 체결수량
+            # 6: 체결가격
+            order_status = objReq.GetHeaderValue(1)
+            executed_qty = int(objReq.GetHeaderValue(5))
+            executed_price = float(objReq.GetHeaderValue(6))
+
+            logger.info(f"Order {order_id} Status: {order_status}, Executed Qty: {executed_qty}, Price: {executed_price}")
+            return {
+                "status": order_status,
+                "executed_quantity": executed_qty,
+                "executed_price": executed_price
+            }
+        except Exception as e:
+            logger.error(f"Error fetching order status for {order_id}: {e}", exc_info=True)
+            return {"status": "ERROR", "message": str(e)}

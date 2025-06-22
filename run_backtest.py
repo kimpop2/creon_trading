@@ -23,9 +23,9 @@ if sys.platform.startswith('win'):
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from api.creon_api import CreonAPIClient
-from backtest.backtester import Backtester
-from backtest.broker import Broker
-from backtest.reporter import Reporter
+from trader.backtester import Backtester
+from trader.broker import Broker
+from trader.reporter import Reporter
 from strategies.triple_screen_daily import TripleScreenDaily
 from strategies.dual_momentum_daily import DualMomentumDaily
 from strategies.rsi_minute import RSIMinute

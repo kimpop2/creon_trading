@@ -1,4 +1,4 @@
-# manager/backtest_manager.py
+# manager/business_manager.py
 
 import logging
 import pandas as pd
@@ -6,6 +6,7 @@ from datetime import datetime, date, timedelta
 import sys
 import os
 import json
+from typing import Optional, List
 
 # project_root를 sys.path에 추가하여 모듈 임포트 가능하게 함
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -18,15 +19,16 @@ from util.strategies_util import calculate_sma, calculate_rsi, calculate_ema, ca
 logger = logging.getLogger(__name__)
 # logger.setLevel(logging.DEBUG) # 필요 시 DEBUG로 설정
 
-class BacktestManager:
+class BusinessManager:
     """
     백테스팅 결과를 조회하고 시각화에 필요한 데이터를 가공하는 역할을 담당합니다.
     DBManager와 DataManager의 기능을 활용합니다.
     """
     def __init__(self, data_manager: DataManager):
         self.data_manager = data_manager # DataManager 인스턴스 주입
-        self.db_manager = self.data_manager.db_manager # DataManager의 DBManager 재사용
-        logger.info("BacktestManager 초기화 완료.")
+        self.db_manager = data_manager.db_manager # DataManager의 DBManager 재사용
+        self.api_client = data_manager.api_client
+        logger.info("BusinessManager 초기화 완료.")
 
     def fetch_backtest_runs(self, run_id: int = None, start_date: date = None, end_date: date = None) -> pd.DataFrame:
         """
@@ -316,3 +318,64 @@ class BacktestManager:
         filtered_df = minute_df[(minute_df.index >= start_filter_dt) & (minute_df.index <= end_filter_dt)]
         
         return filtered_df
+
+    # --- BusinessManager에서 이동: 실시간/과거 데이터, 종목/캘린더/재무정보 관련 메서드 ---
+    def get_realtime_price(self, stock_code: str) -> Optional[float]:
+        price = self.api_client.get_current_price(stock_code)
+        if price is not None:
+            logger.debug(f"실시간 현재가 조회: {stock_code} - {price:,.0f}원")
+        else:
+            logger.warning(f"실시간 현재가 조회 실패: {stock_code}")
+        return float(price) if price is not None else None
+
+    def get_realtime_minute_data(self, stock_code: str) -> Optional[pd.DataFrame]:
+        df = self.api_client.get_current_minute_data(stock_code)
+        if df is not None and not df.empty:
+            logger.debug(f"실시간 1분봉 데이터 조회: {stock_code}, {len(df)}개")
+        else:
+            logger.warning(f"실시간 1분봉 데이터 조회 실패 또는 없음: {stock_code}")
+        return df
+
+    def get_historical_ohlcv(self, stock_code: str, period: str, count: int) -> Optional[pd.DataFrame]:
+        df = self.api_client.get_price_data(stock_code, period, count)
+        if df is not None and not df.empty:
+            logger.debug(f"과거 OHLCV 데이터 조회: {stock_code}, 주기: {period}, 개수: {count}, {len(df)}개")
+            if 'datetime' in df.columns:
+                df['datetime'] = pd.to_datetime(df['datetime']).dt.date
+            elif 'Date' in df.columns:
+                df['datetime'] = pd.to_datetime(df['Date']).dt.date
+                df = df.rename(columns={'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close', 'Volume': 'volume'})
+                df = df[['datetime', 'open', 'high', 'low', 'close', 'volume']]
+        else:
+            logger.warning(f"과거 OHLCV 데이터 조회 실패 또는 없음: {stock_code}, 주기: {period}, 개수: {count}")
+        return df
+
+    def get_all_stock_codes(self, market_type: Optional[str] = None) -> List[str]:
+        codes = self.api_client.get_all_stock_codes(market_type)
+        logger.info(f"총 {len(codes)}개의 종목 코드 로드 완료 (시장: {market_type if market_type else '전체'})")
+        return codes
+
+    def update_market_calendar(self, from_date: date, to_date: date) -> bool:
+        logger.info(f"거래일 캘린더 업데이트 시작: {from_date} ~ {to_date}")
+        trading_days = self.api_client.get_market_calendar(from_date, to_date)
+        if trading_days:
+            calendar_df = pd.DataFrame([{'trade_date': d} for d in trading_days])
+            if self.db_manager.insert_df_to_db(calendar_df, "market_calendar", option="append", is_index=False):
+                logger.info(f"{len(trading_days)}개의 거래일이 market_calendar 테이블에 업데이트되었습니다.")
+                return True
+            else:
+                logger.error("market_calendar 테이블 업데이트 실패.")
+                return False
+        logger.warning("Creon API에서 거래일 캘린더를 가져오지 못했습니다.")
+        return False
+
+    def update_stock_info(self, stock_code: str):
+        logger.info(f"{stock_code} stock_info 테이블의 최신 재무 데이터 업데이트 중...")
+        finance_df = self.api_client.get_latest_financial_data(stock_code)
+        if finance_df.empty:
+            logger.info(f"{stock_code} Creon API에서 조회된 재무 데이터가 없습니다.")
+            return
+        if self.db_manager.insert_df_to_db(finance_df, "stock_info", option="update", is_index=False, on_conflict_cols=['stock_code']):
+            logger.info(f"{stock_code} 종목의 재무 데이터가 stock_info 테이블에 성공적으로 업데이트되었습니다.")
+        else:
+            logger.error(f"{stock_code} 종목의 재무 데이터 업데이트 실패.")
