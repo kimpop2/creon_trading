@@ -4,7 +4,7 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTableView, QHeaderView, QLabel,
     QSplitter, QLineEdit, QPushButton, QSizePolicy, QMessageBox
 )
-from PyQt5.QtCore import Qt, QAbstractTableModel, QModelIndex
+from PyQt5.QtCore import Qt, QModelIndex
 from PyQt5.QtGui import QColor, QPalette
 
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -21,128 +21,10 @@ import logging
 plt.rcParams['font.family'] = 'Malgun Gothic'
 plt.rcParams['axes.unicode_minus'] = False
 
+# 통합된 BacktestModel 임포트
+from app.backtest_model import BacktestModel
+
 logger = logging.getLogger(__name__)
-
-class BacktestModel(QAbstractTableModel):
-    """
-    QTableView에 데이터를 표시하기 위한 모델 (2줄 레이아웃 지원)
-    """
-    def __init__(self, data=None, headers=None, display_headers=None):
-        super().__init__()
-        self._data = pd.DataFrame()
-        # headers: 실제 데이터 컬럼명. 1줄 레이아웃에서는 리스트, 2줄 레이아웃에서는 튜플 리스트.
-        self._headers = [] 
-        self._display_headers = [] # View에 표시될 헤더
-        if data is not None:
-            self.set_data(data, headers, display_headers)
-
-    def set_data(self, data: pd.DataFrame, headers: list = None, display_headers: list = None):
-        """DataFrame을 모델 데이터로 설정합니다."""
-        self.beginResetModel()
-        self._data = data.copy() if data is not None else pd.DataFrame()
-        self._headers = headers if headers else []
-        if display_headers:
-            self._display_headers = display_headers
-        elif not self._data.empty:
-            self._display_headers = self._data.columns.tolist()
-        else:
-            self._display_headers = []
-        self.endResetModel()
-
-    def rowCount(self, parent=QModelIndex()):
-        # self._headers가 튜플 리스트 형태일 때만 2줄 레이아웃으로 간주
-        if self._headers and isinstance(self._headers[0], tuple):
-            return len(self._data) * 2
-        return len(self._data)
-
-    def columnCount(self, parent=QModelIndex()):
-        return len(self._display_headers)
-
-    def data(self, index, role=Qt.DisplayRole):
-        if not index.isValid():
-            return None
-
-        # 2줄 레이아웃인지 확인하고, 실제 데이터의 인덱스(logical_row) 계산
-        is_two_line_layout = self._headers and isinstance(self._headers[0], tuple)
-        logical_row = index.row() // 2 if is_two_line_layout else index.row()
-
-        # 역할(role)에 따라 다른 데이터 반환
-        if role == Qt.BackgroundRole:
-            # 홀수번째 데이터 묶음(1, 3, 5...)에 옅은 회색 배경 적용
-            if logical_row % 2 == 1:
-                return QColor("#f0f0f0")
-            return None
-
-        # 값(value)과 컬럼 이름(col_name) 계산
-        col = index.column()
-        col_name = None
-        value = None
-        
-        try:
-            if is_two_line_layout:
-                row_type = index.row() % 2  # 0: 첫번째 줄, 1: 두번째 줄
-                col_name = self._headers[col][row_type]
-                if not col_name: return None
-                value = self._data.iloc[logical_row][col_name]
-            else: # 일반 1줄 레이아웃
-                if self._headers:
-                    col_name = self._headers[col]
-                elif not self._data.empty:
-                    col_name = self._data.columns[col]
-                else: # 데이터가 없으면 아무것도 하지 않음
-                    return None
-                value = self._data.iloc[logical_row][col_name]
-        except (KeyError, IndexError):
-            return None
-
-        # 데이터 포맷팅
-        if role == Qt.DisplayRole:
-            if col_name in ['strategy_daily', 'strategy_minute'] and isinstance(value, str):
-                return value.replace('(', '\n(')
-
-            if isinstance(value, (date, pd.Timestamp)):
-                return value.strftime('%Y-%m-%d')
-            
-            if col_name in ['cumulative_return', 'max_drawdown', 'annualized_return', 'daily_return', 'drawdown', 'avg_return_per_trade']:
-                if pd.isna(value): return ""
-                return f"{value:.2f}%"
-            elif col_name in ['initial_capital', 'final_capital', 'total_profit_loss', 'end_capital', 'daily_profit_loss', 'trade_price', 'trade_amount', 'commission', 'tax', 'realized_profit_loss', 'total_realized_profit_loss']:
-                if pd.isna(value): return ""
-                return f"{value:,.0f}"
-            else:
-                return str(value)
-        
-        elif role == Qt.TextAlignmentRole:
-            if is_two_line_layout:
-                return Qt.AlignCenter
-            if col_name in ['run_id', 'initial_capital', 'final_capital', 'total_profit_loss', 'cumulative_return', 'max_drawdown',
-                            'end_capital', 'daily_return', 'daily_profit_loss', 'drawdown',
-                            'trade_count', 'total_realized_profit_loss', 'avg_return_per_trade',
-                            'trade_price', 'trade_quantity', 'trade_amount', 'commission', 'tax', 'realized_profit_loss', 'performance_id']:
-                return Qt.AlignRight | Qt.AlignVCenter
-            else:
-                return Qt.AlignLeft | Qt.AlignVCenter
-
-        elif role == Qt.ForegroundRole:
-            if col_name in ['cumulative_return', 'total_profit_loss', 'annualized_return', 'daily_return', 'daily_profit_loss', 'total_realized_profit_loss', 'avg_return_per_trade', 'realized_profit_loss']:
-                if pd.notna(value):
-                    return QColor(Qt.darkGreen) if value > 0 else QColor(Qt.darkRed)
-            elif col_name in ['max_drawdown', 'drawdown']:
-                if pd.notna(value) and value > 0:
-                    return QColor(Qt.darkRed)
-        return None
-
-    def headerData(self, section, orientation, role=Qt.DisplayRole):
-        if role == Qt.DisplayRole and orientation == Qt.Horizontal:
-            return self._display_headers[section]
-        return None
-
-    def get_row_data(self, row_index):
-        is_two_line_layout = self._headers and isinstance(self._headers[0], tuple)
-        logical_row = row_index // 2 if is_two_line_layout else row_index
-        if 0 <= logical_row < len(self._data):
-            return self._data.iloc[logical_row]
-        return None
 
 class BacktestView(QWidget):
     def __init__(self):
@@ -156,6 +38,7 @@ class BacktestView(QWidget):
         self.daily_chart_dates = None    # 일봉 차트의 날짜 인덱스 저장
         self.last_hover_date = None      # 마지막으로 호버링된 날짜 (중복 방지용)
         self.daily_ax1 = None            # 일봉 차트의 주가 축
+        self.stock_dic = {}              # 종목코드-종목명 매핑 딕셔너리
         self.init_ui()
 
     def init_ui(self):
@@ -368,10 +251,10 @@ class BacktestView(QWidget):
     def update_traded_stocks_list(self, df: pd.DataFrame):
         """매매 종목 목록 테이블을 업데이트합니다."""
         headers = [
-            "stock_code", "trade_count", "total_realized_profit_loss", "avg_return_per_trade"
+            "stock_name", "trade_count", "total_realized_profit_loss", "avg_return_per_trade"
         ]
         display_headers = [
-            "종목코드", "매매횟수", "총 실현손익", "평균수익률"
+            "종목명", "매매횟수", "총 실현손익", "평균수익률"
         ]
         self.traded_stocks_model.set_data(df, headers=headers, display_headers=display_headers)
         self.traded_stocks_table_view.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
@@ -383,7 +266,11 @@ class BacktestView(QWidget):
         logger.info(f"일봉 차트 업데이트 시작: 종목코드={stock_code}, 전달된 파라미터={daily_strategy_params}")
         logger.info(f"전달된 OHLCV 데이터 컬럼: {ohlcv_df.columns.tolist() if not ohlcv_df.empty else '비어 있음'}")
 
-        self.daily_chart_label.setText(f"종목 일봉 차트 ({stock_code})")
+        # 종목명 가져오기
+        stock_name = self.stock_dic.get(stock_code, stock_code)
+        chart_title = f"{stock_name} ({stock_code}) 일봉 차트"
+
+        self.daily_chart_label.setText(f"종목 일봉 차트 ({stock_name} - {stock_code})")
         self.daily_chart_figure.clear()
         self.daily_ax1 = None
         self.last_hover_date = None
@@ -471,7 +358,7 @@ class BacktestView(QWidget):
                     self.daily_ax1.scatter(ohlc_row.index[0], price, marker='v', s=100, color='red', zorder=5)
 
         # 5. 차트 스타일 및 레이아웃 설정
-        self.daily_ax1.set_title(f"{stock_code} 일봉 차트", fontsize=12, fontweight='bold')
+        self.daily_ax1.set_title(chart_title, fontsize=12, fontweight='bold')
         self.daily_ax1.grid(True, alpha=0.3)
         ax_vol.grid(True, alpha=0.3)
         
@@ -510,7 +397,11 @@ class BacktestView(QWidget):
         logger.info(f"분봉 차트 업데이트 시작: 종목코드={stock_code}, 날짜={trade_date}, 전달된 파라미터={minute_strategy_params}")
         logger.info(f"전달된 OHLCV 데이터 컬럼: {ohlcv_df.columns.tolist() if not ohlcv_df.empty else '비어 있음'}")
         
-        self.minute_chart_label.setText(f"선택 일자 분봉 차트 ({stock_code} - {trade_date.strftime('%Y-%m-%d')})")
+        # 종목명 가져오기
+        stock_name = self.stock_dic.get(stock_code, stock_code)
+        chart_title = f"{stock_name} ({stock_code}) 분봉 차트"
+        
+        self.minute_chart_label.setText(f"선택 일자 분봉 차트 ({stock_name} - {stock_code} - {trade_date.strftime('%Y-%m-%d')})")
         self.minute_chart_figure.clear()
 
         if ohlcv_df.empty:
@@ -574,7 +465,7 @@ class BacktestView(QWidget):
             ax1.scatter(sell_trades['idx'], sell_trades['trade_price'] * 1.01, marker='v', s=150, color='red', zorder=5)
 
         # 5. 차트 스타일 및 레이아웃 설정
-        ax1.set_title(f"{stock_code} 분봉 차트", fontsize=12, fontweight='bold')
+        ax1.set_title(chart_title, fontsize=12, fontweight='bold')
         ax1.grid(True, alpha=0.3)
         ax_vol.grid(True, alpha=0.3)
 
