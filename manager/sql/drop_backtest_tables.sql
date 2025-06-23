@@ -1,4 +1,4 @@
--- backtesting/db/sql/drop_backtest_tables.sql
+
 
 -- 외래 키 제약 조건 일시 비활성화
 -- 이 설정을 통해 테이블 간의 참조 순서에 관계없이 테이블을 삭제할 수 있습니다.

@@ -1,4 +1,4 @@
--- backtesting/db/sql/create_stock_tables.sql
+
 
 -- stock_info 테이블 생성 (종목 기본 정보 및 최신 재무 데이터)
 CREATE TABLE IF NOT EXISTS stock_info (

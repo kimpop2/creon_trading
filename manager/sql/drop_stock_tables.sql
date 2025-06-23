@@ -1,4 +1,4 @@
--- manager/sql/drop_stock_tables.sql
+
 
 -- 1. 모든 외래 키(FK) 제약 조건 비활성화
 SET FOREIGN_KEY_CHECKS = 0; 

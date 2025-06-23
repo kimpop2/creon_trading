@@ -1,4 +1,4 @@
--- backtesting/db/sql/create_backtest_tables.sql
+
 
 -- backtest_run 테이블 생성 (백테스트 실행 정보를 저장)
 CREATE TABLE IF NOT EXISTS backtest_run (

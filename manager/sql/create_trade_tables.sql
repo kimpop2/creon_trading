@@ -1,4 +1,4 @@
--- backtesting/db/sql/create_backtesting_schema.sql
+
 
 -- daily_signals 테이블 생성 (일봉 전략 매매 신호 정보)
 CREATE TABLE IF NOT EXISTS daily_signals (

@@ -379,3 +379,30 @@ class BusinessManager:
             logger.info(f"{stock_code} 종목의 재무 데이터가 stock_info 테이블에 성공적으로 업데이트되었습니다.")
         else:
             logger.error(f"{stock_code} 종목의 재무 데이터 업데이트 실패.")
+
+    # --- Trade/Portfolio Management Methods ---
+    def save_daily_signals(self, signals, signal_date):
+        """DBManager를 통해 일봉 매매 신호를 저장합니다."""
+        return self.db_manager.save_daily_signals(signals, signal_date)
+
+    def load_daily_signals_for_today(self, signal_date):
+        """DBManager를 통해 오늘 날짜의 일봉 매매 신호를 로드합니다."""
+        # trader.py에서 load_로 호출하므로, db_manager의 fetch_를 호출하도록 브릿지
+        return self.db_manager.fetch_daily_signals_for_today(signal_date)
+
+    def save_trade_log(self, log_entry):
+        """DBManager를 통해 거래 로그를 저장합니다."""
+        return self.db_manager.save_trade_log(log_entry)
+
+    def save_daily_portfolio_snapshot(self, snapshot_date, portfolio_value, cash, positions):
+        """DBManager를 통해 일일 포트폴리오 스냅샷을 저장합니다."""
+        return self.db_manager.save_daily_portfolio_snapshot(snapshot_date, portfolio_value, cash, positions)
+
+    def save_current_positions(self, positions):
+        """DBManager를 통해 현재 보유 포지션을 저장합니다."""
+        return self.db_manager.save_current_positions(positions)
+
+    def load_current_positions(self):
+        """DBManager를 통해 현재 보유 포지션을 로드합니다."""
+        # brokerage.py에서 load_로 호출하므로, db_manager의 fetch_를 호출하도록 브릿지
+        return self.db_manager.fetch_current_positions()
