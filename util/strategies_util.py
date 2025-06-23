@@ -14,19 +14,50 @@ def calculate_momentum(data, period):
         raise ValueError("데이터프레임에 'close' 컬럼이 없습니다.")
     return (data['close'].pct_change(period).fillna(0) * 100)
 
-def calculate_rsi(data, period):
-    """주어진 데이터프레임의 'close' 가격에 대한 RSI를 계산합니다."""
-    # Ensure 'close' column exists
-    if 'close' not in data.columns:
-        raise ValueError("데이터프레임에 'close' 컬럼이 없습니다.")
-    delta = data['close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period, min_periods=1).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period, min_periods=1).mean()
-    
-    rs = gain / loss.replace(0, np.nan)
+def calculate_rsi(data: pd.Series, period: int) -> pd.Series:
+    """
+    주어진 Series 데이터에 대해 상대강도지수(RSI)를 계산합니다.
+    Args:
+        data (pd.Series): 종가(close) 데이터 Series.
+        period (int): RSI 계산 기간.
+    Returns:
+        pd.Series: 계산된 RSI 값 Series.
+    """
+    # 'data' 인자가 이미 종가(close) Series 자체라고 가정합니다.
+    # 따라서 'data.columns'에 접근할 필요가 없습니다.
+    if not isinstance(data, pd.Series):
+        raise TypeError("calculate_rsi 함수는 Pandas Series 객체를 인자로 받아야 합니다.")
+
+    # 가격 변화 계산
+    delta = data.diff()
+
+    # 상승분(gain)과 하락분(loss) 분리
+    gain = delta.where(delta > 0, 0)
+    loss = -delta.where(delta < 0, 0)
+
+    # 지수 이동 평균(EMA) 계산
+    avg_gain = gain.ewm(com=period - 1, min_periods=period).mean()
+    avg_loss = loss.ewm(com=period - 1, min_periods=period).mean()
+
+    # RSI 계산
+    rs = avg_gain / avg_loss
     rsi = 100 - (100 / (1 + rs))
     
-    return rsi.replace([np.inf, -np.inf], np.nan).fillna(0).clip(0, 100)
+    return rsi
+
+# def calculate_rsi(data, period):
+#     """주어진 데이터프레임의 'close' 가격에 대한 RSI를 계산합니다."""
+#     # Ensure 'close' column exists
+#     if 'close' not in data.columns:
+#         raise ValueError("데이터프레임에 'close' 컬럼이 없습니다.")
+#     delta = data['close'].diff()
+#     gain = (delta.where(delta > 0, 0)).rolling(window=period, min_periods=1).mean()
+#     loss = (-delta.where(delta < 0, 0)).rolling(window=period, min_periods=1).mean()
+    
+#     rs = gain / loss.replace(0, np.nan)
+#     rsi = 100 - (100 / (1 + rs))
+    
+#     return rsi.replace([np.inf, -np.inf], np.nan).fillna(0).clip(0, 100)
 
 def calculate_rsi_incremental(df, rsi_period, stock_code=None, cache=None):
     """
@@ -286,11 +317,31 @@ def get_next_weekday(date, target_weekday):
         days_ahead += 7
     return date + datetime.timedelta(days=days_ahead)
 
-def calculate_sma(data, period):
-    """주어진 데이터프레임의 'close' 가격에 대한 단순 이동평균(SMA)을 계산합니다."""
-    if 'close' not in data.columns:
-        raise ValueError("데이터프레임에 'close' 컬럼이 없습니다.")
-    return data['close'].rolling(window=period, min_periods=1).mean() # min_periods=1로 설정하여 초기에도 계산되도록 함
+# def calculate_sma(data, period):
+#     """주어진 데이터프레임의 'close' 가격에 대한 단순 이동평균(SMA)을 계산합니다."""
+#     if 'close' not in data.columns:
+#         raise ValueError("데이터프레임에 'close' 컬럼이 없습니다.")
+#     return data['close'].rolling(window=period, min_periods=1).mean() # min_periods=1로 설정하여 초기에도 계산되도록 함
+
+def calculate_sma(data: pd.Series, period: int) -> pd.Series:
+    """
+    주어진 Series 데이터에 대해 단순 이동 평균(SMA)을 계산합니다.
+    Args:
+        data (pd.Series): 종가(close) 데이터 Series.
+        period (int): SMA 계산 기간.
+    Returns:
+        pd.Series: 계산된 SMA 값 Series.
+    """
+    # 'data' 인자가 이미 종가(close) Series 자체라고 가정합니다.
+    # 따라서 'data.columns'에 접근할 필요가 없습니다.
+    if not isinstance(data, pd.Series):
+        raise TypeError("calculate_sma 함수는 Pandas Series 객체를 인자로 받아야 합니다.")
+    
+    # Series의 이름이 'close'가 아닐 수도 있으므로, 직접 접근하지 않습니다.
+    # 전달받은 Series에 대해 바로 rolling().mean()을 적용합니다.
+    sma = data.rolling(window=period).mean()
+    return sma
+
 
 def calculate_sma_incremental(historical_data, period, cache=None):
     """

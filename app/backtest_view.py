@@ -194,9 +194,6 @@ class BacktestView(QWidget):
 
         self.show() # 지정된 크기로 실행
 
-        # 일봉 차트의 마우스 이벤트 직접 연결
-        self.daily_chart_canvas.mpl_connect('motion_notify_event', self._on_daily_chart_hover)
-
     def update_run_list(self, df: pd.DataFrame):
         """백테스트 실행 목록 테이블을 업데이트합니다."""
         # 2줄 헤더 설정
@@ -537,7 +534,7 @@ class BacktestView(QWidget):
                 self.daily_hover_line.remove()
                 self.daily_hover_line = None
                 self.last_hover_date = None
-                self.daily_chart_canvas.draw_idle()
+            self.daily_chart_canvas.draw_idle()
             return
 
         from matplotlib.dates import num2date

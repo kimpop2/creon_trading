@@ -78,6 +78,9 @@ class GridSearchOptimizer:
         sma_long_periods = [8, 10, 12, 15]      # 10일 주변 세밀 조정
         volume_ma_periods = [2, 3, 4, 5]        # 3일 주변 세밀 조정
         num_top_stocks = [2, 3, 4, 5]           # 3개 주변 세밀 조정
+        minute_rsi_periods = [7, 14, 21]         # 분봉 RSI 기간 추가
+        minute_rsi_oversold = [25, 30]           # 분봉 RSI 과매도
+        minute_rsi_overbought = [70, 75]         # 분봉 RSI 과매수
         
         # 삼중창 전략 파라미터
         trend_ma_periods = [20, 30, 40, 50]     # 장기 추세 이동평균
@@ -96,11 +99,11 @@ class GridSearchOptimizer:
         combinations = []
         
         # SMA + 손절매 조합 생성 (OpenMinute는 RSI 파라미터가 필요하지 않음)
-        for short_period, long_period, volume_period, num_stocks in itertools.product(
-            sma_short_periods, sma_long_periods, volume_ma_periods, num_top_stocks):
+        for short_period, long_period, volume_period, num_stocks, minute_rsi, oversold, overbought in itertools.product(
+            sma_short_periods, sma_long_periods, volume_ma_periods, num_top_stocks, minute_rsi_periods, minute_rsi_oversold, minute_rsi_overbought):
             
-            # 유효한 조합만 필터링 (단기 < 장기)
-            if short_period >= long_period:
+            # 유효한 조합만 필터링 (단기 < 장기, oversold < overbought)
+            if short_period >= long_period or oversold >= overbought:
                 continue
                 
             for stop_loss, trailing_stop, max_losing in itertools.product(
@@ -112,7 +115,10 @@ class GridSearchOptimizer:
                         'long_sma_period': long_period,
                         'volume_ma_period': volume_period,
                         'num_top_stocks': num_stocks,
-                        'safe_asset_code': 'A439870'
+                        'safe_asset_code': 'A439870',
+                        'minute_rsi_period': minute_rsi,
+                        'minute_rsi_oversold': oversold,
+                        'minute_rsi_overbought': overbought
                     },
                     'stop_loss_params': {
                         'stop_loss_ratio': stop_loss,

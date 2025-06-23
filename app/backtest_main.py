@@ -17,7 +17,7 @@ from app.backtest_model import BacktestModel
 def setup_logging():
     """로깅 기본 설정을 수행합니다."""
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )

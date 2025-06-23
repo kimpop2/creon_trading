@@ -272,19 +272,47 @@ def main():
     )
     
     # ===========================================================
+    # ===========================================================
     # 백테스트 기간 설정
     start_date = datetime.datetime(2025, 1, 1).date()
     end_date = datetime.datetime(2025, 4, 15).date()
     
     logger.info(f"최적화 기간: {start_date} ~ {end_date}")
 
-    # 전체 구간 최적화만 실행 (월별 구간 최적화 제거)
+    # 월별 구간 생성
+    periods = []
+    cur_start = start_date
+    while cur_start < end_date:
+        next_month = (cur_start + relativedelta(months=1)).replace(day=1)
+        cur_end = min(next_month - datetime.timedelta(days=1), end_date)
+        periods.append((cur_start, cur_end))
+        cur_start = next_month
+    # 마지막 구간이 한달 미만이면, 마지막날로부터 한달 전~마지막날 구간 추가
+    if (end_date - periods[-1][0]).days < 27:
+        last_month_start = end_date - relativedelta(months=1) + datetime.timedelta(days=1)
+        if last_month_start < periods[-1][1]:
+            periods.append((last_month_start, end_date))
+
+    # 월별 구간별 최적화
+    period_results = []
+    for p_start, p_end in periods:
+        logger.info(f"[월별구간] {p_start} ~ {p_end} 최적화 시작")
+        result = hybrid_optimizer.run_hybrid_optimization(
+            start_date=p_start,
+            end_date=p_end,
+            sector_stocks=sector_stocks,
+            daily_strategy_name='sma_daily'
+        )
+        period_results.append({'period': (p_start, p_end), 'result': result})
+
+    # 전체 구간 최적화
     results = hybrid_optimizer.run_hybrid_optimization(
         start_date=start_date,
         end_date=end_date,
         sector_stocks=sector_stocks,
         daily_strategy_name='sma_daily'  ################ 전략 사용
     )
+    # ===========================================================
     # ===========================================================
     
     if results:
@@ -364,6 +392,20 @@ def main():
                 print(f"  트레일링스탑: {stop_loss['trailing_stop_ratio']:.1f}%")
                 print(f"  최대 손실 포지션: {stop_loss['max_losing_positions']}개")
     
+    # 월별 구간별 결과 출력
+    print("\n" + "="*60)
+    print("월별/최근한달 구간별 최적화 결과 요약")
+    print("="*60)
+    for pr in period_results:
+        p_start, p_end = pr['period']
+        res = pr['result']
+        print(f"구간: {p_start} ~ {p_end}")
+        if res and res.get('best_metrics'):
+            metrics = res['best_metrics']
+            print(f"  수익률: {metrics.get('total_return', 0)*100:.2f}%  샤프지수: {metrics.get('sharpe_ratio', 0):.3f}  승률: {metrics.get('win_rate', 0)*100:.1f}%  MDD: {metrics.get('mdd', 0)*100:.2f}%")
+        if res and res.get('best_params'):
+            print(f"  best_params: {res['best_params']}")
+        print("-")
     logger.info("하이브리드 최적화가 완료되었습니다.")
 
 if __name__ == "__main__":

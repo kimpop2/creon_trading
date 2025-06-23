@@ -9,6 +9,7 @@ import pandas as pd
 import re
 from datetime import datetime, date, timedelta
 from typing import Optional, List, Dict, Any
+
 API_REQUEST_INTERVAL = 0.2
 
 # 로거 설정 (기존 설정 유지)
@@ -31,32 +32,6 @@ class CreonAPIClient:
             logger.info("CpCodeMgr COM object initialized.")
             self._make_stock_dic()
 
-    # def _connect_creon(self):
-    #     """Creon Plus에 연결하고 COM 객체를 초기화합니다."""
-    #     if ctypes.windll.shell32.IsUserAnAdmin():
-    #         logger.info("Running with administrator privileges.")
-    #     else:
-    #         logger.warning("Not running with administrator privileges. Some Creon functions might be restricted.")
-
-    #     self.cp_cybos = win32com.client.Dispatch("CpUtil.CpCybos")
-    #     if self.cp_cybos.IsConnect:
-    #         self.connected = True
-    #         logger.info("Creon Plus is already connected.")
-    #     else:
-    #         logger.info("Attempting to connect to Creon Plus...")
-    #         # self.cp_cybos.PlusConnect() # 보통 HTS가 실행되어 있으면 자동 연결되므로 주석 처리
-    #         max_retries = 10
-    #         for i in range(max_retries):
-    #             if self.cp_cybos.IsConnect:
-    #                 self.connected = True
-    #                 logger.info("Creon Plus connected successfully.")
-    #                 break
-    #             else:
-    #                 logger.warning(f"Waiting for Creon Plus connection... ({i+1}/{max_retries})")
-    #                 time.sleep(2)
-    #         if not self.connected:
-    #             logger.error("Failed to connect to Creon Plus. Please ensure HTS is running and logged in.")
-    #             raise ConnectionError("Creon Plus connection failed.")
 
     def _connect_creon_and_init_trade(self):
         """Creon Plus에 연결하고 COM 객체 및 거래 초기화를 수행합니다."""
@@ -186,10 +161,126 @@ class CreonAPIClient:
     def get_stock_code(self, find_name: str) -> Optional[str]:
         """종목명으로 종목목코드를 반환 합니다."""
         return self.stock_name_dic.get(find_name, None)
-
+    
     # def get_filtered_stock_list(self):
     #     """필터링된 모든 종목 코드를 리스트로 반환합니다."""
     #     return list(self.stock_code_dic.keys())
+
+    def get_price_data(self, code: str, period: str, count: int) -> pd.DataFrame:
+        """
+        지정된 종목의 차트 데이터를 요청하고 DataFrame으로 반환합니다.
+
+        Args:
+            code (str): 종목코드 (e.g., 'A005930')
+            period (str): 주기 ('D':일봉, 'W':주봉, 'M':월봉, 'm':분봉, 'T':틱봉)
+            count (int): 요청할 데이터 개수
+
+        Returns:
+            pandas.DataFrame: 요청된 차트 데이터 (오류 발생 시 빈 DataFrame)
+        """
+        logger.info(f"종목 [{code}] 차트 데이터 요청 시작: 주기={period}, 개수={count}")
+
+        try:
+            objChart = win32com.client.Dispatch('CpSysDib.StockChart')
+
+            # Set common input values
+            objChart.SetInputValue(0, code)
+            objChart.SetInputValue(1, ord('2'))  # 요청구분 2:개수 (1:기간)
+            objChart.SetInputValue(4, count)     # 요청할 데이터 개수
+            objChart.SetInputValue(6, ord(period)) # 주기 : D, W, M, m, T
+            objChart.SetInputValue(9, ord('1'))  # 수정주가 사용 (1:적용, 0:미적용)
+
+            # Define fields based on chart period type
+            # Fields: [0:날짜, 1:시간, 2:시가, 3:고가, 4:저가, 5:종가, 8:거래량]
+            # Note: GetDataValue indices will correspond to the order in this list
+            if period in ['m', 'T']:
+                # 분/틱 주기 시 시간 필드 포함
+                chart_fields = [0, 1, 2, 3, 4, 5, 8]
+                if period == 'm':
+                    objChart.SetInputValue(7, 1) # 분봉 주기 (1분봉) - CpSysDib.StockChart는 1분봉만 가능
+            else:
+                # 일/주/월 주기 시 시간 필드 없음
+                chart_fields = [0, 2, 3, 4, 5, 8]
+            
+            objChart.SetInputValue(5, chart_fields) # 요청 항목 설정
+
+            # Request data
+            ret = objChart.BlockRequest()
+
+            # Handle COM object request errors
+            if ret != 0:
+                logger.error(f"종목 [{code}] 차트 요청 BlockRequest 오류: {ret}", exc_info=True)
+                return pd.DataFrame()
+
+            # Check API communication status
+            rqStatus = objChart.GetDibStatus()
+            rqMsg = objChart.GetDibMsg1()
+            if rqStatus != 0:
+                logger.error(f"종목 [{code}] 차트 요청 통신 오류: 상태={rqStatus}, 메시지={rqMsg}", exc_info=True)
+                return pd.DataFrame()
+
+            # Get received data count
+            data_count = objChart.GetHeaderValue(3)
+            logger.debug(f"종목 [{code}] 차트 데이터 {data_count}개 수신 완료.")
+
+            if data_count == 0:
+                logger.warning(f"종목 [{code}]에 대한 차트 데이터가 없습니다.")
+                return pd.DataFrame()
+
+            # Extract data and prepare for DataFrame
+            data_records = []
+            for i in range(data_count):
+                record = {}
+                
+                date_val = str(objChart.GetDataValue(chart_fields.index(0), i)) # 날짜
+
+                if period in ['m', 'T']:
+                    time_val = str(objChart.GetDataValue(chart_fields.index(1), i)).zfill(6) # 시간 (HHMMSS)
+                    # Combine date and time for full datetime string
+                    datetime_str = f"{date_val}{time_val}"
+                    try:
+                        record['datetime'] = datetime.strptime(datetime_str, '%Y%m%d%H%M%S')
+                    except ValueError:
+                        # If time is HHMM, try that format
+                        try:
+                            datetime_str = f"{date_val}{time_val[:4]}" # Take first 4 digits for HHMM
+                            record['datetime'] = datetime.strptime(datetime_str, '%Y%m%d%H%M')
+                        except ValueError:
+                             logger.warning(f"Failed to parse datetime for {code}: {datetime_str}")
+                             record['datetime'] = None # Or handle as error
+                else:
+                    try:
+                        record['datetime'] = datetime.strptime(date_val, '%Y%m%d')
+                    except ValueError:
+                        logger.warning(f"Failed to parse date for {code}: {date_val}")
+                        record['datetime'] = None
+
+                # Extract OHLCV values using their original field numbers' index in chart_fields
+                record['open'] = objChart.GetDataValue(chart_fields.index(2), i)
+                record['high'] = objChart.GetDataValue(chart_fields.index(3), i)
+                record['low'] = objChart.GetDataValue(chart_fields.index(4), i)
+                record['close'] = objChart.GetDataValue(chart_fields.index(5), i)
+                record['volume'] = objChart.GetDataValue(chart_fields.index(8), i)
+                
+                data_records.append(record)
+            
+            # Create DataFrame
+            df = pd.DataFrame(data_records)
+
+            # Set datetime as index and sort
+            if 'datetime' in df.columns:
+                df = df.dropna(subset=['datetime']) # Drop rows where datetime parsing failed
+                if not df.empty:
+                    df['datetime'] = pd.to_datetime(df['datetime']) # Ensure it's datetime object
+                    df = df.set_index('datetime').sort_index(ascending=True) # Sort ascending for time series
+            
+            logger.debug(f"종목 [{code}] 차트 데이터 DataFrame 생성 완료. shape: {df.shape}")
+            return df
+
+        except Exception as e:
+            logger.error(f"종목 [{code}] 차트 데이터 요청 및 처리 중 예상치 못한 오류 발생: {e}", exc_info=True)
+            return pd.DataFrame()
+
 
     def _get_price_data(self, stock_code, period, from_date_str, to_date_str, interval=1):
         """
@@ -377,23 +468,13 @@ class CreonAPIClient:
         return trading_days
     
 
-    '''
-    # 중복 메서드, 통합 우선순위에 따라 주석처리
-    def get_market_calendar(self, from_date: date, to_date: date, stock_code: str = 'A005930') -> List[date]:
-        ...
-    '''
-    '''
-    # 중복 메서드, 통합 우선순위에 따라 주석처리
-    def get_price_data(self, stock_code: str, period: str, count: int) -> Optional[pd.DataFrame]:
-        ...
-    '''
     def get_current_price(self, stock_code: str) -> Optional[float]:
         """
         실시간 현재가를 조회합니다 (CpSysDib.StockMst 사용).
         """
         logger.debug(f"Fetching current price for {stock_code}")
         try:
-            objStockMst = win32com.client.Dispatch("CpSysDib.StockMst")
+            objStockMst = win32com.client.Dispatch("DsCbo1.StockMst")
             objStockMst.SetInputValue(0, stock_code)
             
             ret = objStockMst.BlockRequest()
@@ -422,87 +503,106 @@ class CreonAPIClient:
             # df = df.tail(1)
             return df
         return None
-
-    def get_latest_financial_data(self, stock_code: str) -> pd.DataFrame:
+    def get_latest_financial_data(self, stock_code) -> pd.DataFrame:
         """
         종목의 최신 재무 데이터를 조회합니다 (CpSysDib.MarketEye 사용).
         백테스팅의 creon_api.py의 get_latest_financial_data와 유사하게 구현.
         """
-        logger.info(f"Fetching latest financial data for {stock_code}")
+        logger.info(f"{stock_code} 종목의 최신 재무 데이터를 가져오는 중...")
         objMarketEye = win32com.client.Dispatch("CpSysDib.MarketEye")
-        
-        # 요청할 필드 설정 (주가, 재무제표 관련)
-        # CpSysDib.MarketEye.Get
-        # 1: 종목코드, 4: 종목명, 11:현재가, 20:PER, 21:PBR, 22:EPS, 67:ROE, 70:부채비율
-        # 110: 매출액(억), 111: 영업이익(억), 112: 당기순이익(억) (최근 분기)
-        # 161: 최근 결산년월
+
         req_fields = [
-            0, # 종목코드
-            1, # 종목명
-            11, # 현재가
-            20, # PER
-            21, # PBR
-            22, # EPS
-            67, # ROE
-            70, # 부채비율
-            110, # 매출액
-            111, # 영업이익
-            112, # 당기순이익
-            161 # 최근 결산년월
+            0,   # Field 0: 종목코드
+            1,   # Field 1: 종목명
+            11,  # Field 11: 현재가
+            20,  # Field 20: PER
+            21,  # Field 21: PBR
+            22,  # Field 22: EPS
+            67,  # Field 67: ROE
+            70,  # Field 70: 부채비율
+            110, # Field 110: 매출액(억)
+            111, # Field 111: 영업이익(억)
+            112, # Field 112: 당기순이익(억)
+            161, # Field 161: 최근 결산년월 (YYYYMM 형식)
+            4    # Field 4: 상장주식수 (시가총액 계산용)
         ]
-        
-        objMarketEye.SetInputValue(0, req_fields) # 요청 필드
-        objMarketEye.SetInputValue(1, stock_code) # 종목 코드
-        
+
+        # 요청 필드 및 종목 코드 설정
+        objMarketEye.SetInputValue(0, req_fields)
+        objMarketEye.SetInputValue(1, stock_code)
+
+        # 데이터 요청 (BlockRequest는 동기 방식으로 응답을 기다림)
         ret = objMarketEye.BlockRequest()
         if ret != 0:
-            logger.error(f"BlockRequest failed for financial data {stock_code}: {ret}")
+            logger.error(f"재무 데이터 BlockRequest 실패 ({stock_code}): {ret}")
             return pd.DataFrame() # 빈 DataFrame 반환
-        
+
+        # 요청 상태 확인
         status = objMarketEye.GetDibStatus()
         msg = objMarketEye.GetDibMsg1()
         if status != 0:
-            logger.error(f"Financial data request error {stock_code}: Status={status}, Msg={msg}")
+            logger.error(f"재무 데이터 요청 에러 ({stock_code}): 상태={status}, 메시지={msg}")
             return pd.DataFrame()
 
-        # 데이터 파싱
-        stock_code_res = objMarketEye.GetHeaderValue(0)
-        stock_name_res = objMarketEye.GetHeaderValue(1)
-        current_price = objMarketEye.GetHeaderValue(2)
-        per = objMarketEye.GetHeaderValue(3)
-        pbr = objMarketEye.GetHeaderValue(4)
-        eps = objMarketEye.GetHeaderValue(5)
-        roe = objMarketEye.GetHeaderValue(6)
-        debt_ratio = objMarketEye.GetHeaderValue(7)
-        sales = objMarketEye.GetHeaderValue(8) * 100_000_000 # 억 단위를 원 단위로
-        operating_profit = objMarketEye.GetHeaderValue(9) * 100_000_000
-        net_profit = objMarketEye.GetHeaderValue(10) * 100_000_000
-        recent_financial_date_str = str(objMarketEye.GetHeaderValue(11)) # YYYYMM
-
-        recent_financial_date = None
-        if len(recent_financial_date_str) == 6:
-            try:
-                recent_financial_date = datetime.strptime(recent_financial_date_str, '%Y%m').date()
-            except ValueError:
-                logger.warning(f"Could not parse financial date: {recent_financial_date_str}")
+        # 반환된 항목의 수 가져오기 (단일 종목 코드 요청 시 보통 1)
+        cnt = objMarketEye.GetHeaderValue(2)
         
-        data = [{
-            'stock_code': stock_code_res,
-            'stock_name': stock_name_res,
-            'current_price': float(current_price),
-            'per': float(per) if per != 0 else None,
-            'pbr': float(pbr) if pbr != 0 else None,
-            'eps': float(eps) if eps != 0 else None,
-            'roe': float(roe) if roe != 0 else None,
-            'debt_ratio': float(debt_ratio) if debt_ratio != 0 else None,
-            'sales': float(sales),
-            'operating_profit': float(operating_profit),
-            'net_profit': float(net_profit),
-            'recent_financial_date': recent_financial_date
-        }]
+        data = []
+        # 반환된 각 항목을 순회 (단일 종목 코드의 경우 보통 한 번 실행)
+        for i in range(cnt):
+            # GetDataValue(req_fields_인덱스, item_인덱스)를 사용하여 데이터 조회
+            # 인덱스는 req_fields 리스트 내의 순서에 해당하며, Creon API의 원래 필드 번호와 매칭됨
+            stock_code_res = objMarketEye.GetDataValue(0, i)  # 종목코드
+            stock_name_res = objMarketEye.GetDataValue(1, i)  # 종목명
+            current_price = objMarketEye.GetDataValue(2, i)   # 현재가
+            per = objMarketEye.GetDataValue(3, i)             # PER
+            pbr = objMarketEye.GetDataValue(4, i)             # PBR
+            eps = objMarketEye.GetDataValue(5, i)             # EPS
+            roe = objMarketEye.GetDataValue(6, i)             # ROE
+            debt_ratio = objMarketEye.GetDataValue(7, i)      # 부채비율
+            sales_billion = objMarketEye.GetDataValue(8, i)   # 매출액
+            operating_profit_billion = objMarketEye.GetDataValue(9, i) # 영업이익
+            net_profit_billion = objMarketEye.GetDataValue(10, i) # 당기순이익
+            recent_financial_date_str = str(objMarketEye.GetDataValue(11, i)) # 최근 결산년월
+            listed_stock = objMarketEye.GetDataValue(12, i)   # 상장주식수
+
+            # 시가총액 계산
+            market_cap = listed_stock * current_price
+            if self.cp_code_mgr and self.cp_code_mgr.IsBigListingStock(stock_code_res):
+                market_cap *= 1000  # Creon API 문서에 따라 대형주 시가총액 조정 (필요한 경우)
+            print(f"{stock_code_res} {stock_name_res} 시총: {market_cap:,} 원")
+
+            recent_financial_date = None
+            if len(recent_financial_date_str) == 6: # 예상 형식: YYYYMM
+                try:
+                    recent_financial_date = datetime.strptime(recent_financial_date_str, '%Y%m').date()
+                except ValueError:
+                    logger.warning(f"재무 일자 파싱 실패: {recent_financial_date_str} (종목: {stock_code_res})")
+
+            # '억' 단위 데이터를 '원' 단위로 변환
+            sales = float(sales_billion) * 100_000_000
+            operating_profit = float(operating_profit_billion) * 100_000_000
+            net_profit = float(net_profit_billion) * 100_000_000
+
+            finance = {
+                'stock_code': stock_code_res,
+                'stock_name': stock_name_res,
+                'current_price': float(current_price),
+                'per': float(per) if per != 0 else None,
+                'pbr': float(pbr) if pbr != 0 else None,
+                'eps': float(eps) if eps != 0 else None,
+                'roe': float(roe) if roe != 0 else None,
+                'debt_ratio': float(debt_ratio) if debt_ratio != 0 else None,
+                'sales': sales,
+                'operating_profit': operating_profit,
+                'net_profit': net_profit,
+                'recent_financial_date': recent_financial_date,
+                'market_cap': market_cap # 데이터프레임에 시가총액 추가
+            }
+            data.append(finance)
         
         df = pd.DataFrame(data)
-        logger.info(f"Successfully fetched financial data for {stock_code}.")
+        logger.info(f"{stock_code} 종목의 재무 데이터 조회를 성공적으로 완료했습니다.")
         return df
 
     # --- 주문 관련 메서드 ---
@@ -520,20 +620,21 @@ class CreonAPIClient:
         objOrder = win32com.client.Dispatch("CpTrade.CpTd0311")
         
         # 입력 값 설정
-        objOrder.SetInputValue(0, order_kind) # 주문 종류: 01-보통, 03-시장가
-        objOrder.SetInputValue(1, self.account_number) # 계좌번호
-        objOrder.SetInputValue(2, self.account_flag) # 상품구분
-        objOrder.SetInputValue(3, stock_code) # 종목코드
-        objOrder.SetInputValue(4, int(quantity)) # 주문수량
-        objOrder.SetInputValue(5, int(price)) # 주문단가 (시장가는 의미 없음)
-
         if order_type == 'buy':
-            objOrder.SetInputValue(6, ord('2')) # '2': 매수
+            objOrder.SetInputValue(0, ord('2')) # '2': 매수
         elif order_type == 'sell':
-            objOrder.SetInputValue(6, ord('1')) # '1': 매도
+            objOrder.SetInputValue(0, ord('1')) # '1': 매도
         else:
             logger.error(f"Unsupported order type: {order_type}")
             return None
+        
+        objOrder.SetInputValue(1, self.account_number) # 계좌번호
+        objOrder.SetInputValue(2, self.account_flag) # 상품구분
+        objOrder.SetInputValue(3, stock_code)       # 종목코드
+        objOrder.SetInputValue(4, int(quantity))    # 주문수량
+        objOrder.SetInputValue(5, int(price))       # 주문가격(단가) (시장가는 의미 없음)
+        objOrder.SetInputValue(7, ord('0'))         # 주문 조건 (0:기본) - IOC/FOK 등 필요시 수정
+        objOrder.SetInputValue(8, order_kind)       # 주문 종류: 01-보통, 03-시장가
         
         # '보통' 주문 시에만 유효한 가격 필드
         # objOrder.SetInputValue(7, "0")  # '0': 주문조건 구분 코드 (없음)
