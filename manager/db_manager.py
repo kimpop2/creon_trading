@@ -1080,7 +1080,11 @@ class DBManager:
     def fetch_daily_signals_for_today(self, signal_date: date) -> Dict[str, Any]:
         table_name = "daily_signals"
         query = f"SELECT * FROM {table_name} WHERE signal_date = '{signal_date.isoformat()}'"
-        signals_df = self.fetch_data(query)
+        cursor = self.execute_sql(query)
+        if not cursor:
+            logger.info(f"{signal_date.isoformat()}에 로드할 일봉 신호가 없습니다.")
+            return {}
+        signals_df = pd.DataFrame(cursor.fetchall())
         if signals_df.empty:
             logger.info(f"{signal_date.isoformat()}에 로드할 일봉 신호가 없습니다.")
             return {}
@@ -1088,22 +1092,23 @@ class DBManager:
         for _, row in signals_df.iterrows():
             stock_code = row['stock_code']
             loaded_signals[stock_code] = {
-                "signal_type": row['signal_type'],
-                "signal_price": float(row['signal_price']),
-                "volume_ratio": float(row['volume_ratio']),
                 "strategy_name": row['strategy_name'],
-                "params_json": eval(row['params_json'])
+                "signal_type": row['signal_type'],
+                "target_price": float(row['target_price']) if 'target_price' in row else None,
+                "signal_strength": float(row['signal_strength']) if 'signal_strength' in row else None
             }
         logger.info(f"{len(loaded_signals)}개의 일봉 신호가 {signal_date.isoformat()}에 성공적으로 로드되었습니다.")
         return loaded_signals
 
     def save_trade_log(self, log_entry: Dict[str, Any]):
-        table_name = "transaction_log"
+        table_name = "trade_log"
         df = pd.DataFrame([log_entry])
-        if self.insert_df_to_db(df, table_name, option="append"):
-            logger.info(f"거래 로그가 DB 테이블 '{table_name}'에 성공적으로 저장되었습니다: {log_entry.get('stock_code')} {log_entry.get('type')} {log_entry.get('quantity')}")
+        if self.insert_df_to_db(table_name, df, option="append"):
+            logger.info(f"거래 로그가 DB 테이블 '{table_name}'에 성공적으로 저장되었습니다: {log_entry.get('stock_code')} {log_entry.get('order_type')} {log_entry.get('quantity')}")
+            return True
         else:
             logger.error(f"거래 로그 {table_name} 저장에 실패했습니다: {log_entry}")
+            return False
 
     def save_daily_portfolio_snapshot(self, snapshot_date: date, portfolio_value: float, cash: float, positions: Dict[str, Any]):
         table_name = "daily_portfolio_snapshot"
@@ -1124,13 +1129,16 @@ class DBManager:
     def fetch_last_portfolio_snapshot(self) -> Optional[Dict[str, Any]]:
         table_name = "daily_portfolio_snapshot"
         query = f"SELECT * FROM {table_name} ORDER BY snapshot_date DESC LIMIT 1"
-        snapshot_df = self.fetch_data(query)
+        cursor = self.execute_sql(query)
+        if not cursor:
+            logger.info("로드할 포트폴리오 스냅샷이 없습니다.")
+            return None
+        snapshot_df = pd.DataFrame(cursor.fetchall())
         if snapshot_df.empty:
             logger.info("로드할 포트폴리오 스냅샷이 없습니다.")
             return None
         snapshot = snapshot_df.iloc[0].to_dict()
-        snapshot['positions_json'] = eval(snapshot['positions_json'])
-        logger.info(f"최근 포트폴리오 스냅샷 로드 완료: {snapshot['snapshot_date']}, 가치: {snapshot['portfolio_value']:,.0f}")
+        logger.info(f"최근 포트폴리오 스냅샷 로드 완료: {snapshot['snapshot_date']}, 가치: {snapshot['total_asset_value']:,.0f}")
         return snapshot
 
     def save_current_positions(self, positions: Dict[str, Any]):
@@ -1162,15 +1170,19 @@ class DBManager:
     def fetch_current_positions(self) -> Dict[str, Any]:
         table_name = "current_positions"
         query = f"SELECT * FROM {table_name}"
-        positions_df = self.fetch_data(query)
+        cursor = self.execute_sql(query)
+        if not cursor:
+            logger.info("보유 종목 정보가 없습니다.")
+            return {}
+        positions_df = pd.DataFrame(cursor.fetchall())
         loaded_positions = {}
         for _, row in positions_df.iterrows():
             stock_code = row['stock_code']
             loaded_positions[stock_code] = {
-                "size": int(row['size']),
-                "avg_price": float(row['avg_price']),
-                "entry_date": row['entry_date'].date() if isinstance(row['entry_date'], datetime) else row['entry_date'],
-                "highest_price": float(row['highest_price'])
+                "size": int(row['current_size']),
+                "avg_price": float(row['average_price']),
+                "entry_date": row['entry_date'],
+                "highest_price": float(row['highest_price_since_entry']) if 'highest_price_since_entry' in row else 0.0
             }
         logger.info(f"{len(loaded_positions)}개의 보유 종목 정보가 DB에서 로드되었습니다.")
         return loaded_positions

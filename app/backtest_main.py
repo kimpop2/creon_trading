@@ -12,8 +12,7 @@ sys.path.insert(0, project_root)
 from app.backtest_view import BacktestView
 from app.backtest_controller import BacktestController
 from app.backtest_model import BacktestModel
-from manager.business_manager import BusinessManager
-from manager.data_manager import DataManager
+
 
 def setup_logging():
     """로깅 기본 설정을 수행합니다."""
@@ -68,21 +67,17 @@ def main():
     
     # 1. 공유할 핵심 인스턴스 생성
     logging.info("애플리케이션 시작: 공유 인스턴스 생성 중...")
+    model = None
     try:
         progress.setLabelText("데이터 매니저를 초기화하는 중입니다...")
         progress.setValue(5)
         app.processEvents()
-        data_manager = DataManager()
         
-        progress.setLabelText("백테스트 매니저를 초기화하는 중입니다...")
-        progress.setValue(10)
-        app.processEvents()
-        business_manager = BusinessManager(data_manager)
         
         progress.setLabelText("데이터 모델을 초기화하는 중입니다...")
         progress.setValue(15)
         app.processEvents()
-        model = BacktestModel(business_manager)
+        model = BacktestModel()
         
         # --- 실행목록 로딩 (전체 70%까지 진행) ---
         progress.setLabelText("백테스트 실행목록을 로딩하는 중입니다...")
@@ -99,7 +94,28 @@ def main():
         # progress.setValue(70)  # 이미 load_all_backtest_runs에서 70%로 설정됨
         app.processEvents()
         # --------------------------------------
+    
+        # 2. View와 Controller 생성 및 연결
+        progress.setLabelText("사용자 인터페이스를 구성하는 중입니다...")
+        progress.setValue(85)
+        app.processEvents()
+        view = BacktestView()
         
+        progress.setLabelText("컨트롤러를 초기화하는 중입니다...")
+        progress.setValue(95)
+        app.processEvents()
+        controller = BacktestController(view, model)
+        
+        # 로딩 다이얼로그 닫기
+        progress.setLabelText("초기화 완료!")
+        progress.setValue(100)
+        app.processEvents()
+        timer.stop()
+        progress.close()
+        
+        view.show()
+        sys.exit(app.exec_())
+
     except Exception as e:
         logging.critical(f"초기화 중 심각한 오류 발생: {e}", exc_info=True)
         progress.close()
@@ -107,28 +123,8 @@ def main():
         # 사용자에게 오류 메시지 박스를 보여주고 종료할 수 있음
         sys.exit(1)
     
-    logging.info("공유 인스턴스 생성 완료.")
 
-    # 2. View와 Controller 생성 및 연결
-    progress.setLabelText("사용자 인터페이스를 구성하는 중입니다...")
-    progress.setValue(85)
-    app.processEvents()
-    view = BacktestView()
-    
-    progress.setLabelText("컨트롤러를 초기화하는 중입니다...")
-    progress.setValue(95)
-    app.processEvents()
-    controller = BacktestController(view, model)
-    
-    # 로딩 다이얼로그 닫기
-    progress.setLabelText("초기화 완료!")
-    progress.setValue(100)
-    app.processEvents()
-    timer.stop()
-    progress.close()
-    
-    view.show()
-    sys.exit(app.exec_())
+
 
 if __name__ == '__main__':
     main()

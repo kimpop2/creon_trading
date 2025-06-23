@@ -29,7 +29,6 @@ logger = logging.getLogger(__name__)
 class BacktestView(QWidget):
     def __init__(self):
         super().__init__()
-        # 영구적인 데이터 모델을 먼저 생성합니다.
         self.run_list_model = BacktestModel()
         self.performance_model = BacktestModel()
         self.traded_stocks_model = BacktestModel()
