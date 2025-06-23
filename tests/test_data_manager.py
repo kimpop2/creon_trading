@@ -45,7 +45,7 @@ class TestDataManager(unittest.TestCase):
         """Market Calendar 초기 데이터 로드 테스트"""
         try:
             # 1년치 데이터 로드 테스트
-            self.data_manager.load_market_calendar_initial_data(years=1)
+            self.data_manager.fetch_market_calendar_initial_data(years=1)
             
             # 로드된 데이터 확인
             from_date = self.today - timedelta(days=365)

@@ -1,59 +1,55 @@
 -- backtesting/db/sql/create_backtesting_schema.sql
 
--- backtest_run 테이블 생성 (백테스트 실행 요약 정보)
-CREATE TABLE IF NOT EXISTS backtest_run (
-    run_id INT AUTO_INCREMENT PRIMARY KEY COMMENT '백테스트 실행 ID',
-    start_date DATE NOT NULL COMMENT '백테스트 시작일',
-    end_date DATE NOT NULL COMMENT '백테스트 종료일',
-    initial_capital DECIMAL(18, 2) NOT NULL COMMENT '초기 자본금',
-    final_capital DECIMAL(18, 2) COMMENT '최종 자본금',
-    total_profit_loss DECIMAL(18, 2) COMMENT '총 손익',
-    cumulative_return DECIMAL(10, 4) COMMENT '누적 수익률',
-    max_drawdown DECIMAL(10, 4) COMMENT '최대 낙폭',
-    strategy_daily VARCHAR(100) COMMENT '일봉 전략명',
-    strategy_minute VARCHAR(100) COMMENT '분봉 전략명',
-    params_json_daily JSON COMMENT '일봉 전략 파라미터 (JSON)',
-    params_json_minute JSON COMMENT '분봉 전략 파라미터 (JSON)',
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '생성 일시'
-) COMMENT='백테스트 실행 정보';
-
--- backtest_trade 테이블 생성 (백테스트 개별 거래 내역)
-CREATE TABLE IF NOT EXISTS backtest_trade (
-    trade_id INT AUTO_INCREMENT PRIMARY KEY COMMENT '거래 ID',
-    run_id INT NOT NULL COMMENT '백테스트 실행 ID (FK)',
+-- daily_signals 테이블 생성 (일봉 전략 매매 신호 정보)
+CREATE TABLE IF NOT EXISTS daily_signals (
+    signal_date DATE NOT NULL COMMENT '신호 생성일',
     stock_code VARCHAR(10) NOT NULL COMMENT '종목 코드',
-    trade_type ENUM('BUY', 'SELL') NOT NULL COMMENT '거래 유형 (매수/매도)',
-    trade_price DECIMAL(18, 2) NOT NULL COMMENT '거래 가격',
-    trade_quantity INT NOT NULL COMMENT '거래 수량',
-    trade_amount DECIMAL(18, 2) NOT NULL COMMENT '거래 금액',
-    trade_datetime DATETIME NOT NULL COMMENT '거래 시각',
-    commission DECIMAL(18, 2) DEFAULT 0 COMMENT '거래 수수료',
-    tax DECIMAL(18, 2) DEFAULT 0 COMMENT '거래 세금',
-    realized_profit_loss DECIMAL(18, 2) DEFAULT 0 COMMENT '실현 손익',
-    entry_trade_id INT COMMENT '매수 거래 ID (청산 거래의 경우)',
+    strategy_name VARCHAR(50) NOT NULL COMMENT '전략명',
+    signal_type VARCHAR(10) NOT NULL COMMENT '신호 유형 (BUY, SELL, HOLD)',
+    target_price DECIMAL(15, 2) COMMENT '목표 가격 (매수/매도 시)',
+    signal_strength DECIMAL(10, 4) COMMENT '신호 강도 (선택적)',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (signal_date, stock_code, strategy_name)
+) COMMENT='일봉 전략 매매 신호';
 
-    -- 복합 Unique Key: 특정 백테스트 실행 내에서 동일 종목의 동일 시각 거래는 유일해야 함
-    UNIQUE KEY (run_id, stock_code, trade_datetime), 
+-- trade_log 테이블 생성 (실시간 자동매매 주문 및 체결 로그)
+CREATE TABLE IF NOT EXISTS trade_log (
+    log_id INT AUTO_INCREMENT PRIMARY KEY COMMENT '로그 ID',
+    order_time DATETIME NOT NULL COMMENT '주문 시각',
+    stock_code VARCHAR(10) NOT NULL COMMENT '종목 코드',
+    order_type VARCHAR(10) NOT NULL COMMENT '주문 유형 (BUY, SELL)',
+    order_price DECIMAL(15, 2) COMMENT '주문 가격',
+    order_quantity INT NOT NULL COMMENT '주문 수량',
+    executed_price DECIMAL(15, 2) COMMENT '체결 가격',
+    executed_quantity INT COMMENT '체결 수량',
+    commission DECIMAL(15, 2) COMMENT '수수료',
+    tax DECIMAL(15, 2) COMMENT '세금',
+    net_amount DECIMAL(15, 2) COMMENT '실제 금액 (수수료, 세금 포함)',
+    order_status VARCHAR(20) NOT NULL COMMENT '주문 상태 (PENDING, FILLED, PARTIAL_FILLED, CANCELED, REJECTED)',
+    creon_order_id VARCHAR(50) COMMENT '크레온 주문번호 (실제 주문 식별자)',
+    message TEXT COMMENT '추가 메시지',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) COMMENT='실시간 자동매매 주문 및 체결 로그';
 
-    -- 외래 키 제약 조건
-    CONSTRAINT fk_backtest_trade_run_id FOREIGN KEY (run_id) REFERENCES backtest_run (run_id) ON DELETE CASCADE,
-    CONSTRAINT fk_backtest_trade_entry_trade_id FOREIGN KEY (entry_trade_id) REFERENCES backtest_trade (trade_id) ON DELETE SET NULL
-) COMMENT='백테스트 개별 거래 내역';
+-- daily_portfolio_snapshot 테이블 생성 (일별 포트폴리오 스냅샷)
+CREATE TABLE IF NOT EXISTS daily_portfolio_snapshot (
+    snapshot_date DATE PRIMARY KEY COMMENT '스냅샷 날짜',
+    cash DECIMAL(20, 2) NOT NULL COMMENT '현금 잔고',
+    total_asset_value DECIMAL(20, 2) NOT NULL COMMENT '총 자산 가치 (현금 + 주식 평가액)',
+    total_stock_value DECIMAL(20, 2) NOT NULL COMMENT '총 주식 평가액',
+    profit_loss_rate DECIMAL(10, 4) COMMENT '일일 수익률',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) COMMENT='일별 포트폴리오 스냅샷';
 
--- backtest_performance 테이블 생성 (백테스트 일별/기간별 성능 지표)
-CREATE TABLE IF NOT EXISTS backtest_performance (
-    performance_id INT AUTO_INCREMENT PRIMARY KEY COMMENT '성능 지표 ID',
-    run_id INT NOT NULL COMMENT '백테스트 실행 ID (FK)',
-    date DATE NOT NULL COMMENT '날짜',
-    end_capital DECIMAL(18, 2) NOT NULL COMMENT '최종 자본금',
-    daily_return DECIMAL(10, 4) COMMENT '일일 수익률',
-    daily_profit_loss DECIMAL(18, 2) COMMENT '일일 손익',
-    cumulative_return DECIMAL(10, 4) COMMENT '누적 수익률',
-    drawdown DECIMAL(10, 4) COMMENT '낙폭',
-
-    -- 복합 Unique Key: 특정 백테스트 실행 내에서 동일 날짜의 성능 기록은 유일해야 함
-    UNIQUE KEY (run_id, date),
-
-    -- 외래 키 제약 조건
-    CONSTRAINT fk_backtest_performance_run_id FOREIGN KEY (run_id) REFERENCES backtest_run (run_id) ON DELETE CASCADE
-) COMMENT='백테스트 일별/기간별 성능 지표';
+-- current_positions 테이블 생성 (현재 보유 종목 포지션 (실시간 동기화 필요))
+CREATE TABLE IF NOT EXISTS current_positions (
+    stock_code VARCHAR(10) PRIMARY KEY COMMENT '종목 코드',
+    current_size INT NOT NULL COMMENT '현재 보유 수량',
+    average_price DECIMAL(15, 2) NOT NULL COMMENT '평균 매수 단가',
+    entry_date DATE COMMENT '최초 진입일',
+    highest_price_since_entry DECIMAL(15, 2) COMMENT '진입 이후 최고가 (손절 기준)',
+    last_updated DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '최종 업데이트 시각'
+) COMMENT='현재 보유 종목 포지션 (실시간 동기화 필요)';

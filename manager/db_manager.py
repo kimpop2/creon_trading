@@ -1078,7 +1078,7 @@ class DBManager:
         else:
             logger.info(f"저장할 일봉 신호 데이터프레임이 비어 있습니다.")
 
-    def load_daily_signals_for_today(self, signal_date: date) -> Dict[str, Any]:
+    def fetch_daily_signals_for_today(self, signal_date: date) -> Dict[str, Any]:
         table_name = "daily_signals"
         query = f"SELECT * FROM {table_name} WHERE signal_date = '{signal_date.isoformat()}'"
         signals_df = self.fetch_data(query)
@@ -1121,7 +1121,7 @@ class DBManager:
         else:
             logger.error(f"일일 포트폴리오 스냅샷 {table_name} 저장에 실패했습니다.")
 
-    def load_last_portfolio_snapshot(self) -> Optional[Dict[str, Any]]:
+    def fetch_last_portfolio_snapshot(self) -> Optional[Dict[str, Any]]:
         table_name = "daily_portfolio_snapshot"
         query = f"SELECT * FROM {table_name} ORDER BY snapshot_date DESC LIMIT 1"
         snapshot_df = self.fetch_data(query)
@@ -1159,7 +1159,7 @@ class DBManager:
         else:
             logger.info(f"저장할 보유 종목 데이터프레임이 비어 있습니다.")
 
-    def load_current_positions(self) -> Dict[str, Any]:
+    def fetch_current_positions(self) -> Dict[str, Any]:
         table_name = "current_positions"
         query = f"SELECT * FROM {table_name}"
         positions_df = self.fetch_data(query)

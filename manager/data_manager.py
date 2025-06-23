@@ -32,7 +32,7 @@ class DataManager:
             self.db_manager.close()
             logger.info("DataManager를 통해 DB 연결을 종료했습니다.")
 
-    def load_market_calendar_initial_data(self, years: int = 3):
+    def fetch_market_calendar_initial_data(self, years: int = 3):
         """
         Creon API를 통해 과거 특정 기간의 거래일 데이터를 가져와 market_calendar 테이블에 초기 데이터를 삽입합니다.
         이미 존재하는 날짜는 중복 삽입하지 않습니다.
