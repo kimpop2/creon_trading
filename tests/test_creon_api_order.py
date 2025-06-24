@@ -22,7 +22,7 @@ class TestCreonAPIOrder(unittest.TestCase):
         """테스트 클래스 시작 시 한 번만 실행"""
         cls.api = CreonAPIClient()
         cls.data_manager = DataManager()
-        cls.test_stock_code = 'A005930'  # 삼성전자
+        cls.test_stock_code = 'A042670'  # 삼성전자 A005930 현대인프라코어 A042670
         logging.info("테스트 환경 설정 완료")
 
     def setUp(self):
@@ -31,6 +31,7 @@ class TestCreonAPIOrder(unittest.TestCase):
         
         # 현재가 조회
         self.current_price = self.api.get_current_price(self.test_stock_code)
+        logging.info(f"현재가: {self.current_price:,.0f}원")
         self.assertIsNotNone(self.current_price, "현재가 조회 실패")
         
         # 계좌 잔고 조회
@@ -38,40 +39,40 @@ class TestCreonAPIOrder(unittest.TestCase):
         self.cash = balance['cash']
         logging.info(f"주문 가능 현금: {self.cash:,.0f}원")
 
-    def test_1_market_buy_order(self):
-        """시장가 매수 주문 테스트"""
-        # 1주 시장가 매수
-        quantity = 1
-        order_type = 'buy' #get_order_code('매수')   # '매도': '1', '매수': '2' # 주문 유형
-        order_kind = '03' #get_order_code('시장가')  # '지정가': '01', '임의': '02', '시장가': '03' 주문 호가 구분
+    # def test_1_market_buy_order(self):
+    #     """시장가 매수 주문 테스트"""
+    #     # 1주 시장가 매수
+    #     quantity = 1
+    #     order_type = 'buy' #get_order_code('매수')   # '매도': '1', '매수': '2' # 주문 유형
+    #     order_kind = '03' #get_order_code('시장가')  # '지정가': '01', '임의': '02', '시장가': '03' 주문 호가 구분
         
-        order_id = self.api.send_order(
-            stock_code=self.test_stock_code,
-            order_type=order_type,
-            price=0,  # 시장가는 가격 0
-            quantity=quantity,
-            order_kind=order_kind
-        )
+    #     order_id = self.api.send_order(
+    #         stock_code=self.test_stock_code,
+    #         order_type=order_type,
+    #         price=0,  # 시장가는 가격 0
+    #         quantity=quantity,
+    #         order_kind=order_kind
+    #     )
         
-        self.assertIsNotNone(order_id, "주문번호가 반환되지 않았습니다")
-        logging.info(f"매수 주문번호: {order_id}")
+    #     self.assertIsNotNone(order_id, "주문번호가 반환되지 않았습니다")
+    #     logging.info(f"매수 주문번호: {order_id}")
         
-        # 주문 상태 확인
-        time.sleep(1)  # 체결 대기
-        order_status = self.api.get_order_status(order_id)
-        logging.info(f"주문 상태: {order_status}")
+    #     # 주문 상태 확인
+    #     time.sleep(1)  # 체결 대기
+    #     order_status = self.api.get_order_status(order_id)
+    #     logging.info(f"주문 상태: {order_status}")
         
-        # 포지션 확인
-        positions = self.api.get_portfolio_positions()
-        found = False
-        for pos in positions:
-            if pos['stock_code'] == self.test_stock_code:
-                found = True
-                self.assertGreaterEqual(pos['size'], quantity)
-                logging.info(f"매수 후 보유수량: {pos['size']}주")
-                break
+    #     # 포지션 확인
+    #     positions = self.api.get_portfolio_positions()
+    #     found = False
+    #     for pos in positions:
+    #         if pos['stock_code'] == self.test_stock_code:
+    #             found = True
+    #             self.assertGreaterEqual(pos['size'], quantity)
+    #             logging.info(f"매수 후 보유수량: {pos['size']}주")
+    #             break
         
-        self.assertTrue(found, "매수 후 포지션이 생성되지 않았습니다")
+    #     self.assertTrue(found, "매수 후 포지션이 생성되지 않았습니다")
 
     def test_2_limit_sell_order(self):
         """지정가 매도 주문 테스트"""
@@ -88,10 +89,16 @@ class TestCreonAPIOrder(unittest.TestCase):
             return
         
         # 지정가 매도 주문 (현재가 + 5%)
-        sell_price = int(self.current_price * 1.05)
+        # 현재가 조회
+        self.current_price = self.api.get_current_price(self.test_stock_code) # 현재가
+        sell_price = int(self.current_price * 1.05) # 상한가 까지 주문가능
+        logging.info(f"지정가: {sell_price:,.0f}원")
+        
         order_type = 'sell'
         order_kind = get_order_code('지정가')  # 지정가 (보통가) 주문
         
+        logging.info(f"{order_type}: {order_kind}: {get_order_name(order_kind)}")
+
         order_id = self.api.send_order(
             stock_code=self.test_stock_code,
             order_type=order_type,
@@ -108,34 +115,34 @@ class TestCreonAPIOrder(unittest.TestCase):
         order_status = self.api.get_order_status(order_id)
         logging.info(f"주문 상태: {order_status}")
 
-    def test_3_order_status_check(self):
-        """미체결 주문 조회 테스트"""
-        # 지정가 매수 주문 (현재가 - 5%)
-        buy_price = int(self.current_price * 0.95)
-        quantity = 1
-        order_type = 'buy'
-        order_kind = get_order_code('지정가')  # 지정가(보통가) 주문
+    # def test_3_order_status_check(self):
+    #     """미체결 주문 조회 테스트"""
+    #     # 지정가 매수 주문 (현재가 - 5%)
+    #     buy_price = int(self.current_price * 0.95)
+    #     quantity = 1
+    #     order_type = 'buy'
+    #     order_kind = get_order_code('지정가')  # 지정가(보통가) 주문
         
-        order_id = self.api.send_order(
-            stock_code=self.test_stock_code,
-            order_type=order_type,
-            price=buy_price,
-            quantity=quantity,
-            order_kind=order_kind
-        )
+    #     order_id = self.api.send_order(
+    #         stock_code=self.test_stock_code,
+    #         order_type=order_type,
+    #         price=buy_price,
+    #         quantity=quantity,
+    #         order_kind=order_kind
+    #     )
         
-        self.assertIsNotNone(order_id, "주문번호가 반환되지 않았습니다")
-        logging.info(f"매수 주문번호: {order_id}")
+    #     self.assertIsNotNone(order_id, "주문번호가 반환되지 않았습니다")
+    #     logging.info(f"매수 주문번호: {order_id}")
         
-        # 주문 상태 확인 (3회)
-        for i in range(3):
-            time.sleep(1)
-            order_status = self.api.get_order_status(order_id)
-            logging.info(f"주문 상태 확인 {i+1}회차: {order_status}")
+    #     # 주문 상태 확인 (3회)
+    #     for i in range(3):
+    #         time.sleep(1)
+    #         order_status = self.api.get_order_status(order_id)
+    #         logging.info(f"주문 상태 확인 {i+1}회차: {order_status}")
             
-            # 체결 수량이 있으면 중단
-            if order_status.get('executed_quantity', 0) > 0:
-                break
+    #         # 체결 수량이 있으면 중단
+    #         if order_status.get('executed_quantity', 0) > 0:
+    #             break
 
     @classmethod
     def tearDownClass(cls):

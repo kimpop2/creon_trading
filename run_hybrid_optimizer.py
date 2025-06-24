@@ -273,8 +273,8 @@ def main():
     
     # ===========================================================
     # 백테스트 기간 설정
-    start_date = datetime.datetime(2025, 1, 1).date()
-    end_date = datetime.datetime(2025, 4, 15).date()
+    start_date = datetime.datetime(2025, 4, 1).date()
+    end_date = datetime.datetime(2025, 6, 15).date()
     
     logger.info(f"최적화 기간: {start_date} ~ {end_date}")
 

@@ -9,7 +9,7 @@ import sys
 import json # JSON 직렬화를 위해 추가
 import re
 from decimal import Decimal # Decimal 타입 처리용
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 # --- 로거 설정 (스크립트 최상단에서 설정하여 항상 보이도록 함) ---
 logger = logging.getLogger(__name__)
 from config.settings import DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
@@ -236,7 +236,63 @@ class DBManager:
             logger.error(f"An unexpected error occurred during SQL execution: {e}. SQL: {sql}, Params: {param}", exc_info=True)
             conn.rollback()
             return None
+        
+    def save_market_calendar(self, calendar_data_list: List[Dict[str, Any]]) -> bool:
+        """
+        시장 캘린더 데이터를 DB의 market_calendar 테이블에 저장하거나 업데이트합니다.
+        'date' 컬럼을 UNIQUE KEY로 사용하여 중복 시 업데이트합니다.
+        :param calendar_data_list: [{'date': datetime.date(2025, 1, 24), 'is_holiday': False, 'description': '거래일'}, ...]
+        :return: 성공 시 True, 실패 시 False
+        """
+        conn = self.get_db_connection()
+        if not conn:
+            return False
 
+        sql = """
+        INSERT INTO market_calendar
+        (date, is_holiday, description)
+        VALUES (%s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            is_holiday = VALUES(is_holiday),
+            description = VALUES(description)
+        """
+        
+        data = []
+        for entry in calendar_data_list:
+            date_to_save = entry['date']
+            # Ensure date is a datetime.date object for the DB insertion
+            # if isinstance(entry['date'], datetime.datetime):
+            #     date_to_save = entry['date'].date()
+            # elif isinstance(entry['date'], datetime.date):
+            #     date_to_save = entry['date']
+            # else:
+            #     logger.warning(f"예상치 못한 'date' 타입: {type(entry['date'])}. datetime.date로 변환 시도.")
+            #     try:
+            #         date_to_save = datetime.datetime.strptime(str(entry['date']), '%Y-%m-%d').date()
+            #     except ValueError:
+            #         logger.error(f"날짜 변환 실패: {entry['date']}")
+            #         continue # Skip this entry if date conversion fails
+
+            data.append((
+                date_to_save,
+                entry['is_holiday'],
+                entry['description']
+            ))
+
+        if not data:
+            logger.warning("저장할 캘린더 데이터가 없습니다.")
+            return True # No data to save, consider it a success
+
+        try:
+            cursor = self.execute_sql(sql, data) # Assumes execute_sql handles executemany
+            if cursor:
+                logger.info(f"{len(data)}개의 시장 캘린더 내역을 저장/업데이트했습니다.")
+                return True
+            else:
+                return False
+        except Exception as e:
+            logger.error(f"시장 캘린더 내역 저장/업데이트 오류: {e}", exc_info=True)
+            return False
     # ----------------------------------------------------------------------------
     # 백테스트 관리 테이블
     # ----------------------------------------------------------------------------
@@ -742,35 +798,7 @@ class DBManager:
             logger.error(f"fetch_market_calendar 처리 중 예외 발생: {e}", exc_info=True)
             return pd.DataFrame()
 
-    def save_market_calendar(self, df: pd.DataFrame, option: str = "append") -> bool:
-        """
-        Pandas DataFrame을 market_calendar 테이블에 저장합니다.
-        :param df: 저장할 시장 캘린더 데이터 (컬럼: 'date', 'is_holiday', 'description')
-        :param option: 테이블 존재 시 처리 방식 ('append', 'replace', 'fail')
-        :return: 성공 여부 (True/False)
-        """
-        if not isinstance(df, pd.DataFrame):
-            logger.error("save_market_calendar: 입력 데이터가 pandas DataFrame이 아닙니다.")
-            return False
-        
-        if df.empty:
-            logger.warning("save_market_calendar: 저장할 데이터가 없습니다. 빈 DataFrame은 처리하지 않습니다.")
-            return True
 
-        if not pd.api.types.is_datetime64_any_dtype(df['date']):
-            df['date'] = pd.to_datetime(df['date']).dt.date
-
-        if 'description' not in df.columns:
-            df['description'] = ''
-        
-        if 'is_holiday' not in df.columns:
-            df['is_holiday'] = False
-
-        columns_to_save = ['date', 'is_holiday', 'description']
-        df_to_save = df[columns_to_save]
-
-        return self.insert_df_to_db('market_calendar', df_to_save, option=option, is_index=False)
-            
     # --- daily_price 테이블 관련 메서드 ---
     def save_daily_price(self, daily_price_list: list):
         """

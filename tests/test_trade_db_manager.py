@@ -1,7 +1,12 @@
 import unittest
 from datetime import date, datetime, timedelta
-from manager.db_manager import DBManager
 import pandas as pd
+import sys
+import os
+# 프로젝트 루트를 sys.path에 추가
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, project_root)
+from manager.db_manager import DBManager
 
 class TestTradeDBManager(unittest.TestCase):
     @classmethod

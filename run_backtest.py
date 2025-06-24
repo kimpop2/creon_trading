@@ -14,10 +14,10 @@ import os
 import codecs
 
 # Windows 환경에서 한글 출력을 위한 콘솔 인코딩 설정
-if sys.platform.startswith('win'):
-    import locale
-    # 콘솔 출력 인코딩을 UTF-8로 설정
-    sys.stdout.reconfigure(encoding='utf-8')
+# if sys.platform.startswith('win'):
+#     import locale
+#     # 콘솔 출력 인코딩을 UTF-8로 설정
+#     sys.stdout.reconfigure(encoding='utf-8')
 
 # 현재 스크립트의 경로를 sys.path에 추가하여 모듈 임포트 가능하게 함
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -37,33 +37,35 @@ from manager.db_manager import DBManager
 from selector.stock_selector import StockSelector
 from config.sector_config import sector_stocks  # 공통 설정 파일에서 import
 
-# --- 로깅 설정 ---
-# UTF-8 인코딩으로 콘솔 출력을 위한 StreamHandler 생성
-console_handler = logging.StreamHandler(sys.stdout)
-console_handler.setLevel(logging.INFO)
-console_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
-console_handler.setFormatter(console_formatter)
+# # --- 로깅 설정 ---
+# # UTF-8 인코딩으로 콘솔 출력을 위한 StreamHandler 생성
+# console_handler = logging.StreamHandler(sys.stdout)
+# console_handler.setLevel(logging.INFO)
+# console_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+# console_handler.setFormatter(console_formatter)
 
-# 파일 핸들러 생성
-file_handler = logging.FileHandler("backtest_run.log", encoding='utf-8')
-file_handler.setLevel(logging.DEBUG)
-file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
-file_handler.setFormatter(file_formatter)
+# # 파일 핸들러 생성
+# file_handler = logging.FileHandler("backtest_run.log", encoding='utf-8')
+# file_handler.setLevel(logging.DEBUG)
+# file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+# file_handler.setFormatter(file_formatter)
 
-# 로거 설정
-logging.basicConfig(
-    level=logging.DEBUG,
-    handlers=[file_handler, console_handler]
-)
+# 로깅 설정
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s - %(levelname)s - %(message)s',
+                    handlers=[
+                        logging.FileHandler("logs/backtest_run.log", encoding='utf-8'),
+                        logging.StreamHandler(sys.stdout)
+                    ])
 
-
+logger = logging.getLogger(__name__)
 
 if __name__ == '__main__':
     logging.info("삼중창 전략 백테스트를 실행합니다.")
 
     # 백테스트 기간 설정 (최적화 기간과 동일)
-    backtest_start_date     = datetime.datetime(2025, 3, 1, 9, 0, 0).date()
-    backtest_end_date       = datetime.datetime(2025, 6, 20, 3, 30, 0).date()
+    backtest_start_date     = datetime.datetime(2025, 1, 1, 9, 0, 0).date()
+    backtest_end_date       = datetime.datetime(2025, 6, 1, 3, 30, 0).date()
 
     # 일봉 데이터 가져오기 시작일을 백테스트 시작일 한 달 전으로 자동 설정
     daily_data_fetch_start = (backtest_start_date - datetime.timedelta(days=30)).replace(day=1)
@@ -165,13 +167,13 @@ if __name__ == '__main__':
 
     # 전략 설정 (삼중창 일봉 + RSI 분봉 전략 사용)
     # 전환 14.91
-    #backtester_instance.set_strategies(daily_strategy=triple_screen_daily_strategy, minute_strategy=rsi_minute_strategy)
+    backtester_instance.set_strategies(daily_strategy=triple_screen_daily_strategy, minute_strategy=rsi_minute_strategy)
     # 전환 57.51
     #backtester_instance.set_strategies(daily_strategy=dual_daily_strategy, minute_strategy=rsi_minute_strategy)
     # 전환 84.41%
     #backtester_instance.set_strategies(daily_strategy=temp_daily_strategy, minute_strategy=rsi_minute_strategy)
     # 전환 -4.75 
-    backtester_instance.set_strategies(daily_strategy=sma_daily_strategy, minute_strategy=rsi_minute_strategy)
+    #backtester_instance.set_strategies(daily_strategy=sma_daily_strategy, minute_strategy=rsi_minute_strategy)
     # 전환 83.11
     #backtester_instance.set_strategies(daily_strategy=dual_daily_strategy, minute_strategy=open_minute_strategy)
     

@@ -161,21 +161,21 @@ class DataManager:
         all_trading_dates = set(self.db_manager.get_all_trading_days(from_date, to_date))
         
         # 4. 거래일 중 DB에 없는 날짜만 필터링
-        dates_to_fetch_from_api = sorted(list(all_trading_dates - db_existing_dates))
+        missing_dates = sorted(list(all_trading_dates - db_existing_dates))
 
-        if not dates_to_fetch_from_api:
+        if not missing_dates:
             logger.debug(f"모든 요청 날짜({from_date} ~ {to_date})의 분봉 데이터가 DB에 존재합니다. API 호출 안함.")
             return db_df
         
-        logger.debug(f"DB에 누락된 분봉 데이터 발견: {len(dates_to_fetch_from_api)}개 날짜")
-        logger.debug(f"API에서 분봉 데이터를 가져올 날짜들: {[d.strftime('%Y-%m-%d') for d in dates_to_fetch_from_api]}")
+        logger.debug(f"DB에 누락된 분봉 데이터 발견: {len(missing_dates)}개 날짜")
+        logger.debug(f"API에서 분봉 데이터를 가져올 날짜들: {[d.strftime('%Y-%m-%d') for d in missing_dates]}")
 
         # 5. 누락된 데이터를 API에서 가져오기
         api_fetched_dfs = []
-        if dates_to_fetch_from_api:
+        if missing_dates:
             # 연속된 날짜들을 하나의 구간으로 처리
-            current_start = dates_to_fetch_from_api[0]
-            current_end = dates_to_fetch_from_api[-1]
+            current_start = missing_dates[0]
+            current_end = missing_dates[-1]
             
             try:
                 api_df = self._fetch_and_store_daily_range(stock_code, current_start, current_end, 'minute')
@@ -278,47 +278,83 @@ class DataManager:
             logger.error(f"종목 정보 로딩 중 오류 발생: {e}")
             return {}
         
+    # def update_all_stock_info(self):
+    #     """
+    #     Creon API에서 모든 종목 정보를 가져와 DB의 stock_info 테이블에 저장/업데이트합니다.
+    #     매매의 기본이 되는 모든 종목의 기본 정보를 셋업합니다.
+    #     """
+    #     logger.info("모든 종목 기본 정보 업데이트를 시작합니다.")
+    #     if not self.api_client.connected:
+    #         logger.error("Creon API가 연결되어 있지 않아 종목 정보를 가져올 수 없습니다.")
+    #         return False
+
+    #     try:
+    #         filtered_codes = self.api_client.get_filtered_stock_list()
+    #         stock_info_list = []
+    #         for code in filtered_codes:
+    #             name = self.api_client.get_stock_name(code)
+    #             market_type = 'KOSPI' if code in self.api_client.cp_code_mgr.GetStockListByMarket(1) else 'KOSDAQ'
+
+    #             stock_info_list.append({
+    #                 'stock_code': code,
+    #                 'stock_name': name,
+    #                 'market_type': market_type,
+    #                 'sector': None, # CpCodeMgr.GetStockSector() 등으로 가져올 수 있으나, 현재는 제외
+    #                 'per': None, 'pbr': None, 'eps': None, 'roe': None, 'debt_ratio': None, # 초기값 None
+    #                 'sales': None, 'operating_profit': None, 'net_profit': None,
+    #                 'recent_financial_date': None
+    #             })
+
+    #         if stock_info_list:
+    #             # 직접 DBManager를 통해 저장
+    #             if self.db_manager.save_stock_info(stock_info_list):
+    #                 logger.info(f"{len(stock_info_list)}개의 종목 기본 정보를 성공적으로 DB에 업데이트했습니다.")
+    #                 return True
+    #             else:
+    #                 logger.error("종목 기본 정보 DB 저장에 실패했습니다.")
+    #                 return False
+    #         else:
+    #             logger.warning("가져올 종목 정보가 없습니다. Creon HTS 연결 상태 및 종목 필터링 조건을 확인하세요.")
+    #             return False
+    #     except Exception as e:
+    #         logger.error(f"모든 종목 기본 정보 업데이트 중 오류 발생: {e}", exc_info=True)
+    #         return False
+        
     def update_all_stock_info(self):
-        """
-        Creon API에서 모든 종목 정보를 가져와 DB의 stock_info 테이블에 저장/업데이트합니다.
-        매매의 기본이 되는 모든 종목의 기본 정보를 셋업합니다.
-        """
-        logger.info("모든 종목 기본 정보 업데이트를 시작합니다.")
-        if not self.api_client.connected:
-            logger.error("Creon API가 연결되어 있지 않아 종목 정보를 가져올 수 없습니다.")
-            return False
-
-        try:
-            filtered_codes = self.api_client.get_filtered_stock_list()
-            stock_info_list = []
-            for code in filtered_codes:
-                name = self.api_client.get_stock_name(code)
-                market_type = 'KOSPI' if code in self.api_client.cp_code_mgr.GetStockListByMarket(1) else 'KOSDAQ'
-
-                stock_info_list.append({
-                    'stock_code': code,
-                    'stock_name': name,
-                    'market_type': market_type,
-                    'sector': None, # CpCodeMgr.GetStockSector() 등으로 가져올 수 있으나, 현재는 제외
-                    'per': None, 'pbr': None, 'eps': None, 'roe': None, 'debt_ratio': None, # 초기값 None
-                    'sales': None, 'operating_profit': None, 'net_profit': None,
-                    'recent_financial_date': None
-                })
-
-            if stock_info_list:
-                # 직접 DBManager를 통해 저장
-                if self.db_manager.save_stock_info(stock_info_list):
-                    logger.info(f"{len(stock_info_list)}개의 종목 기본 정보를 성공적으로 DB에 업데이트했습니다.")
-                    return True
-                else:
-                    logger.error("종목 기본 정보 DB 저장에 실패했습니다.")
-                    return False
-            else:
-                logger.warning("가져올 종목 정보가 없습니다. Creon HTS 연결 상태 및 종목 필터링 조건을 확인하세요.")
-                return False
-        except Exception as e:
-            logger.error(f"모든 종목 기본 정보 업데이트 중 오류 발생: {e}", exc_info=True)
-            return False
+        """ 모든 종목의 기본 정보를 API에서 가져와 DB에 업데이트합니다. """
+        if not self.api_client.connected: return False
+        
+        # filtered_stock_list() is not in CreonAPIClient, needs to be implemented
+        # This is a simplified version
+        kospi_codes = self.api_client.cp_code_mgr.GetStockListByMarket(1)
+        kosdaq_codes = self.api_client.cp_code_mgr.GetStockListByMarket(2)
+        all_codes = kospi_codes + kosdaq_codes
+        
+        stock_info_list = []
+        for code in all_codes:
+            name = self.api_client.get_stock_name(code)
+            if not name: continue
+            # Add filtering logic here if needed (spac, preferred, etc.)
+            market_type = 'KOSPI' if code in kospi_codes else 'KOSDAQ'
+            stock_info_list.append({
+                'stock_code': code,
+                'stock_name': name,
+                'market_type': market_type,
+                'sector': None, # CpCodeMgr.GetStockSector() 등으로 가져올 수 있으나, 현재는 제외
+                'per': None, 'pbr': None, 'eps': None, 'roe': None, 'debt_ratio': None, # 초기값 None
+                'sales': None, 'operating_profit': None, 'net_profit': None,
+                'recent_financial_date': None
+            })
+        
+        if stock_info_list:
+            return self.db_manager.save_stock_info(stock_info_list)
+        return False
+        
+    def update_stock_financials(self, stock_code: str):
+        """ 특정 종목의 최신 재무 데이터를 API에서 가져와 DB에 업데이트합니다. """
+        finance_df = self.api_client.get_latest_financial_data(stock_code)
+        if finance_df.empty: return
+        return self.db_manager.save_stock_info(finance_df.to_dict('records'))
 
     def update_market_calendar(self, start_date: date = None, end_date: date = None):
         """
@@ -336,29 +372,32 @@ class DataManager:
         try:
             # Creon API에서 거래일 정보 가져오기
             trading_days = self.api_client.get_all_trading_days_from_api(start_date, end_date)
-            
+            # [datetime.date(2025, 1, 24), datetime.date(2025, 1, 31), datetime.date(2025, 2, 3)]
             calendar_data = []
-            current_date = start_date
-            while current_date <= end_date:
-                is_holiday = current_date not in trading_days
+            for current_date in trading_days:
+                is_holiday = False #current_date not in trading_days
                 calendar_data.append({
                     'date': current_date,
                     'is_holiday': is_holiday,
                     'description': '공휴일' if is_holiday else '거래일'
                 })
-                current_date += timedelta(days=1)
-            
-            if calendar_data:
-                # 리스트를 DataFrame으로 변환하고 중복 키 오류 방지를 위해 "replace" 옵션 사용
-                calendar_df = pd.DataFrame(calendar_data)
-                if self.db_manager.save_market_calendar(calendar_df, option="replace"):
-                    logger.info(f"주식시장 캘린더 {len(calendar_data)}개 데이터를 성공적으로 업데이트했습니다.")
-                    return True
-                else:
-                    logger.error("주식시장 캘린더 DB 저장에 실패했습니다.")
-                    return False
+            if self.db_manager.save_market_calendar(calendar_data):
+                logger.info(f"주식시장 캘린더 {len(calendar_data)}개 데이터를 성공적으로 업데이트했습니다.")
+                return True
             else:
-                logger.warning("업데이트할 캘린더 데이터가 없습니다.")
+                logger.error("주식시장 캘린더 DB 저장에 실패했습니다.")
+                return False
+            # if calendar_data:
+            #     # 리스트를 DataFrame으로 변환하고 중복 키 오류 방지를 위해 "replace" 옵션 사용
+            #     calendar_df = pd.DataFrame(calendar_data)
+            #     if self.db_manager.save_market_calendar(calendar_df, option="replace"):
+            #         logger.info(f"주식시장 캘린더 {len(calendar_data)}개 데이터를 성공적으로 업데이트했습니다.")
+            #         return True
+            #     else:
+            #         logger.error("주식시장 캘린더 DB 저장에 실패했습니다.")
+            #         return False
+            # else:
+            #     logger.warning("업데이트할 캘린더 데이터가 없습니다.")
                 return True
         except Exception as e:
             logger.error(f"주식시장 캘린더 업데이트 중 오류 발생: {e}", exc_info=True)
@@ -641,71 +680,6 @@ class DataManager:
         
     # --- Data Update/Management ---
 
-    def update_market_calendar(self, start_date: date = None, end_date: date = None):
-        """ 주식시장 캘린더 정보를 API에서 가져와 DB에 업데이트합니다. """
-        start_date = start_date or date.today() - timedelta(days=365)
-        end_date = end_date or date.today() + timedelta(days=365)
-        
-        trading_days = set(self.api_client.get_all_trading_days_from_api(start_date, end_date))
-        if not trading_days: return False
-
-        calendar_data = []
-        curr_date = start_date
-        while curr_date <= end_date:
-            is_holiday = curr_date not in trading_days
-            calendar_data.append({'date': curr_date, 'is_holiday': is_holiday, 'description': 'Holiday' if is_holiday else 'Trading Day'})
-            curr_date += timedelta(days=1)
-            
-        calendar_df = pd.DataFrame(calendar_data)
-        return self.db_manager.save_market_calendar(calendar_df, option="replace")
-
-    def update_all_stock_info(self):
-        """ 모든 종목의 기본 정보를 API에서 가져와 DB에 업데이트합니다. """
-        if not self.api_client.connected: return False
-        
-        # filtered_stock_list() is not in CreonAPIClient, needs to be implemented
-        # This is a simplified version
-        kospi_codes = self.api_client.cp_code_mgr.GetStockListByMarket(1)
-        kosdaq_codes = self.api_client.cp_code_mgr.GetStockListByMarket(2)
-        all_codes = kospi_codes + kosdaq_codes
-        
-        stock_info_list = []
-        for code in all_codes:
-            name = self.api_client.get_stock_name(code)
-            if not name: continue
-            # Add filtering logic here if needed (spac, preferred, etc.)
-            market_type = 'KOSPI' if code in kospi_codes else 'KOSDAQ'
-            stock_info_list.append({'stock_code': code, 'stock_name': name, 'market_type': market_type})
-        
-        if stock_info_list:
-            return self.db_manager.save_stock_info(stock_info_list)
-        return False
-        
-    def update_stock_financials(self, stock_code: str):
-        """ 특정 종목의 최신 재무 데이터를 API에서 가져와 DB에 업데이트합니다. """
-        finance_df = self.api_client.get_latest_financial_data(stock_code)
-        if finance_df.empty: return
-        return self.db_manager.save_stock_info(finance_df.to_dict('records'))
 
     # --- Trade/Portfolio Data Management ---
-    
-    def save_daily_signals(self, signals: Dict[str, Any], signal_date: date):
-        return self.db_manager.save_daily_signals(signals, signal_date)
-
-    def get_daily_signals(self, signal_date: date) -> Dict[str, Any]:
-        return self.db_manager.fetch_daily_signals_for_today(signal_date)
-
-    def save_trade_log(self, log_entry: Dict[str, Any]):
-        return self.db_manager.save_trade_log(log_entry)
-
-    def save_daily_portfolio_snapshot(self, snapshot_date: date, portfolio_value: float, cash: float, positions: Dict[str, Any]):
-        return self.db_manager.save_daily_portfolio_snapshot(snapshot_date, portfolio_value, cash, positions)
-
-    def save_current_positions(self, positions: Dict[str, Any]):
-        return self.db_manager.save_current_positions(positions)
-
-    def get_current_positions(self) -> Dict[str, Any]:
-        return self.db_manager.fetch_current_positions()
-
-    def get_all_stock_codes(self) -> List[str]:
-        return self.db_manager.get_all_stock_codes()
+ 

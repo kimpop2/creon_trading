@@ -64,6 +64,9 @@ class GridSearchOptimizer:
         self.optimization_results = []
         self.best_result = None
         
+        # 일봉 데이터 캐시 딕셔너리 추가
+        self.daily_ohlcv_cache = {}
+        
         logger.info("GridSearchOptimizer 초기화 완료")
     
     def generate_parameter_combinations(self) -> List[Dict[str, Any]]:
@@ -268,7 +271,11 @@ class GridSearchOptimizer:
         
         # 안전자산 데이터 로딩
         safe_asset_code = 'A439870'
-        daily_df = self.data_manager.cache_daily_ohlcv(safe_asset_code, data_fetch_start, end_date)
+        if safe_asset_code not in self.daily_ohlcv_cache:
+            daily_df = self.data_manager.cache_daily_ohlcv(safe_asset_code, data_fetch_start, end_date)
+            self.daily_ohlcv_cache[safe_asset_code] = daily_df
+        else:
+            daily_df = self.daily_ohlcv_cache[safe_asset_code]
         backtester.add_daily_data(safe_asset_code, daily_df)
         
         # 모든 종목 데이터 로딩
@@ -280,7 +287,11 @@ class GridSearchOptimizer:
         for name in stock_names:
             code = self.api_client.get_stock_code(name)
             if code:
-                daily_df = self.data_manager.cache_daily_ohlcv(code, data_fetch_start, end_date)
+                if code not in self.daily_ohlcv_cache:
+                    daily_df = self.data_manager.cache_daily_ohlcv(code, data_fetch_start, end_date)
+                    self.daily_ohlcv_cache[code] = daily_df
+                else:
+                    daily_df = self.daily_ohlcv_cache[code]
                 if not daily_df.empty:
                     backtester.add_daily_data(code, daily_df)
     

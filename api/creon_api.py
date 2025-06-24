@@ -452,7 +452,7 @@ class CreonAPIClient:
         # _get_price_data는 일봉 데이터를 DatetimeIndex 인덱스로 가진 DataFrame을 반환합니다.
         # 이 인덱스의 각 요소는 pandas.Timestamp 객체이며, normalize()에 의해 시간 정보는 00:00:00으로 설정됩니다.
         ohlcv_df = self._get_price_data(stock_code, 'D', from_date_str, to_date_str)
-
+        
         if ohlcv_df.empty:
             logger.warning(f"Creon API로부터 {stock_code}의 일봉 데이터를 가져오지 못했습니다. 거래일 없음.")
             return []
@@ -463,7 +463,7 @@ class CreonAPIClient:
         
         # _get_price_data에서 이미 인덱스 기준으로 정렬되지만, 최종적으로 정렬 및 중복 제거
         trading_days = sorted(list(set(trading_days)))
-
+        
         logger.info(f"Creon API로부터 총 {len(trading_days)}개의 거래일 캘린더 데이터를 가져왔습니다.")
         return trading_days
     
@@ -606,6 +606,23 @@ class CreonAPIClient:
         return df
 
     # --- 주문 관련 메서드 ---
+    # 호가 단위에 맞춰 반올림
+    def round_to_tick(self, price):
+        if price < 1000:
+            return round(price)
+        elif price < 5000:
+            return round(price / 5) * 5
+        elif price < 10000:
+            return round(price / 10) * 10
+        elif price < 50000:
+            return round(price / 50) * 50
+        elif price < 100000:
+            return round(price / 100) * 100
+        elif price < 500000:
+            return round(price / 500) * 500
+        else:
+            return round(price / 1000) * 1000
+    
     def send_order(self, stock_code: str, order_type: str, price: float, quantity: int, order_kind: str = '01', org_order_no: str = '') -> Optional[str]:
         """
         주문 전송 (매수/매도/정정/취소).
@@ -618,12 +635,15 @@ class CreonAPIClient:
             return None
 
         objOrder = win32com.client.Dispatch("CpTrade.CpTd0311")
-        
-        # 입력 값 설정
+        # 호가에 맞는 주문가격 계산
+        hoga = 0
+        if price > 0 :
+            hoga = self.round_to_tick(int(price))    
+        # 입력 값 설정 (string : ord() 금지)
         if order_type == 'buy':
-            objOrder.SetInputValue(0, ord('2')) # '2': 매수
+            objOrder.SetInputValue(0, '2') # '2': 매수
         elif order_type == 'sell':
-            objOrder.SetInputValue(0, ord('1')) # '1': 매도
+            objOrder.SetInputValue(0, '1') # '1': 매도
         else:
             logger.error(f"Unsupported order type: {order_type}")
             return None
@@ -632,13 +652,9 @@ class CreonAPIClient:
         objOrder.SetInputValue(2, self.account_flag) # 상품구분
         objOrder.SetInputValue(3, stock_code)       # 종목코드
         objOrder.SetInputValue(4, int(quantity))    # 주문수량
-        objOrder.SetInputValue(5, int(price))       # 주문가격(단가) (시장가는 의미 없음)
-        objOrder.SetInputValue(7, ord('0'))         # 주문 조건 (0:기본) - IOC/FOK 등 필요시 수정
-        objOrder.SetInputValue(8, order_kind)       # 주문 종류: 01-보통, 03-시장가
-        
-        # '보통' 주문 시에만 유효한 가격 필드
-        # objOrder.SetInputValue(7, "0")  # '0': 주문조건 구분 코드 (없음)
-        # objOrder.SetInputValue(8, "01") # '01': 신용주문 구분코드 (대출,신용 등은 01:보통)
+        objOrder.SetInputValue(5, hoga)       # 주문가격(단가) (시장가는 의미 없음)
+        objOrder.SetInputValue(7, '0')              # 주문 조건 (0:기본) - IOC/FOK 등 필요시 수정
+        objOrder.SetInputValue(8, order_kind)       # 주문 종류: 01-지정가, 03-시장가
 
         # 정정/취소 주문 시 원주문번호 필요
         if org_order_no:
@@ -657,11 +673,23 @@ class CreonAPIClient:
             return None
 
         # 주문 성공 시 반환 값
-        # GetHeaderValue(4) : 주문번호
-        # GetHeaderValue(5) : 주문수량
-        order_id = str(objOrder.GetHeaderValue(4))
-        order_qty = int(objOrder.GetHeaderValue(5))
-        logger.info(f"Order sent successfully: {order_type.upper()} {stock_code}, Qty: {order_qty}, Price: {price}, OrderID: {order_id}")
+        # value = objOrder.GetHeaderValue(type)
+        # type 숫자 에해당하는헤더데이터를반환합니다
+        # 0 - (string) 주문종류코드
+        # 1 - (string) 계좌번호
+        # 2 - (string) 상품관리구분코드
+        # 3 - (string) 종목코드
+        # 4 - (long) 주문수량
+        # 5 - (long) 주문단가
+        # 8 - (long) 주문번호
+        # 9 - (string) 계좌명
+        # 10 - (string) 종목명
+        # 12 - (string) 주문조건구분코드, 0: 기본 1: IOC 2:FOK
+        # 13 - (string) 주문호가구분코드, 01: 지정가 03: 시장가
+        # 14 - (long) 조건단가
+        order_id = str(objOrder.GetHeaderValue(8)) # 주문번호
+        order_qty = int(objOrder.GetHeaderValue(4))# 주문수량
+        logger.info(f"주문성공: {order_type.upper()} {stock_code}, Qty: {order_qty}, Price: {price}, OrderID: {order_id}")
         return order_id
 
     def get_account_balance(self) -> Dict[str, float]:
@@ -784,3 +812,55 @@ class CreonAPIClient:
         except Exception as e:
             logger.error(f"Error fetching order status for {order_id}: {e}", exc_info=True)
             return {"status": "ERROR", "message": str(e)}
+
+    def generate_calendar_data(self, trading_days: list[date], start_date: date, end_date: date) -> list[dict]:
+        """
+        trading_days는 이미 date 타입 리스트임을 가정
+        trading_days는 이미 정렬되어 있음을 가정
+        """
+        trading_days = set(trading_days)
+
+        calendar_data = []
+        current_date = start_date
+        while current_date <= end_date:
+            # current_date가 datetime.datetime이면 date로 변환
+            if isinstance(current_date, datetime.datetime):
+                date_to_check = current_date.date()
+            else:
+                date_to_check = current_date
+
+            is_holiday = date_to_check not in trading_days
+            calendar_data.append({
+                'date': date_to_check,
+                'is_holiday': is_holiday,
+                'description': '공휴일' if is_holiday else '거래일'
+            })
+            current_date += timedelta(days=1)
+
+        return calendar_data
+
+    def get_current_cash(self):
+        """
+        계좌의 주문 가능 현금(잔고)만 반환합니다.
+        """
+        balance = self.get_account_balance()
+        return balance.get('cash', 0.0)
+
+    def is_connected(self):
+        """
+        Creon API 연결 상태 반환
+        """
+        return self.connected
+
+    def get_account_positions_dict(self):
+        """
+        보유 종목 정보를 {code: {quantity, purchase_price}} 형태로 반환합니다.
+        """
+        positions = self.get_portfolio_positions()
+        return {
+            p['stock_code']: {
+                'quantity': p['size'],
+                'purchase_price': p['avg_price']
+            }
+            for p in positions
+        }
