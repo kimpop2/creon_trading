@@ -1,5 +1,5 @@
 """
-DataManager 클래스 단위 테스트
+BacktestManager 클래스 단위 테스트
 """
 
 import unittest
@@ -16,16 +16,16 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, project_root)
 
 from api.creon_api import CreonAPIClient
-from manager.data_manager import DataManager
+from manager.backtest_manager import BacktestManager
 
-class TestDataManager(unittest.TestCase):
+class TestBacktestManager(unittest.TestCase):
     """데이터 관리 테스트"""
     
     @classmethod
     def setUpClass(cls):
         """테스트 클래스 시작 시 한 번만 실행"""
         cls.api = CreonAPIClient()
-        cls.data_manager = DataManager()
+        cls.backtest_manager = BacktestManager()
         cls.test_stock_code = 'A005930'  # 삼성전자
         logging.info("테스트 환경 설정 완료")
 
@@ -40,28 +40,28 @@ class TestDataManager(unittest.TestCase):
         to_date = today + timedelta(days=30)
         
         # 1. 거래일 캘린더 업데이트
-        success = self.data_manager.update_market_calendar(from_date, to_date)
+        success = self.backtest_manager.update_market_calendar(from_date, to_date)
         self.assertTrue(success, "거래일 캘린더 업데이트 실패")
         
         # 2. 거래일 조회
-        trading_days = self.data_manager.db_manager.get_all_trading_days(from_date, to_date)
+        trading_days = self.backtest_manager.db_manager.get_all_trading_days(from_date, to_date)
         self.assertGreater(len(trading_days), 0, "거래일 데이터가 없습니다")
         logging.info(f"거래일 데이터 {len(trading_days)}개 조회됨")
 
     def test_2_stock_info(self):
         """종목 정보 테스트"""
         # 1. 종목 정보 업데이트
-        success = self.data_manager.update_all_stock_info()
+        success = self.backtest_manager.update_all_stock_info()
         self.assertTrue(success, "종목 정보 업데이트 실패")
         
         # 2. 종목 정보 조회
-        stock_info_map = self.data_manager.get_stock_info_map()
+        stock_info_map = self.backtest_manager.get_stock_info_map()
         self.assertGreater(len(stock_info_map), 0, "종목 정보가 없습니다")
         self.assertIn(self.test_stock_code, stock_info_map)
         logging.info(f"종목 정보 {len(stock_info_map)}개 조회됨")
         
         # 3. 재무 정보 업데이트
-        self.data_manager.update_financial_data_for_stock_info(self.test_stock_code)
+        self.backtest_manager.update_financial_data_for_stock_info(self.test_stock_code)
 
     def test_3_daily_data(self):
         """일봉 데이터 테스트"""
@@ -70,7 +70,7 @@ class TestDataManager(unittest.TestCase):
         to_date = today
         
         # 1. 일봉 데이터 캐싱
-        daily_df = self.data_manager.cache_daily_ohlcv(self.test_stock_code, from_date, to_date)
+        daily_df = self.backtest_manager.cache_daily_ohlcv(self.test_stock_code, from_date, to_date)
         self.assertFalse(daily_df.empty, "일봉 데이터가 없습니다")
         self.assertTrue(all(col in daily_df.columns for col in ['open', 'high', 'low', 'close', 'volume']))
         logging.info(f"일봉 데이터 {len(daily_df)}개 조회됨")
@@ -83,7 +83,7 @@ class TestDataManager(unittest.TestCase):
             'volume_ma_period': 20
         }
         
-        daily_df_with_indicators = self.data_manager.get_daily_ohlcv_with_indicators(
+        daily_df_with_indicators = self.backtest_manager.get_daily_ohlcv_with_indicators(
             self.test_stock_code,
             from_date,
             to_date,
@@ -105,7 +105,7 @@ class TestDataManager(unittest.TestCase):
         to_date = today
         
         # 1. 분봉 데이터 캐싱
-        minute_df = self.data_manager.cache_minute_ohlcv(self.test_stock_code, from_date, to_date)
+        minute_df = self.backtest_manager.cache_minute_ohlcv(self.test_stock_code, from_date, to_date)
         self.assertFalse(minute_df.empty, "분봉 데이터가 없습니다")
         self.assertTrue(all(col in minute_df.columns for col in ['open', 'high', 'low', 'close', 'volume']))
         logging.info(f"분봉 데이터 {len(minute_df)}개 조회됨")
@@ -116,7 +116,7 @@ class TestDataManager(unittest.TestCase):
             'minute_rsi_period': 14
         }
         
-        minute_df_with_indicators = self.data_manager.get_minute_ohlcv_with_indicators(
+        minute_df_with_indicators = self.backtest_manager.get_minute_ohlcv_with_indicators(
             self.test_stock_code,
             today,
             minute_strategy_params
@@ -129,13 +129,13 @@ class TestDataManager(unittest.TestCase):
     def test_5_realtime_data(self):
         """실시간 데이터 테스트"""
         # 1. 현재가 조회
-        current_price = self.data_manager.get_realtime_price(self.test_stock_code)
+        current_price = self.backtest_manager.get_realtime_price(self.test_stock_code)
         self.assertIsNotNone(current_price, "현재가 조회 실패")
         self.assertGreater(current_price, 0)
         logging.info(f"현재가: {current_price:,.0f}원")
         
         # 2. 실시간 분봉 데이터 조회
-        minute_data = self.data_manager.get_realtime_minute_data(self.test_stock_code)
+        minute_data = self.backtest_manager.get_realtime_minute_data(self.test_stock_code)
         self.assertIsNotNone(minute_data, "실시간 분봉 데이터 조회 실패")
         self.assertFalse(minute_data.empty)
         self.assertTrue(all(col in minute_data.columns for col in ['open', 'high', 'low', 'close', 'volume']))
@@ -144,8 +144,8 @@ class TestDataManager(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         """테스트 클래스 종료 시 한 번만 실행"""
-        if hasattr(cls, 'data_manager'):
-            cls.data_manager.close()
+        if hasattr(cls, 'backtest_manager'):
+            cls.backtest_manager.close()
         logging.info("테스트 환경 정리 완료")
 
 if __name__ == '__main__':

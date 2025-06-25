@@ -1,7 +1,7 @@
 import datetime
 import logging
 from typing import Dict
-from trader.abstract_broker import AbstractBroker
+from trade.abstract_broker import AbstractBroker
 # --- 로거 설정 (스크립트 최상단에서 설정하여 항상 보이도록 함) ---
 logger = logging.getLogger(__name__)
 # logger.setLevel(logging.DEBUG) # 테스트 시 DEBUG로 설정하여 모든 로그 출력 - 제거

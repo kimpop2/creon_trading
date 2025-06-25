@@ -31,7 +31,7 @@ optimization_results/
 *.log
 logs/
 test_data/
-
+examples/
 # 최적화 결과 파일들 (일부는 버전 관리에 포함)
 optimizer/results/*.json
 optimizer/results/*.csv

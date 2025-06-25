@@ -13,14 +13,15 @@ from dateutil.relativedelta import relativedelta
 # 현재 스크립트의 경로를 sys.path에 추가
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+from trade.backtest import Backtest
 from api.creon_api import CreonAPIClient
-from manager.data_manager import DataManager
+from manager.backtest_manager import BacktestManager
 from manager.db_manager import DBManager
-from trader.reporter import Reporter
+from trade.backtest_report import BacktestReport
 from selector.stock_selector import StockSelector
 from optimizer.progressive_refinement_optimizer import ProgressiveRefinementOptimizer, GridSearchStrategy
 from optimizer.bayesian_optimizer import BayesianOptimizationStrategy
-from trader.backtester import Backtester
+
 from config.sector_config import sector_stocks  # 공통 설정 파일에서 import
 
 # 로깅 설정
@@ -36,10 +37,10 @@ logger = logging.getLogger(__name__)
 class HybridOptimizer:
     """하이브리드 최적화 클래스"""
     
-    def __init__(self, api_client, data_manager, reporter, stock_selector):
+    def __init__(self, api_client, backtest_manager, report, stock_selector):
         self.api_client = api_client
-        self.data_manager = data_manager
-        self.reporter = reporter
+        self.backtest_manager = backtest_manager
+        self.report = report
         self.stock_selector = stock_selector
         
     def run_hybrid_optimization(self, start_date, end_date, sector_stocks, daily_strategy_name='sma_daily'):
@@ -71,8 +72,8 @@ class HybridOptimizer:
         optimizer = ProgressiveRefinementOptimizer(
             strategy=grid_strategy,
             api_client=self.api_client,
-            data_manager=self.data_manager,
-            reporter=self.reporter,
+            backtest_manager=self.backtest_manager,
+            report=self.report,
             stock_selector=self.stock_selector,
             initial_cash=10_000_000
         )
@@ -104,8 +105,8 @@ class HybridOptimizer:
         optimizer = ProgressiveRefinementOptimizer(
             strategy=bayesian_strategy,
             api_client=self.api_client,
-            data_manager=self.data_manager,
-            reporter=self.reporter,
+            backtest_manager=self.backtest_manager,
+            report=self.report,
             stock_selector=self.stock_selector,
             initial_cash=10_000_000
         )
@@ -242,22 +243,22 @@ def main():
         logger.error("Creon API에 연결할 수 없습니다.")
         return
     
-    data_manager = DataManager()
+    backtest_manager = BacktestManager()
     db_manager = DBManager()
-    reporter = Reporter(db_manager=db_manager)
+    report = BacktestReport(db_manager=db_manager)
     
     # 공통 설정 파일에서 sector_stocks 가져오기
     stock_selector = StockSelector(
-        data_manager=data_manager, 
+        backtest_manager=backtest_manager, 
         api_client=api_client, 
         sector_stocks_config=sector_stocks
     )
     
     # 백테스터 초기화 - DB 저장 비활성화 (최적화 시 DB 저장 비활성화)
-    backtester_instance = Backtester(
-        data_manager=data_manager, 
+    backtest_instance = Backtest(
+        backtest_manager=backtest_manager, 
         api_client=api_client, 
-        reporter=reporter, 
+        backtest_report=report, 
         stock_selector=stock_selector,
         initial_cash=10_000_000,
         save_to_db=False  # 최적화 시 DB 저장 비활성화
@@ -266,8 +267,8 @@ def main():
     # 하이브리드 최적화 실행
     hybrid_optimizer = HybridOptimizer(
         api_client=api_client,
-        data_manager=data_manager,
-        reporter=reporter,
+        backtest_manager=backtest_manager,
+        report=report,
         stock_selector=stock_selector
     )
     

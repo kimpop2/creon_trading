@@ -12,12 +12,12 @@ import json
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from api.creon_api import CreonAPIClient
-from manager.data_manager import DataManager
+from manager.backtest_manager import BacktestManager
 from manager.db_manager import DBManager
-from trader.reporter import Reporter
+from trade.backtest_report import BacktestReport
 from selector.stock_selector import StockSelector
 from optimizer.bayesian_optimizer import BayesianOptimizationStrategy
-from trader.backtester import Backtester
+from trade.backtest import Backtest
 from config.sector_config import sector_stocks  # 공통 설정 파일에서 import
 
 # 로깅 설정
@@ -40,13 +40,13 @@ def main():
         logger.error("Creon API에 연결할 수 없습니다.")
         return
     
-    data_manager = DataManager()
+    backtest_manager = BacktestManager()
     db_manager = DBManager()
-    reporter = Reporter(db_manager=db_manager)
+    backtest_report = BacktestReport(db_manager=db_manager)
     
     # 공통 설정 파일에서 sector_stocks 가져오기
     stock_selector = StockSelector(
-        data_manager=data_manager, 
+        backtest_manager=backtest_manager, 
         api_client=api_client, 
         sector_stocks_config=sector_stocks
     )
@@ -58,10 +58,10 @@ def main():
     )
     
     # 백테스터 초기화 - DB 저장 비활성화 (최적화 시 DB 저장 비활성화)
-    backtester_instance = Backtester(
-        data_manager=data_manager, 
+    backtester_instance = Backtest(
+        backtest_manager=backtest_manager, 
         api_client=api_client, 
-        reporter=reporter, 
+        backtest_report=backtest_report, 
         stock_selector=stock_selector,
         initial_cash=10_000_000,
         save_to_db=False  # 최적화 시 DB 저장 비활성화
@@ -79,8 +79,8 @@ def main():
     optimizer = ProgressiveRefinementOptimizer(
         strategy=bayesian_strategy,
         api_client=api_client,
-        data_manager=data_manager,
-        reporter=reporter,
+        backtest_manager=backtest_manager,
+        report=backtest_report,
         stock_selector=stock_selector,
         initial_cash=10_000_000
     )

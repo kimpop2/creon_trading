@@ -19,13 +19,11 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
+from trade.backtest import Backtest
 from api.creon_api import CreonAPIClient
-from trader.backtester import Backtester
-from strategies.sma_daily import SMADaily
-from strategies.rsi_minute import RSIMinute
-from manager.data_manager import DataManager
+from manager.backtest_manager import BacktestManager
 from manager.db_manager import DBManager
-from trader.reporter import Reporter
+from trade.backtest_report import BacktestReport
 from selector.stock_selector import StockSelector
 
 # 로깅 설정 (콘솔 + 파일)
@@ -720,8 +718,8 @@ class ProgressiveRefinementOptimizer:
     def __init__(self, 
                  strategy: OptimizationStrategy,
                  api_client: CreonAPIClient,
-                 data_manager: DataManager,
-                 reporter: Reporter,
+                 backtest_manager: BacktestManager,
+                 report: BacktestReport,
                  stock_selector: StockSelector,
                  initial_cash: float = 10_000_000):
         """
@@ -730,15 +728,15 @@ class ProgressiveRefinementOptimizer:
         Args:
             strategy: 최적화 전략 (GridSearch, Bayesian, Genetic 등)
             api_client: Creon API 클라이언트
-            data_manager: 데이터 매니저
-            reporter: 리포터
+            backtest_manager: 데이터 매니저
+            report: 리포터
             stock_selector: 종목 선택기
             initial_cash: 초기 자본금
         """
         self.strategy = strategy
         self.api_client = api_client
-        self.data_manager = data_manager
-        self.reporter = reporter
+        self.backtest_manager = backtest_manager
+        self.report = report
         self.stock_selector = stock_selector
         self.initial_cash = initial_cash
         
@@ -880,35 +878,35 @@ class ProgressiveRefinementOptimizer:
         """
         try:
             # 백테스터 초기화
-            backtester = Backtester(
-                data_manager=self.data_manager,
+            backtest = Backtest(
+                backtest_manager=self.backtest_manager,
                 api_client=self.api_client,
-                reporter=self.reporter,
+                backtest_report=self.report,
                 stock_selector=self.stock_selector,
                 initial_cash=self.initial_cash
             )
             
             # 일봉 전략 생성
-            daily_strategy = self._create_daily_strategy(backtester, params, daily_strategy_name)
+            daily_strategy = self._create_daily_strategy(backtest, params, daily_strategy_name)
             
             # 분봉 전략 생성
-            minute_strategy = self._create_minute_strategy(backtester, params, minute_strategy_name)
+            minute_strategy = self._create_minute_strategy(backtest, params, minute_strategy_name)
             
             # 전략 설정
-            backtester.set_strategies(
+            backtest.set_strategies(
                 daily_strategy=daily_strategy,
                 minute_strategy=minute_strategy
             )
             
             # 손절매 파라미터 설정
             if 'stop_loss_params' in params:
-                backtester.set_broker_stop_loss_params(params['stop_loss_params'])
+                backtest.set_broker_stop_loss_params(params['stop_loss_params'])
             
             # 데이터 로딩
-            self._load_backtest_data(backtester, start_date, end_date, sector_stocks)
+            self._load_backtest_data(backtest, start_date, end_date, sector_stocks)
             
             # 백테스트 실행
-            portfolio_values, metrics = backtester.run(start_date, end_date)
+            portfolio_values, metrics = backtest.run(start_date, end_date)
             
             # 결과 정리
             result = {
@@ -930,27 +928,29 @@ class ProgressiveRefinementOptimizer:
                 'error': str(e)
             }
     
-    def _create_daily_strategy(self, backtester: Backtester, params: Dict[str, Any], strategy_name: str):
+    def _create_daily_strategy(self, backtest: Backtest, params: Dict[str, Any], strategy_name: str):
         """일봉 전략 생성"""
+        
         if strategy_name == 'sma_daily':
+            from strategies.sma_daily import SMADaily
             return SMADaily(
-                data_store=backtester.data_store,
+                data_store=backtest.data_store,
                 strategy_params=params['sma_params'],
-                broker=backtester.broker
+                broker=backtest.broker
             )
         elif strategy_name == 'dual_momentum_daily':
             from strategies.dual_momentum_daily import DualMomentumDaily
             return DualMomentumDaily(
-                data_store=backtester.data_store,
+                data_store=backtest.data_store,
                 strategy_params=params['dual_momentum_params'],
-                broker=backtester.broker
+                broker=backtest.broker
             )
         elif strategy_name == 'triple_screen_daily':
             from strategies.triple_screen_daily import TripleScreenDaily
             return TripleScreenDaily(
-                data_store=backtester.data_store,
+                data_store=backtest.data_store,
                 strategy_params=params['triple_screen_params'],
-                broker=backtester.broker
+                broker=backtest.broker
             )
         elif strategy_name == 'rsi_daily':
             # RSI 일봉 전략 클래스가 있다면 여기에 추가
@@ -967,7 +967,7 @@ class ProgressiveRefinementOptimizer:
         else:
             raise ValueError(f"지원하지 않는 일봉 전략: {strategy_name}")
     
-    def _create_minute_strategy(self, backtester: Backtester, params: Dict[str, Any], strategy_name: str):
+    def _create_minute_strategy(self, backtest: Backtest, params: Dict[str, Any], strategy_name: str):
         """분봉 전략 생성"""
         if strategy_name == 'open_minute':
             from strategies.open_minute import OpenMinute
@@ -988,15 +988,15 @@ class ProgressiveRefinementOptimizer:
             if 'rsi_params' in params:
                 minute_params.update(params['rsi_params'])
             return OpenMinute(
-                data_store=backtester.data_store,
+                data_store=backtest.data_store,
                 strategy_params=minute_params,
-                broker=backtester.broker
+                broker=backtest.broker
             )
         else:
             return None
     
     def _load_backtest_data(self, 
-                           backtester: Backtester, 
+                           backtest: Backtest, 
                            start_date: datetime.date, 
                            end_date: datetime.date,
                            sector_stocks: Dict[str, List[Tuple[str, str]]]):
@@ -1009,11 +1009,11 @@ class ProgressiveRefinementOptimizer:
         # 안전자산 데이터 로딩
         safe_asset_code = 'A439870'
         if safe_asset_code not in self.daily_ohlcv_cache:
-            daily_df = self.data_manager.cache_daily_ohlcv(safe_asset_code, data_fetch_start, end_date)
+            daily_df = self.backtest_manager.cache_daily_ohlcv(safe_asset_code, data_fetch_start, end_date)
             self.daily_ohlcv_cache[safe_asset_code] = daily_df
         else:
             daily_df = self.daily_ohlcv_cache[safe_asset_code]
-        backtester.add_daily_data(safe_asset_code, daily_df)
+        backtest.add_daily_data(safe_asset_code, daily_df)
         
         # 모든 종목 데이터 로딩
         stock_names = []
@@ -1025,12 +1025,12 @@ class ProgressiveRefinementOptimizer:
             code = self.api_client.get_stock_code(name)
             if code:
                 if code not in self.daily_ohlcv_cache:
-                    daily_df = self.data_manager.cache_daily_ohlcv(code, data_fetch_start, end_date)
+                    daily_df = self.backtest_manager.cache_daily_ohlcv(code, data_fetch_start, end_date)
                     self.daily_ohlcv_cache[code] = daily_df
                 else:
                     daily_df = self.daily_ohlcv_cache[code]
                 if not daily_df.empty:
-                    backtester.add_daily_data(code, daily_df)
+                    backtest.add_daily_data(code, daily_df)
     
     def save_results(self, results: Dict[str, Any], filename: str = None):
         """
@@ -1162,13 +1162,13 @@ if __name__ == "__main__":
 
     # 컴포넌트 초기화
     api_client = CreonAPIClient()
-    data_manager = DataManager()
+    backtest_manager = BacktestManager()
     db_manager = DBManager()
-    reporter = Reporter(db_manager=db_manager)
+    report = BacktestReport(db_manager=db_manager)
     
     # 공통 설정 파일에서 sector_stocks 가져오기
     from config.sector_config import sector_stocks
-    stock_selector = StockSelector(data_manager=data_manager, api_client=api_client, sector_stocks_config=sector_stocks)
+    stock_selector = StockSelector(backtest_manager=backtest_manager, api_client=api_client, sector_stocks_config=sector_stocks)
 
     # 백테스트 기간 설정
     start_date = datetime(2025, 3, 1).date()
@@ -1179,8 +1179,8 @@ if __name__ == "__main__":
     optimizer = ProgressiveRefinementOptimizer(
         strategy=grid_strategy,
         api_client=api_client,
-        data_manager=data_manager,
-        reporter=reporter,
+        backtest_manager=backtest_manager,
+        report=report,
         stock_selector=stock_selector,
         initial_cash=10_000_000
     )

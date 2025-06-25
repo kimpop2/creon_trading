@@ -10,18 +10,18 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, project_root)
 
 from api.creon_api import CreonAPIClient
-from manager.data_manager import DataManager
-from trader.brokerage import Brokerage
+from manager.backtest_manager import BacktestManager
+from trade.broker import Broker
 
 class TestStopLoss(unittest.TestCase):
-    """손절매 로직 테스트"""
+    """백테스트 손절매 로직 테스트"""
     
     @classmethod
     def setUpClass(cls):
         """테스트 클래스 시작 시 한 번만 실행"""
         cls.api = CreonAPIClient()
-        cls.data_manager = DataManager()
-        cls.brokerage = Brokerage(cls.api, cls.data_manager)
+        cls.backtest_manager = BacktestManager()
+        cls.broker = Broker(cls.api, cls.backtest_manager)
         cls.test_stock_code = 'A005930'  # 삼성전자
         logging.info("테스트 환경 설정 완료")
 
@@ -39,7 +39,7 @@ class TestStopLoss(unittest.TestCase):
             'trailing_stop_ratio': -2.0,  # 최고가 대비 2% 하락 시 손절
             'portfolio_max_drawdown_ratio': -5.0  # 포트폴리오 5% 손실 시 전량 매도
         }
-        self.brokerage.set_stop_loss_params(self.stop_loss_params)
+        self.broker.set_stop_loss_params(self.stop_loss_params)
 
     def test_1_individual_stop_loss(self):
         """개별 종목 손절매 테스트"""
@@ -60,7 +60,7 @@ class TestStopLoss(unittest.TestCase):
         simulated_price = self.current_price * 0.97  # 3% 하락 가정
         now = datetime.now()
         
-        executed = self.brokerage.check_and_execute_stop_loss(
+        executed = self.broker.check_and_execute_stop_loss(
             self.test_stock_code,
             simulated_price,
             now
@@ -89,7 +89,7 @@ class TestStopLoss(unittest.TestCase):
         now = datetime.now()
         
         # 최고가 갱신
-        self.brokerage.check_and_execute_stop_loss(
+        self.broker.check_and_execute_stop_loss(
             self.test_stock_code,
             simulated_high_price,
             now
@@ -97,7 +97,7 @@ class TestStopLoss(unittest.TestCase):
         
         # 3. 최고가 대비 하락 시뮬레이션 (-2%)
         simulated_current_price = simulated_high_price * 0.98
-        executed = self.brokerage.check_and_execute_stop_loss(
+        executed = self.broker.check_and_execute_stop_loss(
             self.test_stock_code,
             simulated_current_price,
             now
@@ -110,13 +110,13 @@ class TestStopLoss(unittest.TestCase):
         """포트폴리오 손절매 테스트"""
         # 1. 초기 포트폴리오 가치 설정
         initial_prices = {self.test_stock_code: self.current_price}
-        self.brokerage.initial_portfolio_value = self.brokerage.get_portfolio_value(initial_prices)
+        self.broker.initial_portfolio_value = self.broker.get_portfolio_value(initial_prices)
         
         # 2. 포트폴리오 가치 하락 시뮬레이션 (-5%)
         simulated_prices = {self.test_stock_code: self.current_price * 0.95}
         now = datetime.now()
         
-        executed = self.brokerage.check_and_execute_portfolio_stop_loss(
+        executed = self.broker.check_and_execute_portfolio_stop_loss(
             simulated_prices,
             now
         )
@@ -127,8 +127,8 @@ class TestStopLoss(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         """테스트 클래스 종료 시 한 번만 실행"""
-        if hasattr(cls, 'data_manager'):
-            cls.data_manager.close()
+        if hasattr(cls, 'backtest_manager'):
+            cls.backtest_manager.close()
         logging.info("테스트 환경 정리 완료")
 
 if __name__ == '__main__':

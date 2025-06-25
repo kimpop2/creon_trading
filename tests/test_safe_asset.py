@@ -3,11 +3,15 @@
 
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
-from api.creon_api import CreonAPIClient
 from datetime import datetime, timedelta
 import pandas as pd
+
+# 프로젝트 루트 경로 추가
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, project_root)
+
+from api.creon_api import CreonAPIClient
+
 
 def test_safe_asset_data():
     """안전자산 종목 A439870의 데이터를 테스트합니다."""

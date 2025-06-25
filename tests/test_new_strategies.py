@@ -9,15 +9,16 @@ import sys
 import os
 from typing import Dict, Any
 
-# 현재 스크립트의 경로를 sys.path에 추가
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
+# 프로젝트 루트 경로 추가
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, project_root)
+from trade.backtest import Backtest
 from api.creon_api import CreonAPIClient
-from manager.data_manager import DataManager
+from manager.backtest_manager import BacktestManager
 from manager.db_manager import DBManager
-from trader.reporter import Reporter
+from trade.backtest_report import BacktestReport
 from selector.stock_selector import StockSelector
-from trader.backtester import Backtester
+
 from strategies.dual_momentum_daily import DualMomentumDaily
 from strategies.bollinger_rsi_daily import BollingerRSIDaily
 from strategies.sector_rotation_daily import SectorRotationDaily
@@ -39,8 +40,8 @@ class NewStrategiesTester:
     
     def __init__(self):
         self.api_client = None
-        self.data_manager = None
-        self.reporter = None
+        self.backtest_manager = None
+        self.report = None
         self.stock_selector = None
         
     def initialize(self):
@@ -52,9 +53,9 @@ class NewStrategiesTester:
         if not self.api_client.connected:
             raise ConnectionError("Creon API 연결 실패")
         
-        self.data_manager = DataManager()
+        self.backtest_manager = BacktestManager()
         db_manager = DBManager()
-        self.reporter = Reporter(db_manager=db_manager)
+        self.report = BacktestReport(db_manager=db_manager)
         
         # 섹터별 종목 설정
         sector_stocks = {
@@ -81,7 +82,7 @@ class NewStrategiesTester:
         }
         
         self.stock_selector = StockSelector(
-            data_manager=self.data_manager,
+            backtest_manager=self.backtest_manager,
             api_client=self.api_client,
             sector_stocks_config=sector_stocks
         )
@@ -93,10 +94,10 @@ class NewStrategiesTester:
         logger.info("=== 듀얼 모멘텀 전략 테스트 시작 ===")
         
         # 백테스터 초기화
-        backtester = Backtester(
-            data_manager=self.data_manager,
+        backtest = Backtest(
+            backtest_manager=self.backtest_manager,
             api_client=self.api_client,
-            reporter=self.reporter,
+            report=self.report,
             stock_selector=self.stock_selector,
             initial_cash=10_000_000
         )
@@ -104,22 +105,22 @@ class NewStrategiesTester:
         # 듀얼 모멘텀 전략 생성
         dual_momentum_params = get_strategy_params('dual_momentum_daily')
         dual_momentum_strategy = DualMomentumDaily(
-            data_store=backtester.data_store,
+            data_store=backtest.data_store,
             strategy_params=dual_momentum_params,
-            broker=backtester.broker
+            broker=backtest.broker
         )
         
         # 전략 설정
-        backtester.set_strategies(
+        backtest.set_strategies(
             daily_strategy=dual_momentum_strategy,
             minute_strategy=None
         )
         
         # 데이터 로딩
-        self._load_test_data(backtester, start_date, end_date)
+        self._load_test_data(backtest, start_date, end_date)
         
         # 백테스트 실행
-        portfolio_values, metrics = backtester.run(start_date, end_date)
+        portfolio_values, metrics = backtest.run(start_date, end_date)
         
         # 결과 출력
         self._print_test_results("듀얼 모멘텀 전략", metrics)
@@ -131,10 +132,10 @@ class NewStrategiesTester:
         logger.info("=== 볼린저 밴드 + RSI 전략 테스트 시작 ===")
         
         # 백테스터 초기화
-        backtester = Backtester(
-            data_manager=self.data_manager,
+        backtest = Backtest(
+            backtest_manager=self.backtest_manager,
             api_client=self.api_client,
-            reporter=self.reporter,
+            report=self.report,
             stock_selector=self.stock_selector,
             initial_cash=10_000_000
         )
@@ -142,22 +143,22 @@ class NewStrategiesTester:
         # 볼린저 + RSI 전략 생성
         bollinger_rsi_params = get_strategy_params('bollinger_rsi_daily')
         bollinger_rsi_strategy = BollingerRSIDaily(
-            data_store=backtester.data_store,
+            data_store=backtest.data_store,
             strategy_params=bollinger_rsi_params,
-            broker=backtester.broker
+            broker=backtest.broker
         )
         
         # 전략 설정
-        backtester.set_strategies(
+        backtest.set_strategies(
             daily_strategy=bollinger_rsi_strategy,
             minute_strategy=None
         )
         
         # 데이터 로딩
-        self._load_test_data(backtester, start_date, end_date)
+        self._load_test_data(backtest, start_date, end_date)
         
         # 백테스트 실행
-        portfolio_values, metrics = backtester.run(start_date, end_date)
+        portfolio_values, metrics = backtest.run(start_date, end_date)
         
         # 결과 출력
         self._print_test_results("볼린저 밴드 + RSI 전략", metrics)
@@ -169,10 +170,10 @@ class NewStrategiesTester:
         logger.info("=== 섹터 로테이션 전략 테스트 시작 ===")
         
         # 백테스터 초기화
-        backtester = Backtester(
-            data_manager=self.data_manager,
+        backtest = Backtest(
+            backtest_manager=self.backtest_manager,
             api_client=self.api_client,
-            reporter=self.reporter,
+            report=self.report,
             stock_selector=self.stock_selector,
             initial_cash=10_000_000
         )
@@ -180,22 +181,22 @@ class NewStrategiesTester:
         # 섹터 로테이션 전략 생성
         sector_rotation_params = get_strategy_params('sector_rotation_daily')
         sector_rotation_strategy = SectorRotationDaily(
-            data_store=backtester.data_store,
+            data_store=backtest.data_store,
             strategy_params=sector_rotation_params,
-            broker=backtester.broker
+            broker=backtest.broker
         )
         
         # 전략 설정
-        backtester.set_strategies(
+        backtest.set_strategies(
             daily_strategy=sector_rotation_strategy,
             minute_strategy=None
         )
         
         # 데이터 로딩
-        self._load_test_data(backtester, start_date, end_date)
+        self._load_test_data(backtest, start_date, end_date)
         
         # 백테스트 실행
-        portfolio_values, metrics = backtester.run(start_date, end_date)
+        portfolio_values, metrics = backtest.run(start_date, end_date)
         
         # 결과 출력
         self._print_test_results("섹터 로테이션 전략", metrics)
@@ -207,10 +208,10 @@ class NewStrategiesTester:
         logger.info("=== 삼중창 시스템 전략 테스트 시작 ===")
         
         # 백테스터 초기화
-        backtester = Backtester(
-            data_manager=self.data_manager,
+        backtest = Backtest(
+            backtest_manager=self.backtest_manager,
             api_client=self.api_client,
-            reporter=self.reporter,
+            report=self.report,
             stock_selector=self.stock_selector,
             initial_cash=10_000_000
         )
@@ -218,39 +219,39 @@ class NewStrategiesTester:
         # 삼중창 시스템 전략 생성
         triple_screen_params = get_strategy_params('triple_screen_daily')
         triple_screen_strategy = TripleScreenDaily(
-            data_store=backtester.data_store,
+            data_store=backtest.data_store,
             strategy_params=triple_screen_params,
-            broker=backtester.broker
+            broker=backtest.broker
         )
         
         # 전략 설정
-        backtester.set_strategies(
+        backtest.set_strategies(
             daily_strategy=triple_screen_strategy,
             minute_strategy=None
         )
         
         # 데이터 로딩
-        self._load_test_data(backtester, start_date, end_date)
+        self._load_test_data(backtest, start_date, end_date)
         
         # 백테스트 실행
-        portfolio_values, metrics = backtester.run(start_date, end_date)
+        portfolio_values, metrics = backtest.run(start_date, end_date)
         
         # 결과 출력
         self._print_test_results("삼중창 시스템 전략", metrics)
         
         return metrics
     
-    def _load_test_data(self, backtester: Backtester, start_date: datetime.date, end_date: datetime.date):
+    def _load_test_data(self, backtest: Backtest, start_date: datetime.date, end_date: datetime.date):
         """테스트용 데이터 로딩"""
         # 안전자산 데이터 로딩
         safe_asset_code = 'A439870'
-        daily_df = self.data_manager.cache_daily_ohlcv(safe_asset_code, start_date, end_date)
-        backtester.add_daily_data(safe_asset_code, daily_df)
+        daily_df = self.backtest_manager.cache_daily_ohlcv(safe_asset_code, start_date, end_date)
+        backtest.add_daily_data(safe_asset_code, daily_df)
         
         # KOSPI 지수 데이터 로딩 (듀얼 모멘텀 전략용)
         kospi_code = 'A001'
-        kospi_df = self.data_manager.cache_daily_ohlcv(kospi_code, start_date, end_date)
-        backtester.add_daily_data(kospi_code, kospi_df)
+        kospi_df = self.backtest_manager.cache_daily_ohlcv(kospi_code, start_date, end_date)
+        backtest.add_daily_data(kospi_code, kospi_df)
         
         # 모든 종목 데이터 로딩
         stock_names = []
@@ -261,11 +262,11 @@ class NewStrategiesTester:
         for name in stock_names:
             code = self.api_client.get_stock_code(name)
             if code:
-                daily_df = self.data_manager.cache_daily_ohlcv(code, start_date, end_date)
+                daily_df = self.backtest_manager.cache_daily_ohlcv(code, start_date, end_date)
                 if not daily_df.empty:
-                    backtester.add_daily_data(code, daily_df)
+                    backtest.add_daily_data(code, daily_df)
         
-        logger.info(f"테스트 데이터 로딩 완료: {len(backtester.data_store['daily'])}개 종목")
+        logger.info(f"테스트 데이터 로딩 완료: {len(backtest.data_store['daily'])}개 종목")
     
     def _print_test_results(self, strategy_name: str, metrics: Dict[str, Any]):
         """테스트 결과 출력"""

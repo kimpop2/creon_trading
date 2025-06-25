@@ -7,16 +7,18 @@ import logging
 import sys
 import os
 
-# 현재 스크립트의 경로를 sys.path에 추가
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+# 프로젝트 루트 경로 추가
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, project_root)
 
-from api.creon_api import CreonAPIClient
-from manager.data_manager import DataManager
-from manager.db_manager import DBManager
-from trader.reporter import Reporter
-from selector.stock_selector import StockSelector
 from optimizer.grid_search_optimizer import GridSearchOptimizer
 from optimizer.progressive_refinement_optimizer import ProgressiveRefinementOptimizer, GridSearchStrategy
+
+from api.creon_api import CreonAPIClient
+from manager.backtest_manager import BacktestManager
+from manager.db_manager import DBManager
+from trade.trader_report import Reporter
+from selector.stock_selector import StockSelector
 from config.sector_config import sector_stocks
 
 # 로깅 설정
@@ -35,10 +37,10 @@ def test_triple_screen_grid_search():
     
     # 컴포넌트 초기화
     api_client = CreonAPIClient()
-    data_manager = DataManager()
+    backtest_manager = BacktestManager()
     db_manager = DBManager()
     reporter = Reporter(db_manager=db_manager)
-    stock_selector = StockSelector(data_manager=data_manager, api_client=api_client, sector_stocks_config=sector_stocks)
+    stock_selector = StockSelector(backtest_manager=backtest_manager, api_client=api_client, sector_stocks_config=sector_stocks)
     
     # 백테스트 기간 설정
     start_date = datetime.datetime(2025, 3, 1).date()
@@ -47,7 +49,7 @@ def test_triple_screen_grid_search():
     # 그리드서치 최적화 실행
     optimizer = GridSearchOptimizer(
         api_client=api_client,
-        data_manager=data_manager,
+        backtest_manager=backtest_manager,
         reporter=reporter,
         stock_selector=stock_selector,
         initial_cash=10_000_000
@@ -110,10 +112,10 @@ def test_triple_screen_progressive_optimization():
     
     # 컴포넌트 초기화
     api_client = CreonAPIClient()
-    data_manager = DataManager()
+    backtest_manager = BacktestManager()
     db_manager = DBManager()
     reporter = Reporter(db_manager=db_manager)
-    stock_selector = StockSelector(data_manager=data_manager, api_client=api_client, sector_stocks_config=sector_stocks)
+    stock_selector = StockSelector(backtest_manager=backtest_manager, api_client=api_client, sector_stocks_config=sector_stocks)
     
     # 백테스트 기간 설정
     start_date = datetime.datetime(2025, 3, 1).date()
@@ -124,7 +126,7 @@ def test_triple_screen_progressive_optimization():
     optimizer = ProgressiveRefinementOptimizer(
         strategy=grid_strategy,
         api_client=api_client,
-        data_manager=data_manager,
+        backtest_manager=backtest_manager,
         reporter=reporter,
         stock_selector=stock_selector,
         initial_cash=10_000_000

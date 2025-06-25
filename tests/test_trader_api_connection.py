@@ -9,16 +9,16 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, project_root)
 
 from api.creon_api import CreonAPIClient
-from manager.data_manager import DataManager
+from manager.trader_manager import TraderManager
 
-class TestCreonAPIConnection(unittest.TestCase):
-    """크레온 API 연결 및 기본 기능 테스트"""
+class TestTraderAPIConnection(unittest.TestCase):
+    """자동매매 API 연결 및 기본 기능 테스트"""
     
     @classmethod
     def setUpClass(cls):
         """테스트 클래스 시작 시 한 번만 실행"""
         cls.api = CreonAPIClient()
-        cls.data_manager = DataManager()
+        cls.trader_manager = TraderManager()
         logging.info("테스트 환경 설정 완료")
 
     def setUp(self):
@@ -92,8 +92,8 @@ class TestCreonAPIConnection(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         """테스트 클래스 종료 시 한 번만 실행"""
-        if hasattr(cls, 'data_manager'):
-            cls.data_manager.close()
+        if hasattr(cls, 'trader_manager'):
+            cls.trader_manager.close()
         logging.info("테스트 환경 정리 완료")
 
 if __name__ == '__main__':

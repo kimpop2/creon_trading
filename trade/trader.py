@@ -8,14 +8,14 @@ import time as time_module
 import sys
 import os
 
-from trader.broker import Broker
-from trader.reporter import Reporter # Reporter 타입 힌트를 위해 남겨둠
-from manager.data_manager import DataManager # DataManager 타입 힌트를 위해 남겨둠
-from util.strategies_util import calculate_performance_metrics, get_next_weekday 
-from strategies.strategy import DailyStrategy, MinuteStrategy 
-from manager.data_manager import DataManager # DataManager 타입 힌트를 위해 남겨둠
-from selector.stock_selector import StockSelector # StockSelector 타입 힌트를 위해 남겨둠
+from trade.brokerage import Brokerage
+from trade.trader_report import TraderReport # Reporter 타입 힌트를 위해 남겨둠
 from api.creon_api import CreonAPIClient
+from manager.trader_manager import TraderManager # TraderManager 타입 힌트를 위해 남겨둠
+from selector.stock_selector import StockSelector # StockSelector 타입 힌트를 위해 남겨둠
+
+from strategies.strategy import DailyStrategy, MinuteStrategy 
+from util.strategies_util import calculate_performance_metrics, get_next_weekday 
 
 # 현재 스크립트의 경로를 sys.path에 추가하여 모듈 임포트 가능하게 함
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -24,13 +24,13 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 logger = logging.getLogger(__name__)
 # logger.setLevel(logging.DEBUG) # 테스트 시 DEBUG로 설정하여 모든 로그 출력 - 제거
 
-class Backtester:
+class Trader:
     # __init__ 메서드를 외부에서 필요한 인스턴스를 주입받도록 변경
     def __init__(self, api_client: CreonAPIClient, initial_cash: float, 
-                 data_manager: DataManager, reporter: Reporter, stock_selector: StockSelector,
+                 trader_manager: TraderManager, trader_report: TraderReport, stock_selector: StockSelector,
                  save_to_db: bool = True):  # DB 저장 여부 파라미터 추가
         self.api_client = api_client
-        self.broker = Broker(initial_cash, commission_rate=0.0016, slippage_rate=0.0004) # 커미션 0.16% + 슬리피지 0.04% = 총 0.2%
+        self.broker = Brokerage(initial_cash, commission_rate=0.0016, slippage_rate=0.0004) # 커미션 0.16% + 슬리피지 0.04% = 총 0.2%
         self.data_store = {'daily': {}, 'minute': {}} # {stock_code: DataFrame}
         self.portfolio_values = [] # (datetime, value) 튜플 저장
         self.initial_cash = initial_cash
@@ -40,8 +40,8 @@ class Backtester:
         self.minute_strategy: MinuteStrategy = None
 
         # 외부에서 주입받은 인스턴스를 사용
-        self.data_manager = data_manager
-        self.reporter = reporter
+        self.trader_manager = trader_manager
+        self.report = trader_report
         self.stock_selector = stock_selector
         
         self.current_day_signals = {}
@@ -268,8 +268,8 @@ class Backtester:
                             signal_info = self.current_day_signals.get(stock_code)
                             prev_trading_day = signal_info.get('signal_date', current_date) if signal_info else current_date
                             if prev_trading_day:
-                                # DataManager를 사용하여 분봉 데이터 로드 (전일~당일)
-                                minute_df = self.data_manager.cache_minute_ohlcv(
+                                # TraderManager를 사용하여 분봉 데이터 로드 (전일~당일)
+                                minute_df = self.trader_manager.cache_minute_ohlcv(
                                     stock_code,
                                     prev_trading_day,  # 전일 영업일부터
                                     current_date       # 당일까지
@@ -398,7 +398,7 @@ class Backtester:
             self.portfolio_values.append((current_date, daily_portfolio_value))
             logging.info(f"[{current_date.isoformat()}] 장 마감 포트폴리오 가치: {daily_portfolio_value:,.0f}원, 현금: {self.broker.cash:,.0f}원")
 
-            # 일일 거래 기록 초기화 (broker 내부)
+            # 일일 거래 기록 초기화 (Brokerage 내부)
             self.broker.reset_daily_transactions() # 현재 pass 상태, 아래 로직으로 채워야 함
             
             # 수정: 다음날을 위해 모든 신호 초기화
@@ -441,8 +441,8 @@ class Backtester:
         daily_strategy_params = self.daily_strategy.strategy_params if self.daily_strategy else {}
         minute_strategy_params = self.minute_strategy.strategy_params if self.minute_strategy else {}
 
-        # 모든 저장 로직을 self.reporter에게 위임
-        self.reporter.generate_and_save_report(
+        # 모든 저장 로직을 self.report에게 위임
+        self.report.generate_and_save_report(
             start_date=start_date,
             end_date=end_date,
             initial_cash=self.initial_cash,

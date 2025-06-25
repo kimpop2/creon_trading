@@ -7,7 +7,7 @@ import logging
 from typing import List, Dict
 
 from selector.selector import BaseSelector
-from manager.data_manager import DataManager
+from manager.backtest_manager import BacktestManager
 from api.creon_api import CreonAPIClient
 
 logger = logging.getLogger(__name__)
@@ -17,9 +17,9 @@ class StockSelector(BaseSelector):
     주어진 설정과 현재 날짜에 따라 백테스트 대상 종목을 선정하는 클래스입니다.
     뉴스매매 또는 테마주매매에 맞는 종목 선정 클래스가 추가될 수 있으므로 BaseSelector를 상속받습니다.
     """
-    def __init__(self, data_manager: DataManager, api_client: CreonAPIClient, sector_stocks_config: Dict):
+    def __init__(self, backtest_manager: BacktestManager, api_client: CreonAPIClient, sector_stocks_config: Dict):
         super().__init__()
-        self.data_manager = data_manager
+        self.backtest_manager = backtest_manager
         self.api_client = api_client
         self.sector_stocks_config = sector_stocks_config
         logger.info("StockSelector 초기화 완료.")

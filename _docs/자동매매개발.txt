@@ -1,36 +1,43 @@
 Q :
     일봉전략과 분봉전략을 이용해서 백테스팅 프로그램을 만들었다.
-
-    백테스팅 엔진 Backtester - Broker (백테스팅용 브로커) 관계처럼,
-
-    자동매매 Trader - Brokerage (자동매매용 브로커) 를 만들어서
-
+    trader 폴더, strategies 폴더, manager 폴더, tests 폴더 참고.
+    백테스팅 엔진 Backtester & Broker (백테스팅용 브로커) 관계처럼,
+    자동매매 Trader & Brokerage (자동매매용 브로커) 를 만들어서
     백테스팅에 사용한 일봉 전략과 분봉전략을 수정없이 자동매매를 할 수 있도록
-
     Trader 와 Brokerage 를 개발하는 것이 목표다.
+    1. Trader 의 생성자는 Backtester와 동일하게 한다.
+    2. Brokerage 의 생성자도 Broker와 동일하게 한다.
+    3. 실행방식도 run_backtest.py 처럼 run_trade.py 를 사용하는데, 내부 로직은 가능한 한 비슷하게 한다.
+    4. 전략을 공유하려면 백테스트용 Broker와 자동매매용 Brokerage 는 전략파일에서 사용하는 메서드를 동일하게 만들어야 하므로
+       미리 trader/abtract_broker.py 추상클래스를 만들어 놨고, 현재 Broker 는 이를 상속해서 구현되어 있다.
+    5. 자동매매시 언제든지 매매대상 종목, 전략을 교체할 수 있다.
+    6. 백테스트는 전일 일봉 종가로 일봉전략을 적용해서 매매일 분봉전략을 적용해서 매매를 한다.
+       그러나 자동매매는 장중에 종목의 당일 현재가=종가가 계속 변하므로, 
+       1분 주기로 관심종목의 일봉전략을 다시 실행(백테스트과 같은 기능)해서 매매신호를 발생하게 하는 게 맞는 처리일 것 같다. 
+    7. 분봉전략은 자동매매에서는 실제시간으로 실제 매매를 하는 것이, 백테스트에서 시간을 바꿔가며 가상매매를 하는 것과 차이점이다.
+       그래서, 자동매매에서는 Brokerage를 사용해서 증권사 api 와 연동하는 기능을 추가하여 실제매매가 되도록 한다.
+    8. 자동매매는 시스템을 수시로 끄고 켜기 때문에, 이전 자동매매 상태가 연결될 수 있도록 DB를 사용한다.
+       그리고 매매와 관련된 데이터는, 증권사 api 로 가져온 데이터와 DB 데이터, 시스템 상의 데이터의 싱크가 맞도록 보장해야 한다.
 
     백테스트와 자동매매는 다음 차이가 있다.
-
     1. 백테스트는 시작과 종료가 한번에 이루어 진다.
-
-    그러나, 자동매매는 매일 장이 시작하기전 시작하고, 장이 끝나면 종료한다.
-
-    그러므로, 트레이더는 전략에서 만들어진 매매신호와 매매결과를 백테스트 처럼 메모리 상에 보관하지 못하므로,
-
+    그러나, 자동매매는 전략에서 만들어진 매매신호와 매매결과를 백테스트 처럼 메모리 상에 보관하지 못하므로,
     DB에 저장해서, 다음날로 매매신호와 매매결과를 Trader 와 Brokerage 가 DB 를 통해서 교환할 수 있도록 하는 구조를 만들어야 한다.
-
     2. Trader, Brokerage 는 실제 매매를 하기 위해 증권사 api 를 이용해서 필요한 데이터를 요청, 수신해야 하고,
-
-    DB에 저장, DB로 부터 적재하는 작업도 해야 하므로, 이를 지원하는 data_manager 와 같은 기능하는 trader_manager.py 를 만들어야 한다.
-
-    3. 첨부한 create_stock_table 스크립트 내의 테이블은 백테스트 와 공유하면 되고,
-
+    DB에 저장, DB로 부터 적재하는 작업도 해야 하므로, 이를 지원하는 data_manager 와 같은 기능하는 
+    trader_manager.py 를 만들어 자동매매에 관련된 메소드들을 구분하기 좋을 것 같다.
+    3. /manager/sql/create_stock_table 스크립트의 종목, 주가 관련 테이블은 그대로 사용한다,
     자동매매에서 필요한 테이블도 별도 생성해야 한다. (create_trader_tables 스크립트 생성 필요)
-
     이상의 나의 요구사항을 만족하는 자동매매 프로그램을 개발하려면 어떻게 해야 할지,
-
     첨부한 파일을 분석하고 너의 자동매매 지식에 기반한 내용으로 의견을 첨부하여 답해줘
-
+    4. /api/creon_api 에는 자동매매를 지원하는 api 호출 함수를 넣어 뒀다.
+    5. 백테스트 결과를 기록하는 /manager/sql/create_backtest_talbes.sql 스크립트가 있는데
+       자동매매도 매매결과를 집계하는 비슷한 구조의 파일이 필요할 것이다. 
+       자동매매는 백테스팅과 다른 테이블을 사용한다.
+    7. 자동매매에서는 증권사의 내 계좌 내의 현금잔고, 보유종목 정보, 매매 내역, 미체결 내역들과 관련된 DB 데이터 싱크를 맞춰야 한다.
+    8. 주문후 주문결과가 바로(1초 이내) 체결이 되지 않으면, 실시간 미체결 내역 구독 서비스로 미체결의 변화를 추적, 반영해야 한다.    
+    9. 이상 언급하지 않은 부분은 너의 지식을 바탕으로 개선해 주기 바란다.
+이상의 요구사항을 만족하는 자동매매 Trader trader.py 와 Brokerge brokerage.py 를 만들어라.
 
 A :
     자동매매 시스템 개발 목표에 대한 분석 및 제안 드립니다. 기존 백테스팅 시스템의 구조와 전략을 최대한 재활용하면서 실시간 자동매매 환경의 특성을 반영하는 것이 핵심입니다.
@@ -1524,7 +1531,7 @@ A :
         get_realtime_price, get_realtime_minute_data, get_historical_ohlcv, get_all_stock_codes: CreonAPIClientLive다양한 유형의 시장 데이터를 가져오기 위한 인터페이스입니다.
         update_market_calendar, update_stock_info: 데이터베이스에서 시장 일정과 주식 기본 정보를 최신 상태로 유지합니다.
 
-    trade/brokerage.py:
+    trader/brokerage.py:
         이 클래스는 AbstractBroker실시간 거래를 구현하여 Creon API를 통해 실제 거래 실행을 가능하게 합니다.
         기능 :
         __init__: 종속성을 사용하여 초기화 CreonAPIClientLive합니다 TradeManager.
@@ -1533,7 +1540,7 @@ A :
         get_position_size, get_portfolio_value: 현재 보유 정보를 검색하고 포트폴리오 가치를 계산합니다.
         set_stop_loss_params, check_and_execute_stop_loss, check_and_execute_portfolio_stop_loss: 조건이 충족되면 실제 매도 주문을 실행하여 손절매 및 포트폴리오 손절매 논리를 구현합니다.
     
-    trade/trader.py:
+    trader/trader.py:
         이는 자동 거래 시스템의 주요 오케스트레이터입니다.
         기능 :
         __init__Brokerage: , TradeManager, 및 일일/분 전략을 설정합니다 .

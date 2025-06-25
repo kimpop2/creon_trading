@@ -13,7 +13,7 @@ from util.strategies_util import calculate_performance_metrics # 성능 지표 �
 
 logger = logging.getLogger(__name__)
 
-class Reporter:
+class BacktestReport:
     """
     백테스팅 결과를 취합하고, 성능 지표를 계산하며,
     결과를 데이터베이스에 저장하는 역할을 담당합니다.

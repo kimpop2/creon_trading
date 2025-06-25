@@ -22,7 +22,7 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from manager.data_manager import DataManager
+from manager.backtest_manager import BacktestManager
 
 # 로깅 설정
 logging.basicConfig(
@@ -43,18 +43,18 @@ def daily_setup_job():
     logger.info("=== 일일 데이터 셋업 작업 시작 ===")
     
     try:
-        data_manager = DataManager()
+        backtest_manager = BacktestManager()
         
         # 1. 모든 종목 기본 정보 업데이트 (stock_info 테이블)
         logger.info("1. 종목 기본 정보 업데이트 시작 (stock_info 테이블)")
-        if data_manager.update_all_stock_info():
+        if backtest_manager.update_all_stock_info():
             logger.info("✓ 종목 기본 정보 업데이트 완료")
         else:
             logger.error("✗ 종목 기본 정보 업데이트 실패")
         
         # 2. 주식시장 캘린더 업데이트 (market_calendar 테이블)
         logger.info("2. 주식시장 캘린더 업데이트 시작 (market_calendar 테이블)")
-        if data_manager.update_market_calendar():
+        if backtest_manager.update_market_calendar():
             logger.info("✓ 주식시장 캘린더 업데이트 완료")
         else:
             logger.error("✗ 주식시장 캘린더 업데이트 실패")
@@ -64,7 +64,7 @@ def daily_setup_job():
     except Exception as e:
         logger.error(f"일일 셋업 작업 중 오류 발생: {e}", exc_info=True)
     finally:
-        data_manager.close()
+        backtest_manager.close()
 
 def run_once():
     """
