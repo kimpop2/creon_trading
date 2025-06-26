@@ -93,6 +93,7 @@ class BacktestManager:
     def cache_daily_ohlcv(self, stock_code: str, from_date: date, to_date: date) -> pd.DataFrame:
         """
         DB와 증권사 API를 사용하여 특정 종목의 일봉 데이터를 캐싱하고 반환합니다.
+        분봉 캐싱 로직과 유사하게 수정되었습니다.
         :param stock_code: 종목 코드
         :param from_date: 조회 시작일 (datetime.date 객체)
         :param to_date: 조회 종료일 (datetime.date 객체)
@@ -103,40 +104,54 @@ class BacktestManager:
         # 1. DB에서 데이터 조회 시도
         db_df = self.db_manager.fetch_daily_price(stock_code, from_date, to_date)
         
-        # db_df.index는 datetime.date 객체로 구성된 Index임을 가정합니다.
-        db_existing_dates = set(db_df.index.to_list()) if not db_df.empty else set()
-        # set 으로 min, max 구할 수 있나?
+        # db_df.index는 pd.Timestamp 객체로 구성된 Index임을 가정합니다.
+        # .normalize()를 사용하여 시간 정보를 제거하고 순수 날짜로만 비교
+        db_existing_dates = set(db_df.index.normalize()) if not db_df.empty else set()
+        
         if db_existing_dates:
             logger.debug(f"DB에서 {stock_code}의 일봉 데이터 {len(db_df)}개 로드됨. ({min(db_existing_dates).strftime('%Y-%m-%d')} ~ {max(db_existing_dates).strftime('%Y-%m-%d')})")
         else:
             logger.debug(f"DB에서 {stock_code}의 기존 일봉 데이터가 없습니다.")
         
         # 2. market_calendar에서 필요한 모든 실제 거래일 조회
+        # get_all_trading_days는 pd.Timestamp 객체를 반환한다고 가정
         all_trading_dates = set(self.db_manager.get_all_trading_days(from_date, to_date))
 
         # 3. DB에 누락된 날짜 (market_calendar에는 있지만 DB daily_price에는 없는 날짜) 계산
         missing_dates = sorted(list(all_trading_dates - db_existing_dates))
-        missing_dates = [d for d in missing_dates if pd.Timestamp(from_date) <= pd.Timestamp(d) <= pd.Timestamp(to_date)]
+        # 요청 범위 내의 날짜만 필터링 (get_all_trading_days가 더 넓은 범위 줄 수도 있어서 안전 장치)
+        missing_dates = [d for d in missing_dates if pd.Timestamp(from_date).normalize() <= d.normalize() <= pd.Timestamp(to_date).normalize()]
         
         # 4. 누락된 데이터 API 호출 및 DB 저장 (연속된 구간 처리)
+        api_fetched_dfs = []
         if missing_dates:
             logger.debug(f"DB에 누락된 일봉 데이터 발견: {len(missing_dates)}개 날짜. API 호출 시작.")
-            api_fetched_dfs = []
-            current_start = missing_dates[0]
-            current_end = missing_dates[-1]
-            api_fetched_dfs.append(self._fetch_and_store_daily_range(stock_code, current_start, current_end, 'daily'))
             
-            if api_fetched_dfs:
-                # 모든 데이터가 DB에 저장되었으므로, 최종적으로 DB에서 조회하여 반환
-                final_df = self.db_manager.fetch_daily_price(stock_code, from_date, to_date)
-                logger.debug(f"{stock_code}의 최종 일봉 데이터 {len(final_df)}개 준비 완료.")
-                return final_df
-            else:
-                logger.warning(f"API로부터 {stock_code}에 대한 추가 일봉 데이터를 가져오지 못했습니다. DB 데이터만 반환합니다.")
-                return db_df
+            # 분봉 방식과 동일하게, 누락된 날짜들의 시작과 끝으로 구간을 묶어 API 호출
+            current_start = missing_dates[0].date() # datetime.date로 변환하여 전달
+            current_end = missing_dates[-1].date() # datetime.date로 변환하여 전달
+            
+            try:
+                # _fetch_and_store_daily_range가 data_type 'daily'를 처리하도록
+                api_df = self._fetch_and_store_daily_range(stock_code, current_start, current_end, 'daily')
+                if not api_df.empty:
+                    api_fetched_dfs.append(api_df)
+            except Exception as e:
+                logger.error(f"API로부터 일봉 데이터 가져오기 실패: {stock_code} - {str(e)}")
+
+        # 5. 최종 데이터 반환
+        if api_fetched_dfs:
+            # API에서 가져온 데이터와 DB 데이터를 합침
+            final_df = pd.concat([db_df] + api_fetched_dfs)
+            # 중복 제거 (혹시 모를 중복 데이터 처리)
+            # 일봉 데이터도 인덱스(날짜)가 중복될 수 있으므로 duplicated 처리
+            final_df = final_df[~final_df.index.duplicated(keep='first')]
+            logger.debug(f"{stock_code}의 최종 일봉 데이터 {len(final_df)}개 준비 완료.")
+            return final_df.sort_index()
         else:
-            logger.debug(f"{stock_code}의 모든 일봉 데이터가 DB에 존재합니다. API 호출 없이 DB 데이터만 반환합니다.")
-            return db_df
+            # API에서 추가 데이터를 가져오지 못했거나, 처음부터 모든 데이터가 DB에 있었던 경우
+            logger.debug(f"{stock_code}의 모든 일봉 데이터가 DB에 존재하거나 API에서 추가 데이터를 가져오지 못했습니다. DB 데이터만 반환합니다.")
+            return db_df.sort_index() # db_df가 비어있을 수도 있으니 sort_index() 호출 안전하게 유지
 
     def cache_minute_ohlcv(self, stock_code: str, from_date: date, to_date: date, interval: int = 1) -> pd.DataFrame:
         """

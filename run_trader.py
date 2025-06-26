@@ -24,7 +24,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from api.creon_api import CreonAPIClient
 from trade.trader import Trader
-from trade.brokerage import Brokerage
+# from trade.brokerage import Brokerage trader 가 생성시킴
 from trade.trader_report import TraderReport
 from manager.trader_manager import TraderManager
 from manager.backtest_manager import BacktestManager
@@ -66,8 +66,8 @@ if __name__ == '__main__':
     logging.info("적응형 전략 자동매매를 실행합니다.")
 
     # 자동매매 기간 설정 (최적화 기간과 동일)
-    trader_start_date     = datetime.datetime(2025, 5, 1, 9, 0, 0).date()
-    trader_end_date       = datetime.datetime(2025, 6, 20, 3, 30, 0).date()
+    trader_start_date     = datetime.datetime(2025, 1, 1, 9, 0, 0).date()
+    trader_end_date       = datetime.datetime(2025, 2, 1, 3, 30, 0).date()
 
     # 일봉 데이터 가져오기 시작일을 자동매매 시작일 한 달 전으로 자동 설정
     trader_fetch_start = (trader_start_date - datetime.timedelta(days=30)).replace(day=1)
@@ -171,24 +171,27 @@ if __name__ == '__main__':
 
     # 전략 설정 (삼중창 일봉 + RSI 분봉 전략 사용)
     # 전환 14.91
-    trader_instance.set_strategies(daily_strategy=triple_screen_daily_strategy, minute_strategy=rsi_minute_strategy)
-    # 전환 57.51
+    #trader_instance.set_strategies(daily_strategy=triple_screen_daily_strategy, minute_strategy=rsi_minute_strategy)
+    # 상승 20.5 -> 손절 9.37 하락 손절 3.35 미손절 7.29
     #trader_instance.set_strategies(daily_strategy=dual_daily_strategy, minute_strategy=rsi_minute_strategy)
+    # 상승 30.97            하락 손절 손절 13.81 미손절 8.74 
+    #trader_instance.set_strategies(daily_strategy=dual_daily_strategy, minute_strategy=open_minute_strategy)
     # 전환 84.41%
     #trader_instance.set_strategies(daily_strategy=temp_daily_strategy, minute_strategy=rsi_minute_strategy)
-    # 전환 -4.75 
-    #trader_instance.set_strategies(daily_strategy=sma_daily_strategy, minute_strategy=rsi_minute_strategy)
-    # 전환 83.11
-    #trader_instance.set_strategies(daily_strategy=dual_daily_strategy, minute_strategy=open_minute_strategy)
+    # 전환 2.59 -> 상승: 미손절 20.54, 손절 -> 5.29 하락 : 손절 0.25 
+    trader_instance.set_strategies(daily_strategy=sma_daily_strategy, minute_strategy=rsi_minute_strategy)
+    #
+    #trader_instance.set_strategies(daily_strategy=sma_daily_strategy, minute_strategy=open_minute_strategy)
     
     # Broker에 손절매 파라미터 설정 (기본 설정)
     stop_loss_params = {
-        'stop_loss_ratio': -2.5,         # 기본값: -5.0% (충분한 여유)
-        'trailing_stop_ratio': -2.5,     # 기본값: -3.0% (표준 트레일링)
-        'portfolio_stop_loss': -2.0,     # 기본값: -5.0% (포트폴리오 손절)
-        'early_stop_loss': -2.5,         # 기본값: -5.0% (조기 손절)
-        'max_losing_positions': 2,       # 기본값: 3개 (적당한 손실 허용)
+        'early_stop_loss': -3,         # 기본값: -5.0% (매수 후 3일이내)
+        'stop_loss_ratio': -5,         # 기본값: -5.0% (매수가 기준 손절율)
+        'trailing_stop_ratio': -3,     # 기본값: -3.0% (최고가 기준 손절률)
+        'portfolio_stop_loss': -5.0,  # 기본값: -5.0% (전량매도 : 자본금 손실률)
+        'max_losing_positions': 5,     # 기본값: 3개   (전량매도 : 손절 종목수)
     }
+    #stop_loss_params = None # 주석을 풀면 미작동
     trader_instance.set_broker_stop_loss_params(stop_loss_params)
     
     trader_manager = TraderManager()

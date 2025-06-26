@@ -125,23 +125,6 @@ class OpenMinute(MinuteStrategy):
         
         return rsi
 
-    def _should_check_portfolio(self, current_dt):
-        """포트폴리오 체크가 필요한 시점인지 확인합니다."""
-        if self.last_portfolio_check is None:
-            return True
-        
-        current_time = current_dt.time()
-        # 시간 비교를 정수로 변환하여 효율적으로 비교
-        current_minutes = current_time.hour * 60 + current_time.minute
-        check_minutes = [9 * 60]  # 9:00 (OpenMinute는 9:00에만 체크)
-        
-        if current_minutes in check_minutes and (self.last_portfolio_check.date() != current_dt.date() or 
-                                               (self.last_portfolio_check.hour * 60 + self.last_portfolio_check.minute) not in check_minutes):
-            self.last_portfolio_check = current_dt
-            return True
-            
-        return False
-
     def _create_minute_bar_from_daily(self, stock_code, current_date):
         """
         일봉 데이터로부터 9:00의 1분봉을 생성합니다.
@@ -224,7 +207,7 @@ class OpenMinute(MinuteStrategy):
         ):
             return
         signal_info = self.signals[stock_code]
-        momentum_signal = signal_info.get('signal')
+        order_signal = signal_info.get('signal')
         # 캐시 키
         cache_key = (stock_code, current_dt.date())
         if cache_key in self.virtual_range_cache:
@@ -237,7 +220,7 @@ class OpenMinute(MinuteStrategy):
             date_data = daily_df[daily_df.index.date == current_dt.date()]
             if date_data.empty:
                 return
-            current_price = date_data['open'].iloc[0]
+            today_open = date_data['open'].iloc[0]
             prev_data = daily_df[daily_df.index.date < current_dt.date()]
             if prev_data.empty:
                 return
@@ -269,10 +252,10 @@ class OpenMinute(MinuteStrategy):
             return
         
         # 시가==현재가
-        current_price = date_data['open'].iloc[0]
+        today_open = date_data['open'].iloc[0]
         today_high = date_data['high'].iloc[0]
         today_low = date_data['low'].iloc[0]
-        
+        today_close = date_data['close'].iloc[0]
         # 전일 종가 필요
         prev_data = daily_df[daily_df.index.date < current_dt.date()]
         if prev_data.empty:
@@ -280,24 +263,25 @@ class OpenMinute(MinuteStrategy):
         prev_close = prev_data['close'].iloc[-1]
         
         # 1. 손절매 (모든 보유 종목) - 하루에 1번만 실행
-        if current_position_size > 0:
+        if self.broker.stop_loss_params is not None and current_position_size > 0:
+
             stop_loss_ratio = self.broker.stop_loss_params.get('stop_loss_ratio', 0.05)
             trailing_stop_ratio = self.broker.stop_loss_params.get('trailing_stop_ratio', 0.02)
 
             position_info = self.broker.positions.get(stock_code, {})
             avg_price = position_info.get('avg_price', 0)
             fixed_stop_price = avg_price * (1 - stop_loss_ratio) if avg_price > 0 else 0
-            highest_price = position_info.get('highest_price', current_price)
+            highest_price = position_info.get('highest_price', today_close)
             trailing_stop_price = highest_price * (1 - trailing_stop_ratio)
 
-            if current_price <= trailing_stop_price:
-                logging.info(f'[트레일링 매도] {current_dt.isoformat()} - {stock_code} 현재가: {current_price:,.0f}원, 트레일링손절: {trailing_stop_price:,.0f}원, 수량: {current_position_size}주')
-                if self.broker.execute_order(stock_code, 'sell', current_price, current_position_size, current_dt):
+            if today_open <= trailing_stop_price:
+                logging.info(f'[트레일링 매도] {current_dt.isoformat()} - {stock_code} 시가: {today_open:,.0f}원, 트레일링 매도: {trailing_stop_price:,.0f}원, 수량: {current_position_size}주')
+                if self.broker.execute_order(stock_code, 'sell', today_open, current_position_size, current_dt):
                     self.reset_signal(stock_code)
-                
-            elif current_price <= fixed_stop_price and fixed_stop_price > 0:
-                logging.info(f'[손절매] {current_dt.isoformat()} - {stock_code} 현재가: {current_price:,.0f}원, 고정손절: {fixed_stop_price:,.0f}원, 수량: {current_position_size}주')
-                if self.broker.execute_order(stock_code, 'sell', current_price, current_position_size, current_dt):
+
+            elif today_close <= fixed_stop_price and fixed_stop_price > 0:
+                logging.info(f'[손절매] {current_dt.isoformat()} - {stock_code} 현재가: {today_close:,.0f}원, 손절: {fixed_stop_price:,.0f}원, 수량: {current_position_size}주')
+                if self.broker.execute_order(stock_code, 'sell', today_close, current_position_size, current_dt):
                     self.reset_signal(stock_code)
                 
         # 2. 신호가 있는 종목만 RSI/강제매매 - 하루에 1번만 실행
@@ -305,8 +289,8 @@ class OpenMinute(MinuteStrategy):
             return
         
         # signal_info = self.signals[stock_code]
-        momentum_signal = signal_info.get('signal')
-        if momentum_signal not in ['buy', 'sell']:
+        order_signal = signal_info.get('signal')
+        if order_signal not in ['buy', 'sell']:
             return
         
         # 추가 체크: 이미 거래했는지 다시 확인
@@ -315,21 +299,21 @@ class OpenMinute(MinuteStrategy):
             return
             
         # 3. RSI 매매 시뮬레이션 (가상 고가/저가 사용)
-        if momentum_signal == 'buy' and current_position_size == 0:
+        if order_signal == 'buy' and current_position_size == 0:
             if virtual_low <= target_price <= virtual_high:
                 target_quantity = signal_info.get('target_quantity', 0)
                 
                 if target_quantity > 0:
-                    logging.info(f'[RSI 매수] {current_dt.isoformat()} - {stock_code} 가상저가: {virtual_low:,.0f}원, 시가: {current_price:,.0f}원, 수량: {target_quantity}주')
+                    logging.info(f'[RSI 매수] {current_dt.isoformat()} - {stock_code} 가상저가: {virtual_low:,.0f}원, 시가: {today_open:,.0f}원, 수량: {target_quantity}주')
                     if self.broker.execute_order(stock_code, 'buy', virtual_low, target_quantity, current_dt):
                         self.reset_signal(stock_code)
             else:
                 logging.info(f'[매수 취소] {current_dt.isoformat()} - {stock_code} 목표가: {target_price} {virtual_low:,.0f}~{virtual_high:,.0f}원 범위 이탈 (사유: 현금 부족/범위 이탈 등)')
 
-        if momentum_signal == 'sell' and current_position_size > 0:
+        if order_signal == 'sell' and current_position_size > 0:
             if virtual_low <= target_price <= virtual_high:
                 #target_quantity = signal_info.get('target_quantity', 0)
-                logging.info(f'[RSI 매도] {current_dt.isoformat()} - {stock_code} 가상고가: {virtual_high:,.0f}원, 시가: {current_price:,.0f}원, 수량: {current_position_size}주')
+                logging.info(f'[RSI 매도] {current_dt.isoformat()} - {stock_code} 가상고가: {virtual_high:,.0f}원, 시가: {today_open:,.0f}원, 수량: {current_position_size}주')
                 if self.broker.execute_order(stock_code, 'sell', virtual_high, current_position_size, current_dt):
                     self.reset_signal(stock_code)
             else:

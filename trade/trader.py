@@ -48,7 +48,7 @@ class Trader:
         # NEW: 현재 날짜의 분봉 매매를 위해 사용될 신호들을 저장
         self.signals_for_minute_trading = {}
         # NEW: 포트폴리오 손절 체크 시간을 추적하기 위한 변수
-        self.last_portfolio_check_time = None
+        self.last_portfolio_check = None
         # 포트폴리오 손절 발생 시 당일 매매 중단 플래그
         self.portfolio_stop_flag = False
 
@@ -82,6 +82,26 @@ class Trader:
         else:
             logging.warning(f"빈 데이터프레임이므로 {stock_code}의 분봉 데이터를 추가하지 않습니다.")
 
+
+    # 필수 : 포트폴리오 손절시각 체크, 없으면 매분마다 보유종목 손절 체크로 비효율적
+    def _should_check_portfolio(self, current_dt):
+        """포트폴리오 체크가 필요한 시점인지 확인합니다."""
+        if self.last_portfolio_check is None:
+            return True
+        
+        current_time = current_dt.time()
+        # 시간 비교를 정수로 변환하여 효율적으로 비교
+        current_minutes = current_time.hour * 60 + current_time.minute
+        #check_minutes = [9 * 60, 15 * 60 + 20]  # 9:00, 15:20
+        check_minutes = [15 * 60 + 20]  # 9:00, 15:20
+        
+        if current_minutes in check_minutes and (self.last_portfolio_check.date() != current_dt.date() or 
+                                               (self.last_portfolio_check.hour * 60 + self.last_portfolio_check.minute) not in check_minutes):
+            self.last_portfolio_check = current_dt
+            return True
+            
+        return False
+    
     def run(self, start_date: datetime.date, end_date: datetime.date):
         logging.info(f"백테스트 시작: {start_date} 부터 {end_date} 까지")
         current_date = start_date
@@ -113,7 +133,7 @@ class Trader:
                 # 신호 저장소도 초기화
                 self.current_day_signals = {}
                 self.signals_for_minute_trading = {}
-                self.last_portfolio_check_time = None
+                self.last_portfolio_check = None
                 self.portfolio_stop_flag = False
                 # 영럽일이 아니면 다음날로 이동하고 루프 다시 시작 == 여기서 실행 끝
                 current_date += datetime.timedelta(days=1)
@@ -168,15 +188,16 @@ class Trader:
                     # 신호 저장소도 초기화
                     self.current_day_signals = {}
                     self.signals_for_minute_trading = {}
-                    self.last_portfolio_check_time = None
+                    self.last_portfolio_check = None
                     self.portfolio_stop_flag = False
                     # 영럽일이 아니면 다음날로 이동하고 루프 다시 시작 == 여기서 실행 끝
                     current_date += datetime.timedelta(days=1)
                     continue 
 
             # 3. 오늘 분봉 매매 로직을 실행합니다.
+            # 분봉전략명이 OpenMinute 인지 확인 해서 아래에서 다르게 처리한다. 
             if self.minute_strategy:
-                # 분봉전략명이 OpenMinute 인지 확인 해서 아래에서 다르게 처리한다. 
+                
                 # OpenMinute는 최적화 전용 분봉전략으로, 처리속도를 빠르게 하기위해 분봉데이터를 사용하지 않고, 분봉 가상화 처리
                 is_open_minute_strategy = hasattr(self.minute_strategy, 'strategy_name') and self.minute_strategy.strategy_name == "OpenMinute"
                 
@@ -194,11 +215,10 @@ class Trader:
                 # 매수/매도 처리, 손절처리가 없다면, 분봉에서 매매 할 필요가 없으므로
                 if not (has_trading_signals or has_stop_loss):
                     logging.debug(f"[{current_date.isoformat()}] 매수/매도 신호가 없고 손절매가 비활성화되어 있어 분봉 로직을 건너킵니다.")
-                
-                ##########################
-                # 분봉매매 실행
+
                 else:
                     logging.info(f"-------- {current_date.isoformat()} 매매 시작 --------")
+                    
                     # 최적화에서 사용하는 분봉 가상화 전략
                     if is_open_minute_strategy:
                         # OpenMinute 전략: 분봉 데이터 로딩 없이 9:01에만 매매 실행
@@ -223,13 +243,12 @@ class Trader:
                             if signal_info.get('signal') in ['buy', 'sell']:
                                 stocks_to_trade.add(stock_code)
                         
-                        # OpenMinute 전략은 특정 시간(9:01)에만 매매를 실행하므로,
-                        # stocks_to_trade에 포함된 종목들에 대해 한 번씩만 호출
+                        # OpenMinute 전략은 하루 한번 매매로 분봉매매를 시뮬레이션 한다.
+                        # 그러므로 손절은 종가로만 처리한다. 이렇게 하지 않으면 과최적화 된다.
+                        # 시가 손절도 있지만, 주가의 우상향 성질을 이용해서 종가가 시가 보다 나을 듯 하다.
+                        # 포트폴리오 손절은 없음
                         for stock_code in stocks_to_trade:
-                            # 포트폴리오 손절은 run_minute_logic 에 직접 만들어야 한다. 현재 기능 없음 (종목손절, 트레일링 매도 있음)
-                            # if self.portfolio_stop_flag:
-                            #     logging.debug(f"[{current_date.isoformat()}] 포트폴리오 손절 발생으로 당일 매매 중단.")
-                            #     break
+
                             ###################################
                             # 분봉 전략 매매 실행
                             self.minute_strategy.run_minute_logic(trade_time, stock_code)
@@ -239,34 +258,20 @@ class Trader:
                     else:
                         # 3-1. 먼저 당일 실행할 신호(매수/매도/보유)가 있는 종목들의 분봉 데이터를 모두 로드
                         stocks_to_load = set()  # 분봉 데이터가 필요한 종목들
-                        
+
                         # 매수/매도 신호가 있는 종목들 추가
                         for stock_code, signal_info in self.signals_for_minute_trading.items():
                             if signal_info['signal'] in ['buy', 'sell']:
                                 stocks_to_load.add(stock_code)
                         
-                        # 손절매 처리를 해야 한다면 보유 중인 종목들 추가
-                        if has_stop_loss:
-                            current_positions = set(self.broker.positions.keys()) #### 보유종목 구하기
-                            stocks_to_load.update(current_positions)
-                        
-                        # 분봉 데이터가 필요한 종목들이 결정 되었으므로, 이 종목에 대한 분봉 데이터 로드
-                        logging.info(f"[{current_date.isoformat()}] 분봉 데이터 로드 시작: {len(stocks_to_load)}개 종목")
+                        current_positions = set(self.broker.positions.keys()) #### 보유종목 구하기
+                        stocks_to_load.update(current_positions)                        
 
                         # 필요한 종목들의 분봉 데이터를 로드
                         for stock_code in stocks_to_load:
-                            # # 수정: 전일 영업일부터 당일까지의 분봉 데이터 로드
-                            # # 전일 영업일 계산
-                            # prev_trading_day = None
-                            # for code in self.data_store['daily']:
-                            #     df = self.data_store['daily'][code]
-                            #     if not df.empty and current_date in df.index.date:
-                            #         idx = list(df.index.date).index(current_date)
-                            #         if idx > 0:
-                            #             prev_trading_day = df.index.date[idx-1]
-                            #             break
                             signal_info = self.current_day_signals.get(stock_code)
                             prev_trading_day = signal_info.get('signal_date', current_date) if signal_info else current_date
+
                             if prev_trading_day:
                                 # TraderManager를 사용하여 분봉 데이터 로드 (전일~당일)
                                 minute_df = self.trader_manager.cache_minute_ohlcv(
@@ -284,6 +289,7 @@ class Trader:
                                         if not date_data.empty:
                                             self.data_store['minute'][stock_code][date] = date_data
                                             logging.debug(f"{stock_code} 종목의 {date} 분봉 데이터 로드 완료. 데이터 수: {len(date_data)}행")
+                        # for 분봉로드 끝
 
                         # 3-2. 모든 시그널을 분봉 전략에 한 번에 업데이트
                         # 로그출력을 위한 처리
@@ -296,71 +302,79 @@ class Trader:
                         self.minute_strategy.update_signals(self.signals_for_minute_trading)
                         logging.debug(f"[{current_date.isoformat()}] 분봉 전략에 {len(self.signals_for_minute_trading)}개의 시그널 업데이트 완료.")
                         
+                        # 3-3. 분봉 매매 대상은 신호(매수/매도) 손절 파라미터 설정시 보유 종목
+                        stocks_to_trade = set() # 매매대상
                         
-                        # 3-3. 분봉 매매 로직 실행
-                        # 실제로 매매가 필요한 종목들만 선별
-                        stocks_to_trade = set()
                         # 매수/매도 신호가 있는 종목들 추가
                         for stock_code, signal_info in self.signals_for_minute_trading.items():
                             if signal_info['signal'] in ['buy', 'sell']:
                                 stocks_to_trade.add(stock_code)
-                        # 현재 보유 중인 종목들 추가 (손절매 체크용)
+                        # 손절매 기능이 있다면, 보유 중인 종목들 추가 (손절매 체크용)
                         if has_stop_loss:
                             current_positions = set(self.broker.positions.keys())
                             stocks_to_trade.update(current_positions)
 
                         ###################################
-                        # 분봉 전략 매매 실행
+                        # 분봉 전략 매매 오늘 장이 끝날때 까지 매분 반복 실행
                         ###################################
                         # 장 시작 시간부터 장 마감 시간까지 1분 단위로 반복하며 분봉 전략 실행
                         start_time = time(9, 0) # 9시 정각
                         end_time = time(15, 30) # 3시 30분 (장 마감)
-                        trade_time = datetime.datetime.combine(current_date, start_time)
-                        # 오늘 장이 끝날때 까지 매분 반복 실행
+                        trade_time = datetime.datetime.combine(current_date, start_time) # 날짜+분
+
                         while trade_time <= datetime.datetime.combine(current_date, end_time):
-                            # # 시초
-                            # if trade_time.time() == time(9, 0):
-                            #     trade_time += datetime.timedelta(minutes=1)
-                            #     continue
                             
-                            # 포트폴리오 손절 시 당일 매매 중단 : 특정시간에 체크하여 설정 (처리 속도 때문)
-                            if self.portfolio_stop_flag:
-                                logging.debug(f"[{current_date.isoformat()} {trade_time.strftime('%H:%M')}] 포트폴리오 손절 발생으로 당일 매매 중단.")
-                                break
+                            ##############################
+                            # 분봉 전략 실행 및 매매 처리
+                            ##############################                                            
                             for stock_code in stocks_to_trade:
-                                # 해당 시간의 분봉 데이터가 없으면 건너뛰기
+                                # 종목에 해당 시간의 분봉 데이터가 없으면, 이 종목 스킵
                                 if stock_code not in self.data_store['minute'] or \
                                    current_date not in self.data_store['minute'][stock_code] or \
                                    trade_time not in self.data_store['minute'][stock_code][current_date].index:
                                     logging.debug(f"[{trade_time.isoformat()}] {stock_code}: 해당 시간의 분봉 데이터 없음. 스킵.")
                                     continue
-                                ##############################
-                                # 분봉 전략 실행 및 매매 처리
-                                ##############################
+                                
+                                # 분봉전략 실행
                                 self.minute_strategy.run_minute_logic(trade_time, stock_code)
+ 
+                            # ########################
+                            # 포토폴리오 손절
+                            # ------------------------
+                            # 포트폴리오 손절을 위한 9:00, 15:20 시간 체크, 분봉마다하는 것이 정확하겠지만 속도상 
+                            if self.broker.stop_loss_params is not None and self._should_check_portfolio(trade_time):
+                                
+                                current_prices = {}
+                                for code in list(self.broker.positions.keys()):
+                                    # 캐시된 가격 사용
+                                    if code in self.minute_strategy.last_prices:
+                                        current_prices[code] = self.minute_strategy.last_prices[code]
+                                    else:
+                                        price_data = self._get_bar_at_time('minute', code, trade_time)
+                                        if price_data is not None:
+                                            current_prices[code] = price_data['close']
+                                            self.minute_strategy.last_prices[code] = price_data['close']
                             
-                            # 포트폴리오 손절매 체크 (하루 2번, 지정 시간에만)
-                            if has_stop_loss:
-                                current_minutes = trade_time.hour * 60 + trade_time.minute
-                                check_times = [9 * 60, 15 * 60 + 20] # 지정 시간: 9:00, 15:20
-            ########################### 포트폴리오 손절매 로직 재구성 필요 ##########################                     
-                                # # 손절매 지정 시간이면 실행
-                                # if current_minutes in check_times and (self.last_portfolio_check_time is None or self.last_portfolio_check_time.time() != trade_time.time()):
-                                #     self.last_portfolio_check_time = trade_time
-                                    
-                                #     current_prices = {
-                                #         s_code: self.data_store['minute'][s_code][current_date]['close'].get(trade_time, np.nan)
-                                #         for s_code in self.broker.positions if s_code in self.data_store['minute'] and current_date in self.data_store['minute'][s_code]
-                                #     }
-                                #     # 현재 가격이 없는 종목은 제외
-                                #     current_prices = {k: v for k, v in current_prices.items() if not np.isnan(v)}
+                                    # 현재 가격이 없는 종목은 제외
+                                    current_prices = {k: v for k, v in current_prices.items() if not np.isnan(v)}                                
+                               
+                                # 포트폴리오 손절은 Broker에 위임처리
+                                if self.broker.check_and_execute_portfolio_stop_loss(current_prices, trade_time):
+                                    # 매도처리
+                                    for code in list(self.minute_strategy.signals.keys()):
+                                        # 매도된 것 신호 정리
+                                        if code in self.broker.positions and self.broker.positions[code]['size'] == 0: # 매도 후 == 수량 0
+                                            self.minute_strategy.reset_signal(stock_code)
 
-                                #     if self.broker.check_and_execute_portfolio_stop_loss(current_prices, trade_time):
-                                #         logging.info(f"[{trade_time.isoformat()}] 포트폴리오 손절매 실행 완료. 오늘의 매매 종료.")
-                                #         self.portfolio_stop_flag = True  # 플래그 설정
-                                #         break # 분봉 루프를 종료하고 일일 포트폴리오 처리 후 다음 "영업일"로 넘어감
-
+                                    logging.info(f"[{trade_time.isoformat()}] 포트폴리오 손절매 실행 완료. 오늘의 매매 종료.")
+                                    #self.portfolio_stop_flag = True 불필요 break
+                                    break # 분봉 루프를 종료, 일일 포트폴리오 처리 후 다음 "영업일"로 넘어감
+                            # 포트폴리오 손절 ------------------------
+                            
+                            # 다음 분으로 이동
                             trade_time += datetime.timedelta(minutes=1)
+                        # while -------------------------------------
+
                 # end if 분봉매매
 
             # end if 분봉 전략 유무
@@ -408,7 +422,7 @@ class Trader:
             # 2. 백테스터의 신호 저장소 초기화 (다음날을 위해)
             self.current_day_signals = {}  # 다음날 일봉 전략이 새로운 신호를 생성할 수 있도록 초기화
             self.signals_for_minute_trading = {}  # 분봉 매매용 신호도 초기화
-            self.last_portfolio_check_time = None # 다음 날을 위해 손절 체크 시간 초기화
+            self.last_portfolio_check = None # 다음 날을 위해 손절 체크 시간 초기화
             
             logging.debug(f"[{current_date.isoformat()}] 일일 신호 초기화 완료 - 다음날을 위해 모든 신호 저장소 비움")
 
