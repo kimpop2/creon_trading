@@ -12,11 +12,11 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, project_root)
 
 from manager.db_manager import DBManager
-from manager.backtest_manager import BacktestManager
+from manager.trader_manager import TraderManager
 
 logger = logging.getLogger(__name__)
 
-class BacktestModel(QAbstractTableModel):
+class TraderModel(QAbstractTableModel):
     """
     백테스팅 관련 데이터 로직을 처리하는 통합 모델 클래스입니다.
     UI 표시와 비즈니스 로직을 모두 담당합니다.
@@ -32,12 +32,12 @@ class BacktestModel(QAbstractTableModel):
             self.set_data(data, headers, display_headers)
         
         # 비즈니스 로직 관련 속성
-        #self.backtest_manager = backtest_manager
-        self.backtest_manager = BacktestManager()
+        #self.trader_manager = trader_manager
+        self.trader_manager = TraderManager()
         self.db_manager = DBManager()
         
         # 전체 백테스트 런 정보
-        self.all_backtest_runs = pd.DataFrame()
+        self.all_trader_runs = pd.DataFrame()
         self.run_strategy_params = {}
 
         # 현재 선택된 정보
@@ -182,26 +182,26 @@ class BacktestModel(QAbstractTableModel):
     # ==================== 비즈니스 로직 메서드들 ====================
 
     def _load_stock_info_map(self):
-        """BacktestManager를 통해 종목코드-종목명 맵을 로드합니다."""
+        """TraderManager를 통해 종목코드-종목명 맵을 로드합니다."""
         logger.info("종목 정보 맵(딕셔너리)을 초기화합니다.")
-        return self.backtest_manager.get_stock_info_map()
+        return self.trader_manager.get_stock_info_map()
 
-    def load_all_backtest_runs(self, progress_callback=None):
+    def load_all_trader_runs(self, progress_callback=None):
         """모든 백테스트 실행 정보를 로드하고 캐싱합니다."""
         if progress_callback:
             progress_callback(25, "백테스트 실행 정보를 데이터베이스에서 조회하는 중입니다...")
         
-        self.all_backtest_runs = self.backtest_manager.get_backtest_runs()
+        self.all_trader_runs = self.trader_manager.get_trader_runs()
         
         if progress_callback:
             progress_callback(70, "백테스트 실행 목록을 로딩하는 중입니다...")
         
-        return self.all_backtest_runs
+        return self.all_trader_runs
 
     def _get_strategy_params(self, run_id: int):
         """특정 run_id의 전략 파라미터를 지연 로딩으로 가져옵니다."""
         if run_id not in self.run_strategy_params:
-            run_info = self.all_backtest_runs[self.all_backtest_runs['run_id'] == run_id]
+            run_info = self.all_trader_runs[self.all_trader_runs['run_id'] == run_id]
             if not run_info.empty:
                 row = run_info.iloc[0]
                 
@@ -230,7 +230,7 @@ class BacktestModel(QAbstractTableModel):
             self.current_stock_code = None
             self.current_trade_date = None
             # run_id가 변경되면 거래내역을 새로 로드
-            self.current_trades = self.backtest_manager.get_backtest_trades(run_id)
+            self.current_trades = self.trader_manager.get_trader_trades(run_id)
 
     def set_selected_stock_code(self, stock_code: str):
         """선택된 종목 코드를 설정합니다."""
@@ -243,16 +243,16 @@ class BacktestModel(QAbstractTableModel):
 
     def load_performance_data(self, run_id: int) -> pd.DataFrame:
         """선택된 run_id에 대한 일별 성능 데이터를 로드합니다."""
-        return self.backtest_manager.get_backtest_performance(run_id)
+        return self.trader_manager.get_trader_performance(run_id)
         
     def load_traded_stocks_summary(self, run_id: int) -> pd.DataFrame:
         """
         특정 백테스트 실행(run_id)에 대해 거래된 모든 종목의 요약 정보를 반환합니다.
         종목명을 포함하여 반환합니다.
         """
-        # backtest_manager를 통해 요약 정보를 가져옵니다.
+        # trader_manager를 통해 요약 정보를 가져옵니다.
         # 이 함수는 내부에 'return_per_trade' 계산 로직을 포함하고 있습니다.
-        summary_df = self.backtest_manager.get_traded_stocks_summary(run_id)
+        summary_df = self.trader_manager.get_traded_stocks_summary(run_id)
         
         # 종목명을 매핑
         if not summary_df.empty and self.stock_dic:
@@ -267,7 +267,7 @@ class BacktestModel(QAbstractTableModel):
         if not self.current_run_id:
             return pd.DataFrame(), pd.DataFrame(), {}
         
-        run_info = self.all_backtest_runs[self.all_backtest_runs['run_id'] == self.current_run_id]
+        run_info = self.all_trader_runs[self.all_trader_runs['run_id'] == self.current_run_id]
         if run_info.empty:
             return pd.DataFrame(), pd.DataFrame(), {}
             
@@ -275,7 +275,7 @@ class BacktestModel(QAbstractTableModel):
         end_date = run_info['end_date'].iloc[0]
         daily_params = self._get_strategy_params(self.current_run_id)['daily']
         
-        daily_ohlcv = self.backtest_manager.get_daily_ohlcv_with_indicators(
+        daily_ohlcv = self.trader_manager.get_daily_ohlcv_with_indicators(
             stock_code, start_date, end_date, daily_params
         )
         
@@ -290,7 +290,7 @@ class BacktestModel(QAbstractTableModel):
 
         minute_params = self._get_strategy_params(self.current_run_id)['minute']
         
-        minute_ohlcv = self.backtest_manager.get_minute_ohlcv_with_indicators(
+        minute_ohlcv = self.trader_manager.get_minute_ohlcv_with_indicators(
             stock_code, trade_date, minute_params
         )
         
@@ -301,17 +301,17 @@ class BacktestModel(QAbstractTableModel):
         
         return minute_ohlcv, trades_for_stock_and_date, minute_params
 
-    def search_backtest_runs(self, search_text: str) -> pd.DataFrame:
+    def search_trader_runs(self, search_text: str) -> pd.DataFrame:
         """전략 이름으로 백테스트 실행 목록을 검색합니다."""
         if not search_text:
-            return self.all_backtest_runs
+            return self.all_trader_runs
 
         search_text = search_text.lower()
         
         # 'strategy_daily' 또는 'strategy_minute' 컬럼에서 검색
         # pd.Series.str.contains()는 NaN 값을 처리하기 위해 na=False 옵션을 사용
-        filtered_df = self.all_backtest_runs[
-            self.all_backtest_runs['strategy_daily'].str.lower().str.contains(search_text, na=False) |
-            self.all_backtest_runs['strategy_minute'].str.lower().str.contains(search_text, na=False)
+        filtered_df = self.all_trader_runs[
+            self.all_trader_runs['strategy_daily'].str.lower().str.contains(search_text, na=False) |
+            self.all_trader_runs['strategy_minute'].str.lower().str.contains(search_text, na=False)
         ]
         return filtered_df 
