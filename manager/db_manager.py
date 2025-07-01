@@ -409,7 +409,7 @@ class DBManager:
 
         # is_holiday가 FALSE인 날짜만 선택하고, date 컬럼만 가져옴
         sql = """
-        SELECT date 
+        SELECT DISTINCT date 
         FROM market_calendar
         WHERE date BETWEEN %s AND %s
         ORDER BY date ASC

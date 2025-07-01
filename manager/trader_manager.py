@@ -150,7 +150,7 @@ class TraderManager:
         else:
             # API에서 추가 데이터를 가져오지 못했거나, 처음부터 모든 데이터가 DB에 있었던 경우
             logger.debug(f"{stock_code}의 모든 일봉 데이터가 DB에 존재하거나 API에서 추가 데이터를 가져오지 못했습니다. DB 데이터만 반환합니다.")
-            return db_df.sort_index() # db_df가 비어있을 수도 있으니 sort_index() 호출 안전하게 유지
+            return db_df # db_df가 비어있을 수도 있으니 sort_index() 호출 안전하게 유지
 
 
     def cache_minute_ohlcv(self, stock_code: str, from_date: date, to_date: date, interval: int = 1) -> pd.DataFrame:
@@ -635,7 +635,7 @@ class TraderManager:
         # 매매 전날부터 매매 당일까지의 데이터 조회
         # prev_trading_day를 정확히 찾기 위해 market_calendar 사용
         trading_days = self.db_manager.get_all_trading_days(trade_date - timedelta(days=7), trade_date) # 넉넉하게 일주일 전부터
-        trading_days = sorted([d for d in trading_days if d <= pd.Timestamp(trade_date).normalize()], reverse=True)
+        trading_days = sorted([d for d in trading_days if d <= pd.Timestamp(trade_date).normalize()])
         
         from_date = None
         if len(trading_days) >= 2:

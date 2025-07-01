@@ -41,7 +41,7 @@ class TraderView(QWidget):
         self.init_ui()
 
     def init_ui(self):
-        self.setWindowTitle("백테스팅 결과 시각화 프로그램")
+        self.setWindowTitle("자동매매 결과 시각화 프로그램")
         self.setGeometry(100, 100, 1600, 1200) # 1600x1200 크기로 초기 창 크기 설정
 
         # Main Layout (Horizontal Splitter)
@@ -53,7 +53,7 @@ class TraderView(QWidget):
         left_layout = QVBoxLayout(left_panel)
 
         # Left Top: Trader Run List
-        self.run_list_label = QLabel("백테스트 실행 목록")
+        self.run_list_label = QLabel("자동매매 실행 목록")
         self.run_search_input = QLineEdit()
         self.run_search_input.setPlaceholderText("전략 이름으로 검색...")
         self.run_search_button = QPushButton("검색")
@@ -75,7 +75,7 @@ class TraderView(QWidget):
         run_palette.setColor(QPalette.Inactive, QPalette.HighlightedText, run_palette.color(QPalette.Active, QPalette.HighlightedText))
         self.run_table_view.setPalette(run_palette)
 
-        # 누적 수익률 차트를 백테스트 실행 목록 영역으로 이동
+        # 누적 수익률 차트를 자동매매 실행 목록 영역으로 이동
         self.performance_figure = Figure()
         self.performance_canvas = FigureCanvas(self.performance_figure)
         self.performance_canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -90,7 +90,7 @@ class TraderView(QWidget):
         left_bottom_panel = QWidget()
         left_bottom_layout = QVBoxLayout(left_bottom_panel)
 
-        self.performance_label = QLabel("선택된 백테스트 일별 성능 (Run ID: N/A)")
+        self.performance_label = QLabel("선택된 자동매매 일별 성능 (Run ID: N/A)")
         
         self.performance_table_view = QTableView()
         self.performance_table_view.setModel(self.performance_model) # 영구 모델 설정
@@ -195,7 +195,7 @@ class TraderView(QWidget):
         self.show() # 지정된 크기로 실행
 
     def update_run_list(self, df: pd.DataFrame):
-        """백테스트 실행 목록 테이블을 업데이트합니다."""
+        """자동매매 실행 목록 테이블을 업데이트합니다."""
         # 2줄 헤더 설정
         headers = [
             ('start_date', 'end_date'),
@@ -216,7 +216,7 @@ class TraderView(QWidget):
 
     def update_performance_list(self, df: pd.DataFrame, run_id: int):
         """일별 성능 목록 테이블을 업데이트하고 그래프를 그립니다."""
-        self.performance_label.setText(f"선택된 백테스트 일별 성능 (Run ID: {run_id})")
+        self.performance_label.setText(f"선택된 자동매매 일별 성능 (Run ID: {run_id})")
         
         headers = [
             "performance_id", "run_id", "date", "end_capital", "daily_return", "daily_profit_loss", 

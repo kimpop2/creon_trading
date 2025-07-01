@@ -25,10 +25,10 @@ def setup_logging():
     logging.getLogger('matplotlib').setLevel(logging.WARNING)
     logging.getLogger('numexpr').setLevel(logging.WARNING)
 
-def show_loading_dialog(app, message="백테스트 시각화 프로그램을 초기화하는 중입니다..."):
+def show_loading_dialog(app, message="자동매매 시각화 프로그램을 초기화하는 중입니다..."):
     """로딩 다이얼로그를 표시합니다."""
     progress = QProgressDialog(message, None, 0, 100, None)
-    progress.setWindowTitle("백테스트 시각화 프로그램 초기화")
+    progress.setWindowTitle("자동매매 시각화 프로그램 초기화")
     progress.setWindowModality(Qt.WindowModal)
     progress.setCancelButton(None)  # 취소 버튼 제거
     progress.setMinimumDuration(0)  # 즉시 표시
@@ -80,7 +80,7 @@ def main():
         model = TraderModel()
         
         # --- 실행목록 로딩 (전체 70%까지 진행) ---
-        progress.setLabelText("백테스트 실행목록을 로딩하는 중입니다...")
+        progress.setLabelText("자동매매 실행목록을 로딩하는 중입니다...")
         progress.setValue(20)
         app.processEvents()
         

@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 class TraderModel(QAbstractTableModel):
     """
-    백테스팅 관련 데이터 로직을 처리하는 통합 모델 클래스입니다.
+    자동매매 관련 데이터 로직을 처리하는 통합 모델 클래스입니다.
     UI 표시와 비즈니스 로직을 모두 담당합니다.
     """
     def __init__(self, data=None, headers=None, display_headers=None):
@@ -36,7 +36,7 @@ class TraderModel(QAbstractTableModel):
         self.trader_manager = TraderManager()
         self.db_manager = DBManager()
         
-        # 전체 백테스트 런 정보
+        # 전체 자동매매 런 정보
         self.all_trader_runs = pd.DataFrame()
         self.run_strategy_params = {}
 
@@ -187,14 +187,14 @@ class TraderModel(QAbstractTableModel):
         return self.trader_manager.get_stock_info_map()
 
     def load_all_trader_runs(self, progress_callback=None):
-        """모든 백테스트 실행 정보를 로드하고 캐싱합니다."""
+        """모든 자동매매 실행 정보를 로드하고 캐싱합니다."""
         if progress_callback:
-            progress_callback(25, "백테스트 실행 정보를 데이터베이스에서 조회하는 중입니다...")
+            progress_callback(25, "자동매매 실행 정보를 데이터베이스에서 조회하는 중입니다...")
         
         self.all_trader_runs = self.trader_manager.get_trader_runs()
         
         if progress_callback:
-            progress_callback(70, "백테스트 실행 목록을 로딩하는 중입니다...")
+            progress_callback(70, "자동매매 실행 목록을 로딩하는 중입니다...")
         
         return self.all_trader_runs
 
@@ -224,7 +224,7 @@ class TraderModel(QAbstractTableModel):
         return self.run_strategy_params.get(run_id, {'daily': {}, 'minute': {}})
 
     def set_selected_run_id(self, run_id: int):
-        """선택된 백테스트 run_id를 설정하고 관련 거래 데이터를 미리 로드합니다."""
+        """선택된 자동매매 run_id를 설정하고 관련 거래 데이터를 미리 로드합니다."""
         if self.current_run_id != run_id:
             self.current_run_id = run_id
             self.current_stock_code = None
@@ -247,7 +247,7 @@ class TraderModel(QAbstractTableModel):
         
     def load_traded_stocks_summary(self, run_id: int) -> pd.DataFrame:
         """
-        특정 백테스트 실행(run_id)에 대해 거래된 모든 종목의 요약 정보를 반환합니다.
+        특정 자동매매 실행(run_id)에 대해 거래된 모든 종목의 요약 정보를 반환합니다.
         종목명을 포함하여 반환합니다.
         """
         # trader_manager를 통해 요약 정보를 가져옵니다.
@@ -302,7 +302,7 @@ class TraderModel(QAbstractTableModel):
         return minute_ohlcv, trades_for_stock_and_date, minute_params
 
     def search_trader_runs(self, search_text: str) -> pd.DataFrame:
-        """전략 이름으로 백테스트 실행 목록을 검색합니다."""
+        """전략 이름으로 자동매매 실행 목록을 검색합니다."""
         if not search_text:
             return self.all_trader_runs
 

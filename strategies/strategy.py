@@ -3,6 +3,7 @@ import pandas as pd
 import datetime
 import logging
 from util.strategies_util import *
+
 # --- 로거 설정 (스크립트 최상단에서 설정하여 항상 보이도록 함) ---
 logger = logging.getLogger(__name__)
 # logger.setLevel(logging.DEBUG) # 테스트 시 DEBUG로 설정하여 모든 로그 출력 - 제거
@@ -22,7 +23,7 @@ class BaseStrategy(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def run_minute_logic(self, stock_code, current_minute_dt):
+    def run_minute_logic(self, current_minute_dt, stock_code):
         """분봉 데이터를 기반으로 전략 로직을 실행하는 추상 메서드.
         (분봉 전략에서 주로 사용하며, 일봉 전략에서는 pass로 구현될 수 있습니다.)
         """
@@ -94,7 +95,7 @@ class DailyStrategy(BaseStrategy):
         """
         pass
     
-    def run_minute_logic(self, stock_code, current_minute_dt):
+    def run_minute_logic(self, current_minute_dt, stock_code):
         """일봉 전략은 분봉 로직을 직접 수행하지 않으므로 이 메서드는 비워둡니다."""
         pass 
 
