@@ -8,15 +8,17 @@ import time
 from datetime import datetime, date, timedelta
 import json
 import logging
+from typing import Optional, List, Dict, Any
 from collections import defaultdict
 
 # 프로젝트 루트 경로를 sys.path에 추가 (manager 디렉토리에서 실행 가능하도록)
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
+
 from config.settings import DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
 from manager.backtest_manager import BacktestManager
-
+from manager.db_manager import DBManager
 # 로거 설정
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -28,27 +30,35 @@ class SetupManager:
     """
     
     # --- 상수 정의 (필요에 따라 클래스 속성 또는 __init__ 인자로 관리) ---
-    LOOKBACK_DAYS_OHLCV = 100 # to_date를 기준 주식의 OHLCV(시가, 고가, 저가, 종가, 거래량) 데이터를 조회
-
+    # `LOOKBACK_DAYS_OHLCV`는 _calculate_stock_scores 내부에서
+    # to_date를 기준으로 과거 데이터를 가져올 때 사용됩니다.
+    LOOKBACK_DAYS_OHLCV = 100 
+    # LOOKBACK_DAYS_OHLCV의 기본값 또는 최소 필요 기간을 위한 상수
+    LOOKBACK_DAYS_OHLCV_MIN_BUFFER = 20 ############ 계산된 값에 더할 여유분
     # 각 점수 요소의 가중치 (총합 100)
-    WEIGHT_PRICE_TREND = 40     # 주가 추세 점수(가격 이동평균선 정배열 여부, 누적 수익률)의 가중치
-    WEIGHT_TRADING_VOLUME = 30  # 거래대금 점수(최근 거래대금 증가율 및 절대적인 규모)의 가중치
-    WEIGHT_VOLATILITY = 10      # 변동성 점수(ATR 기반 변동성 및 일중 변동폭)의 가중치
-    WEIGHT_THEME_MENTION = 20   # 테마 언급 빈도 점수(최근 한 달 내 언급 횟수)의 가중치
-
+    WEIGHT_PRICE_TREND = 40
+    WEIGHT_TRADING_VOLUME = 30
+    WEIGHT_VOLATILITY = 10
+    WEIGHT_THEME_MENTION = 20
+    # 이동평균선 기간 (기본값)
+    MA_WINDOW_SHORT = 5
+    MA_WINDOW_LONG = 20
+    VOLUME_RECENT_DAYS = 5 # 거래량 점수 계산을 위한 최근 거래대금 기간
+    
+    # 변동성 점수 계산을 위한 
+    ATR_WINDOW = 10 # ATR 기간
+    DAILY_RANGE_RATIO_WINDOW = 5 # 일중 변동폭 비율 기간 (최소 데이터 요구 사항 및 평균 계산 기간)
     # word_dic 클리닝 임계값 (금요일에만 적용)
-    WORD_DIC_MIN_GLOBAL_FREQ = 5    # word_dic에서 단어의 최소 전역 빈도입니다. 이 값 미만의 단어는 제거
-    # 빈도 상위 특정 비율에 해당하는 단어 중, 특정 조건(영향력 등)을 만족하면 제거될 수 있는 단어 그룹을 식별하는 데 사용되는 백분위수
-    WORD_DIC_MAX_GLOBAL_FREQ_PERCENTILE = 0.99 
-    # 빈도가 높은 일반적인 단어의 평균 관련 점수(avg_rate)가 이 편차 값보다 낮을 경우 제거될 수 있는 임계값
-    WORD_DIC_MAX_COMMON_WORD_AVG_RATE_DEVIATION = 0.5 
+    WORD_DIC_MIN_GLOBAL_FREQ = 5
+    WORD_DIC_MAX_GLOBAL_FREQ_PERCENTILE = 0.99
+    WORD_DIC_MAX_COMMON_WORD_AVG_RATE_DEVIATION = 0.5
     WORD_DIC_BLACKLIST_WORDS = ['기자', '사진', '뉴시스', '연합뉴스', '머니투데이', '코스피', '코스닥', '지수', '시장', '증시', '개장', '폐장', '마감', '시가총액', '뉴스']
 
     # theme_word_relevance 계산 임계값
     THEME_WORD_RELEVANCE_MIN_OCCURRENCES = 4 # (테마, 단어) 쌍의 최소 발생 빈도
     DAILY_THEME_MAX_RATE_THRESHOLD = 30.0 # daily_theme rate가 이 값을 초과하면 분석에서 제외
 
-    def __init__(self, from_date: date = None, to_date: date = None, setup_parameters: dict = None):
+    def __init__(self, from_date: date = None, to_date: date = None, setup_parameters: dict = None, db_manager: Optional[DBManager] = None):
         """
         SetupManager를 초기화합니다.
         :param from_date: 데이터 처리 시작 날짜 (기본값: 90일 전)
@@ -63,10 +73,11 @@ class SetupManager:
             'database': DB_NAME,
             'charset': 'utf8mb4'
         }
+        self.db_manager = db_manager if db_manager else DBManager()
         self.connection = None
         self.cursor = None
         self.backtest_manager = BacktestManager() # BacktestManager 인스턴스 초기화
-
+    
         # 처리 기간 설정
         self.to_date = to_date if to_date else date.today()
         self.from_date = from_date if from_date else self.to_date - timedelta(days=90) 
@@ -75,19 +86,44 @@ class SetupManager:
         if setup_parameters is None:
             setup_parameters = {}
 
-        self.LOOKBACK_DAYS_OHLCV = setup_parameters.get('lookback_days_ohlcv', self.LOOKBACK_DAYS_OHLCV)
+        #self.LOOKBACK_DAYS_OHLCV = setup_parameters.get('lookback_days_ohlcv', self.LOOKBACK_DAYS_OHLCV)
         self.WEIGHT_PRICE_TREND = setup_parameters.get('weight_price_trend', self.WEIGHT_PRICE_TREND)
         self.WEIGHT_TRADING_VOLUME = setup_parameters.get('weight_trading_volume', self.WEIGHT_TRADING_VOLUME)
         self.WEIGHT_VOLATILITY = setup_parameters.get('weight_volatility', self.WEIGHT_VOLATILITY)
         self.WEIGHT_THEME_MENTION = setup_parameters.get('weight_theme_mention', self.WEIGHT_THEME_MENTION)
+        self.MA_WINDOW_SHORT = setup_parameters.get('ma_window_short', self.MA_WINDOW_SHORT)
+        self.MA_WINDOW_LONG = setup_parameters.get('ma_window_long', self.MA_WINDOW_LONG)
+        self.VOLUME_RECENT_DAYS = setup_parameters.get('volume_recent_days', self.VOLUME_RECENT_DAYS) 
+        
+        self.ATR_WINDOW = setup_parameters.get('atr_window', self.ATR_WINDOW) # 새로 추가
+        self.DAILY_RANGE_RATIO_WINDOW = setup_parameters.get('daily_range_ratio_window', self.DAILY_RANGE_RATIO_WINDOW) # 새로 추가
+        # MA_WINDOW_SHORT, MA_WINDOW_LONG, VOLUME_RECENT_DAYS 로드 후
+        # LOOKBACK_DAYS_OHLCV를 내부적으로 계산
+        calculated_lookback_days = max(
+            self.MA_WINDOW_LONG,
+            self.VOLUME_RECENT_DAYS,
+            self.ATR_WINDOW,          # 추가
+            self.DAILY_RANGE_RATIO_WINDOW # 추가
+        ) + self.LOOKBACK_DAYS_OHLCV_MIN_BUFFER # LOOKBACK_DAYS_OHLCV_MIN_BUFFER 값도 충분히 설정되어 있는지 확인
+
+        # setup_parameters에서 명시적으로 LOOKBACK_DAYS_OHLCV가 주어지지 않았다면 계산된 값 사용
+        # 혹은, 계산된 값보다 작은 값이 들어오면 계산된 값으로 덮어쓰기 (최소 기간 보장)
+        self.LOOKBACK_DAYS_OHLCV = max(
+            calculated_lookback_days,
+            setup_parameters.get('lookback_days_ohlcv', calculated_lookback_days)
+        )
 
         logger.info(f"SetupManager 초기화 완료. 처리 기간: {self.from_date} ~ {self.to_date}")
         logger.info(f"설정 파라미터: LOOKBACK_DAYS_OHLCV={self.LOOKBACK_DAYS_OHLCV}, "
                     f"WEIGHT_PRICE_TREND={self.WEIGHT_PRICE_TREND}, "
                     f"WEIGHT_TRADING_VOLUME={self.WEIGHT_TRADING_VOLUME}, "
                     f"WEIGHT_VOLATILITY={self.WEIGHT_VOLATILITY}, "
-                    f"WEIGHT_THEME_MENTION={self.WEIGHT_THEME_MENTION}")
-
+                    f"WEIGHT_THEME_MENTION={self.WEIGHT_THEME_MENTION}, "
+                    f"MA_WINDOW_SHORT={self.MA_WINDOW_SHORT}, " 
+                    f"MA_WINDOW_LONG={self.MA_WINDOW_LONG}, " 
+                    f"ATR_WINDOW={self.ATR_WINDOW}, " 
+                    f"DAILY_RANGE_RATIO_WINDOW={self.DAILY_RANGE_RATIO_WINDOW}")
+        
     def _connect_db(self):
         """데이터베이스에 연결하고 커서를 생성합니다."""
         if self.connection is None or not self.connection.open:
@@ -161,18 +197,24 @@ class SetupManager:
             self.cursor.execute(create_theme_class_table_query)
             logger.info("theme_class 테이블 존재 확인 및 필요시 생성 완료.")
 
+            # theme_stock 테이블 스키마 변경: 개별 점수 컬럼 추가
             create_theme_stock_table_query = textwrap.dedent("""
                 CREATE TABLE IF NOT EXISTS `theme_stock` (
                     `theme_id` VARCHAR(36) NOT NULL,
                     `stock_code` VARCHAR(7) NOT NULL,
                     `stock_score` DECIMAL(10,4) DEFAULT 0.0000,
+                    `price_trend_score` DECIMAL(10,4) DEFAULT 0.0000,
+                    `trading_volume_score` DECIMAL(10,4) DEFAULT 0.0000,
+                    `volatility_score` DECIMAL(10,4) DEFAULT 0.0000,
+                    `theme_mention_score` DECIMAL(10,4) DEFAULT 0.0000,
                     PRIMARY KEY (`theme_id`, `stock_code`) USING BTREE,
                     INDEX `idx_ts_stock_code` (`stock_code`),
                     INDEX `idx_ts_theme_id` (`theme_id`)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """)
             self.cursor.execute(create_theme_stock_table_query)
-            logger.info("theme_stock 테이블 존재 확인 및 필요시 생성 완료.")
+
+            logger.info("theme_stock 테이블 존재 확인 및 필요시 생성/수정 완료.")
 
             create_daily_theme_table_query = textwrap.dedent("""
                 CREATE TABLE IF NOT EXISTS `daily_theme` (
@@ -246,9 +288,9 @@ class SetupManager:
         theme_id_to_name_map = {}
         theme_synonym_map = {} # {synonym: theme_id}
 
-        for theme_id, theme_name, synonyms_json in theme_class_records:
-            theme_id_to_name_map[theme_id] = theme_name.strip()
-            theme_synonym_map[theme_name.strip()] = theme_id
+        for theme_id, theme, synonyms_json in theme_class_records:
+            theme_id_to_name_map[theme_id] = theme.strip()
+            theme_synonym_map[theme.strip()] = theme_id
 
             if synonyms_json:
                 try:
@@ -298,20 +340,20 @@ class SetupManager:
             dt_date, dt_market, dt_stock_code, dt_stock_name, dt_rate, dt_reason, dt_existing_theme_str = record
 
             found_theme_ids_for_record = set()
-            found_theme_names_for_record = set()
+            found_themes_for_record = set()
 
             current_reason_text = str(dt_reason)
             for synonym, theme_id, synonym_regex in theme_synonym_regex_map:
                 if synonym_regex.search(current_reason_text):
                     found_theme_ids_for_record.add(theme_id)
                     if theme_id in theme_id_to_name_map:
-                        found_theme_names_for_record.add(theme_id_to_name_map[theme_id])
+                        found_themes_for_record.add(theme_id_to_name_map[theme_id])
             
             current_themes_in_db = set()
             if dt_existing_theme_str:
                 current_themes_in_db.update([t.strip() for t in dt_existing_theme_str.split(',') if t.strip()])
             
-            new_theme_list = sorted(list(current_themes_in_db | found_theme_names_for_record))
+            new_theme_list = sorted(list(current_themes_in_db | found_themes_for_record))
             new_theme_string = ", ".join(new_theme_list)
             
             if new_theme_string != dt_existing_theme_str:
@@ -349,12 +391,13 @@ class SetupManager:
 
     def _calculate_price_trend_score(self, df_stock_data):
         """주가 추세 점수 계산: 최근 5일, 20일 이동평균선 정배열 및 누적 수익률 반영"""
-        if len(df_stock_data) < 20: return 0
-        
-        df_stock_data = df_stock_data.sort_values(by='date').copy()
-        df_stock_data['MA5'] = df_stock_data['close'].rolling(window=5).mean()
-        df_stock_data['MA20'] = df_stock_data['close'].rolling(window=20).mean()
-        
+        if len(df_stock_data) < self.MA_WINDOW_LONG: # 가장 긴 이동평균선 기간 기준으로 변경
+            logger.debug(f"주가 추세 점수 계산: 데이터 부족 ({len(df_stock_data)}개). 최소 {self.MA_WINDOW_LONG}개 필요.")
+            return 0
+
+        df_stock_data['MA5'] = df_stock_data['close'].rolling(window=self.MA_WINDOW_SHORT).mean() # 5 -> self.MA_WINDOW_SHORT
+        df_stock_data['MA20'] = df_stock_data['close'].rolling(window=self.MA_WINDOW_LONG).mean() # 20 -> self.MA_WINDOW_LONG
+                
         latest_data = df_stock_data.iloc[-1]
         
         score = 0
@@ -382,11 +425,13 @@ class SetupManager:
 
     def _calculate_trading_volume_score(self, df_stock_data):
         """거래대금 점수 계산: 최근 거래대금 증가율 및 절대적인 규모 반영"""
-        if len(df_stock_data) < 20: return 0
-        
+        if len(df_stock_data) < self.MA_WINDOW_LONG: # MA_WINDOW_LONG을 기준으로 충분한지 확인
+            logger.debug(f"거래대금 점수 계산: 데이터 부족 ({len(df_stock_data)}개). 최소 {self.MA_WINDOW_LONG}개 필요.")
+            return 0
+            
         df_stock_data = df_stock_data.sort_values(by='date').copy()
         
-        recent_volume = df_stock_data['trading_value'].tail(5).mean()
+        recent_volume = df_stock_data['trading_value'].tail(self.VOLUME_RECENT_DAYS).mean() # VOLUME_RECENT_DAYS 사용
         avg_volume = df_stock_data['trading_value'].mean()
         
         score = 0
@@ -404,30 +449,36 @@ class SetupManager:
 
     def _calculate_volatility_score(self, df_stock_data):
         """변동성 점수 계산: ATR 기반 변동성 및 일중 변동폭 반영"""
-        if len(df_stock_data) < 10: return 0
+        required_volatility_data = max(self.ATR_WINDOW, self.DAILY_RANGE_RATIO_WINDOW)
+        if len(df_stock_data) < required_volatility_data:
+            logger.debug(f"변동성 점수 계산: 데이터 부족 ({len(df_stock_data)}개). 최소 {required_volatility_data}개 필요.")
+            return 0
         
         df_stock_data = df_stock_data.sort_values(by='date').copy()
-        
+
         high_low = df_stock_data['high'] - df_stock_data['low']
         high_prev_close = abs(df_stock_data['high'] - df_stock_data['close'].shift(1))
         low_prev_close = abs(df_stock_data['low'] - df_stock_data['close'].shift(1))
         tr = pd.concat([high_low, high_prev_close, low_prev_close], axis=1).max(axis=1)
-        
-        atr = tr.rolling(window=10).mean().iloc[-1]
-        
+
+        # atr = tr.rolling(window=10).mean().iloc[-1] # 기존
+        atr = tr.rolling(window=self.ATR_WINDOW).mean().iloc[-1] # ATR_WINDOW 사용
+
         latest_close = df_stock_data.iloc[-1]['close']
         score = 0
-        
+
         if latest_close > 0:
-            atr_ratio = (atr / latest_close) * 100 
-            score += min(atr_ratio * 5, 50) 
-                                             
-        if len(df_stock_data) >= 5:
+            atr_ratio = (atr / latest_close) * 100
+            score += min(atr_ratio * 5, 50) # 이 '5'와 '50'은 가중치/상한값이므로, 필요 시 추가 파라미터화 고려
+
+        # if len(df_stock_data) >= 5: # 기존
+        if len(df_stock_data) >= self.DAILY_RANGE_RATIO_WINDOW: # DAILY_RANGE_RATIO_WINDOW 사용
             df_stock_data['daily_range_ratio'] = ((df_stock_data['high'] - df_stock_data['low']) / df_stock_data['close']) * 100
-            avg_daily_range_ratio = df_stock_data['daily_range_ratio'].tail(5).mean()
-            score += min(avg_daily_range_ratio * 2, 50) 
-                                                        
-        return min(max(score, 0), 100) 
+            # avg_daily_range_ratio = df_stock_data['daily_range_ratio'].tail(5).mean() # 기존
+            avg_daily_range_ratio = df_stock_data['daily_range_ratio'].tail(self.DAILY_RANGE_RATIO_WINDOW).mean() # DAILY_RANGE_RATIO_WINDOW 사용
+            score += min(avg_daily_range_ratio * 2, 50) # 이 '2'와 '50'은 가중치/상한값이므로, 필요 시 추가 파라미터화 고려
+
+        return min(max(score, 0), 100)
 
     def _calculate_theme_mention_score(self, mention_count_in_period):
         """테마 언급 빈도 점수 계산: 최근 한달 내 언급 횟수에 비례"""
@@ -443,7 +494,8 @@ class SetupManager:
         start_time = time.time()
         
         all_stock_codes_to_process = list(target_stock_theme_mentions.keys())
-        theme_stock_score_updates = {} # { (theme_id, stock_code): final_score }
+        # theme_stock_score_updates: { (theme_id, stock_code): (final_score, price_trend_score, trading_volume_score, volatility_score, theme_mention_score) }
+        theme_stock_score_updates = {} 
 
         if not all_stock_codes_to_process:
             logger.info("stock_score를 계산할 대상 종목이 없습니다.")
@@ -455,10 +507,10 @@ class SetupManager:
 
             df_stock_data = self.backtest_manager.cache_daily_ohlcv(stock_code, from_date_ohlcv, to_date_ohlcv)
             
-            if 'trading_value' not in df_stock_data.columns:
-                df_stock_data['trading_value'] = df_stock_data['close'] * df_stock_data['volume']
-                logger.debug(f"종목 {stock_code}: 'trading_value' 컬럼이 없어 'close * volume'으로 생성했습니다.")
-            
+            #if 'trading_value' not in df_stock_data.columns:
+            df_stock_data['trading_value'] = df_stock_data['close'] * df_stock_data['volume']
+            logger.debug(f"종목 {stock_code}: 'trading_value' 컬럼이 없어 'close * volume'으로 생성했습니다.")
+        
             df_stock_data = df_stock_data.reset_index().rename(columns={'index': 'date'})
             df_stock_data['date'] = pd.to_datetime(df_stock_data['date']).dt.date
 
@@ -484,7 +536,13 @@ class SetupManager:
 
             for theme_id in mention_data['theme_ids']:
                 key = (theme_id, stock_code)
-                theme_stock_score_updates[key] = final_stock_score
+                theme_stock_score_updates[key] = (
+                    final_stock_score, 
+                    round(price_trend_score, 4), 
+                    round(trading_volume_score, 4), 
+                    round(volatility_score, 4), 
+                    round(theme_mention_score, 4)
+                )
         
         end_time = time.time()
         self._print_processing_summary(start_time, end_time, len(all_stock_codes_to_process), "stock_score 계산")
@@ -494,7 +552,15 @@ class SetupManager:
         """theme_stock 테이블을 새로운 스코어로 업데이트합니다."""
         logger.info("\n--- theme_stock 테이블 초기화 ---")
         start_time_reset_ts = time.time()
-        self.cursor.execute("UPDATE theme_stock SET stock_score = 0")
+        # 모든 score 컬럼을 0으로 초기화
+        self.cursor.execute("""
+            UPDATE theme_stock 
+            SET stock_score = 0, 
+                price_trend_score = 0, 
+                trading_volume_score = 0, 
+                volatility_score = 0, 
+                theme_mention_score = 0
+        """)
         self.connection.commit()
         end_time_reset_ts = time.time()
         logger.info(f"theme_stock 테이블 stock_score 초기화 완료 ({end_time_reset_ts - start_time_reset_ts:.4f} 초)")
@@ -504,14 +570,20 @@ class SetupManager:
             logger.info("\n--- theme_stock 테이블 업데이트 ---")
             start_time = time.time()
 
-            theme_stock_data_to_replace = [
-                (theme_id, stock_code, score)
-                for (theme_id, stock_code), score in theme_stock_score_updates.items()
-            ]
+            theme_stock_data_to_replace = []
+            for (theme_id, stock_code), scores in theme_stock_score_updates.items():
+                final_score, pt_score, tv_score, vol_score, tm_score = scores
+                theme_stock_data_to_replace.append((
+                    theme_id, stock_code, final_score, pt_score, tv_score, vol_score, tm_score
+                ))
 
+            # REPLACE INTO 문에 새로운 컬럼들을 포함
             replace_theme_stock_query = textwrap.dedent("""
-                REPLACE INTO theme_stock (theme_id, stock_code, stock_score)
-                VALUES (%s, %s, %s)
+                REPLACE INTO theme_stock (
+                    theme_id, stock_code, stock_score, 
+                    price_trend_score, trading_volume_score, volatility_score, theme_mention_score
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
             """)
             self.cursor.executemany(replace_theme_stock_query, theme_stock_data_to_replace)
             self.connection.commit()
@@ -520,19 +592,26 @@ class SetupManager:
         else:
             logger.info("theme_stock 테이블에 업데이트할 유효한 레코드가 없습니다.")
 
-    def _print_top_stock_scores(self) -> pd.DataFrame:
+    def _calculate_top_stock_scores(self) -> pd.DataFrame:
         """
         stock_score 상위 종목들을 DataFrame으로 반환하고 내용을 로깅합니다.
+        theme_id와 개별 점수 요소들을 포함합니다.
         """
         logger.info("\n--- 주식 점수 (Stock Score) 상위 종목 조회 ---")
         start_time = time.time()
 
+        # SELECT 쿼리에 theme_id와 개별 점수 컬럼 추가
         select_top_stocks_query = textwrap.dedent("""
             SELECT 
                 ts.stock_code, 
                 si.stock_name, 
-                tc.theme, 
-                ts.stock_score
+                ts.theme_id,  -- theme_id 추가
+                tc.theme, -- 이름 바꿔주기 
+                ts.stock_score,
+                ts.price_trend_score,     -- 개별 점수 추가
+                ts.trading_volume_score,
+                ts.volatility_score,
+                ts.theme_mention_score
             FROM 
                 theme_stock ts
             JOIN 
@@ -550,13 +629,21 @@ class SetupManager:
         top_stocks_raw = self.cursor.fetchall()
 
         if top_stocks_raw:
-            df = pd.DataFrame(top_stocks_raw, columns=['stock_code', 'stock_name', 'theme', 'stock_score'])
+            # DataFrame 컬럼명에 새로운 정보 추가
+            df = pd.DataFrame(top_stocks_raw, columns=[
+                'stock_code', 'stock_name', 'theme_id', 'theme', 'stock_score',
+                'price_trend_score', 'trading_volume_score', 'volatility_score', 'theme_mention_score'
+            ])
             # 종목코드를 인덱스로 설정하고 중복 제거 (정렬된 상태이므로 첫 번째(가장 높은 점수) 유지)
             df = df.drop_duplicates(subset=['stock_code']).set_index('stock_code')
-            logger.info("\n--- 주식 점수 (Stock Score) 상위 종목 DataFrame 내용 ---")
-            logger.info(df)
+            # logger.info("\n--- 주식 점수 (Stock Score) 상위 종목 DataFrame 내용 ---")
+            # logger.info(df)
         else:
-            df = pd.DataFrame(columns=['stock_code', 'stock_name', 'theme', 'stock_score']).set_index('stock_code')
+            # 반환되는 DataFrame의 컬럼도 맞춰주기
+            df = pd.DataFrame(columns=[
+                'stock_code', 'stock_name', 'theme_id', 'theme', 'stock_score',
+                'price_trend_score', 'trading_volume_score', 'volatility_score', 'theme_mention_score'
+            ]).set_index('stock_code')
             logger.info("현재 계산된 stock_score가 있는 종목이 없습니다.")
 
         end_time = time.time()
@@ -725,7 +812,7 @@ class SetupManager:
         query = textwrap.dedent("""
             SELECT 
                 ts.stock_code, 
-                tc.theme AS theme_name
+                tc.theme
             FROM 
                 theme_stock ts
             JOIN 
@@ -910,7 +997,10 @@ class SetupManager:
             self._calculate_and_update_theme_word_relevance(stock_names, stock_to_themes) 
 
             # 최종 결과 출력 (DataFrame 반환)
-            top_stocks_df = self._print_top_stock_scores()
+            top_stocks_df = self._calculate_top_stock_scores()
+            # 계산된 유니버스 데이터를 DB에 저장
+            self._save_calculated_universe(top_stocks_df) # 이 함수를 추가합니다.
+
             # 필요에 따라 반환된 DataFrame을 추가 처리하거나 사용
             logger.info("SetupManager 작업 완료. Top Stock Scores DataFrame이 반환되었습니다.")
 
@@ -919,40 +1009,85 @@ class SetupManager:
             if self.connection:
                 self.connection.rollback()
         finally:
-            self._close_db()
+            #self._close_db()
             overall_end_time = time.time()
             self._print_processing_summary(overall_start_time, overall_end_time, 0, "SetupManager 전체 실행")
             logger.info("--- SetupManager의 모든 처리 작업 완료 ---")
 
+    def _save_calculated_universe(self, daily_universe_df: pd.DataFrame): # 인자로 DataFrame을 받도록 변경
+            """
+            계산된 stock_scores를 daily_universe 테이블에 저장합니다.
+            필터링된 DataFrame을 인자로 받아 처리합니다.
+            :param daily_universe_df: 저장할 일별 유니버스 종목의 DataFrame
+            """
+            if not self.db_manager:
+                logger.error("DBManager 인스턴스가 초기화되지 않았습니다. daily_universe 저장에 실패했습니다.")
+                return
+
+            if daily_universe_df.empty: # 입력 DataFrame이 비어있는지 확인
+                logger.info(f"날짜 {self.to_date}에 저장할 daily_universe 데이터가 없습니다. (입력 DataFrame이 비어있음)")
+                return
+
+            daily_universe_data = []
+            # DataFrame의 각 행을 순회하며 데이터 준비
+            for stock_code, row in daily_universe_df.iterrows():
+                daily_universe_data.append({
+                    'date': self.to_date,  # run_all_processes의 to_date 사용
+                    'stock_code': stock_code, # 인덱스가 stock_code
+                    'stock_name': row.get('stock_name', ''),
+                    'stock_score': row['stock_score'], # 이미 'stock_score'로 이름 변경됨
+                    'price_trend_score': row.get('price_trend_score'),
+                    'trading_volume_score': row.get('trading_volume_score'),
+                    'volatility_score': row.get('volatility_score'),
+                    'theme_mention_score': row.get('theme_mention_score'),
+                    'theme_id': row.get('theme_id'),
+                    'theme': row.get('theme')
+                })
+            
+            if daily_universe_data:
+                logger.info(f"날짜 {self.to_date}의 daily_universe 데이터 {len(daily_universe_data)}개 DB 저장을 시작합니다.")
+                success = self.db_manager.save_daily_universe(daily_universe_data, self.to_date)
+                if success:
+                    logger.info(f"날짜 {self.to_date}의 daily_universe 데이터 저장이 완료되었습니다.")
+                else:
+                    logger.error(f"날짜 {self.to_date}의 daily_universe 데이터 저장에 실패했습니다.")
+            else:
+                # 이 else 블록은 daily_universe_df가 비어있지 않다면 도달하지 않아야 하지만, 안전 장치로 유지
+                logger.info(f"날짜 {self.to_date}에 저장할 daily_universe 데이터가 없습니다. (데이터프레임 변환 후 빈 리스트)")
 
 if __name__ == "__main__":
 
     # 예시 1: 기본 기간 (초기화 시 설정된 90일) 및 기본 파라미터로 실행
-    logger.info("\n--- 기본 기간 및 기본 파라미터로 SetupManager 실행 ---")
-    manager_default = SetupManager()
-    manager_default.run_all_processes()
+    # logger.info("\n--- 기본 기간 및 기본 파라미터로 SetupManager 실행 ---")
+    # manager_default = SetupManager()
+    # manager_default.run_all_processes()
 
     # 예시 2: 특정 기간을 지정하여 실행 (예: 2024년 1월 1일부터 2024년 6월 30일까지) 및 특정 파라미터 사용
-    logger.info("\n--- 특정 기간 (2025-01-01 ~ 2025-06-30) 및 특정 파라미터로 SetupManager 실행 ---")
-    specific_from_date = date(2025, 1, 1)
-    specific_to_date = date(2025, 6, 30)
+    specific_from_date = date(2025, 6, 1)
+    specific_to_date = date(2025, 6, 30)   
+    logger.info(f"\n--- 특정 기간 ({specific_from_date} ~ {specific_to_date}) 및 특정 파라미터로 SetupManager 실행 ---")
+
     custom_params = {
-        'lookback_days_ohlcv': 120,
         'weight_price_trend': 50,
         'weight_trading_volume': 20,
         'weight_volatility': 15,
-        'weight_theme_mention': 15
+        'weight_theme_mention': 15,
+        'ma_window_short': 3,
+        'ma_window_long': 12,
+        'volume_recent_days': 7,     # 거래량 점수 계산을 위한 최근 거래대금 기간
+        'atr_window': 14,             # 변동성 측정 ATR 기간
+        'daily_range_ratio_window': 7 # 일중 변동폭 비율 기간 (최소 데이터 요구 사항 및 평균 계산 기간)
     }
     manager_custom = SetupManager(setup_parameters=custom_params)
     manager_custom.run_all_processes(from_date=specific_from_date, to_date=specific_to_date)
 
-    # 예시 3: 최근 30일 데이터만, 일부 파라미터만 변경
-    logger.info("\n--- 최근 30일 기간 및 일부 파라미터 변경으로 SetupManager 실행 ---")
-    recent_30_days_from = date.today() - timedelta(days=30)
-    recent_30_days_to = date.today()
-    partial_params = {
-        'weight_price_trend': 60,
-        'weight_theme_mention': 10
-    }
-    manager_partial = SetupManager(setup_parameters=partial_params)
-    manager_partial.run_all_processes(from_date=recent_30_days_from, to_date=recent_30_days_to)
+    # # 예시 3: 최근 30일 데이터만, 일부 파라미터만 변경
+    # logger.info("\n--- 최근 30일 기간 및 일부 파라미터 변경으로 SetupManager 실행 ---")
+    # recent_30_days_from = date.today() - timedelta(days=30)
+    # recent_30_days_to = date.today()
+    # partial_params = {
+    #     'weight_price_trend': 60
+    #     'weight_theme_mention': 10
+    # }
+    # manager_partial = SetupManager(setup_parameters=partial_params)
+    # manager_partial.run_all_processes(from_date=recent_30_days_from, to_date=recent_30_days_to)

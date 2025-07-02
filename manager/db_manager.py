@@ -9,7 +9,7 @@ import sys
 import json # JSON 직렬화를 위해 추가
 import re
 from decimal import Decimal # Decimal 타입 처리용
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 # --- 로거 설정 (스크립트 최상단에서 설정하여 항상 보이도록 함) ---
 logger = logging.getLogger(__name__)
 from config.settings import DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
@@ -1400,3 +1400,133 @@ class DBManager:
             logger.error(f"자동매매 성능 지표 조회 오류 (run_id: {run_id}): {e}", exc_info=True)
             return pd.DataFrame()
 
+    # ----------------------------------------------------------------------------
+    # 유니버스 관리 테이블
+    # ----------------------------------------------------------------------------
+    def save_daily_universe(self, daily_universe_data_list: list, target_date: date):
+        """
+        일별 유니버스 종목 목록을 DB의 daily_universe 테이블에 저장합니다.
+        특정 날짜의 데이터가 이미 존재하면 기존 데이터를 삭제하고 새로 삽입합니다.
+        :param daily_universe_data_list: [{'date': 'YYYY-MM-DD', 'stock_code': '005930', ...}, ...]
+        :param target_date: 데이터를 저장할 날짜 (YYYY-MM-DD), 이 날짜의 기존 데이터는 삭제됩니다.
+        :return: 성공 시 True, 실패 시 False
+        """
+        conn = self.get_db_connection()
+        if not conn: return False
+
+        try:
+            # 1. 해당 날짜의 기존 데이터 삭제
+            delete_sql = "DELETE FROM daily_universe WHERE date = %s"
+            cursor = self.execute_sql(delete_sql, (target_date,)) # execute_sql 호출 후 cursor 반환받음
+            logger.info(f"날짜 {target_date}의 기존 daily_universe 데이터 {cursor.rowcount if cursor else 0}개 삭제 완료.")
+
+            if not daily_universe_data_list:
+                logger.info(f"날짜 {target_date}에 저장할 daily_universe 데이터가 없습니다.")
+                return True
+
+            # 2. 새로운 데이터 삽입
+            insert_sql = """
+            INSERT INTO daily_universe
+            (date, stock_code, stock_name, stock_score, 
+             price_trend_score, trading_volume_score, volatility_score, theme_mention_score,
+             theme_id, theme)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """
+            data = []
+            for item in daily_universe_data_list:
+                data.append((
+                    item['date'],
+                    item['stock_code'],
+                    item['stock_name'],
+                    item['stock_score'],
+                    item.get('price_trend_score'),
+                    item.get('trading_volume_score'),
+                    item.get('volatility_score'),
+                    item.get('theme_mention_score'),
+                    item.get('theme_id'),
+                    item.get('theme')
+                ))
+            
+            cursor = self.execute_sql(insert_sql, data) # executemany를 위해 리스트 전달
+            if cursor:
+                logger.info(f"{len(daily_universe_data_list)}개의 daily_universe 데이터를 저장했습니다.")
+                return True
+            else:
+                return False
+        except Exception as e:
+            logger.error(f"daily_universe 데이터 저장 오류: {e}", exc_info=True)
+            if conn:
+                conn.rollback() # 오류 발생 시 롤백
+            return False
+
+    def fetch_daily_universe(self, target_date: date = None, stock_code: str = None) -> pd.DataFrame:
+        """
+        DB에서 daily_universe 데이터를 조회합니다.
+        :param target_date: 조회할 날짜 (선택)
+        :param stock_code: 조회할 종목코드 (선택)
+        :return: Pandas DataFrame
+        """
+        conn = self.get_db_connection()
+        if not conn: return pd.DataFrame()
+        
+        sql = """
+        SELECT date, stock_code, stock_name, stock_score, 
+               price_trend_score, trading_volume_score, volatility_score, theme_mention_score,
+               theme_id, theme
+        FROM daily_universe
+        WHERE 1=1
+        """
+        params = []
+        if target_date:
+            sql += " AND date = %s"
+            params.append(target_date)
+        if stock_code:
+            sql += " AND stock_code = %s"
+            params.append(stock_code)
+        
+        sql += " ORDER BY date DESC, stock_score DESC"
+
+        try:
+            cursor = self.execute_sql(sql, tuple(params))
+            if cursor:
+                result = cursor.fetchall()
+                # SELECT 문과 순서 일치하도록 컬럼 이름 직접 지정
+                columns = [
+                    'date', 'stock_code', 'stock_name', 'stock_score',
+                    'price_trend_score', 'trading_volume_score', 'volatility_score', 'theme_mention_score',
+                    'theme_id', 'theme'
+                ]
+                return pd.DataFrame(result, columns=columns)
+            else:
+                return pd.DataFrame()
+        except Exception as e:
+            logger.error(f"daily_universe 데이터 조회 오류 (date: {target_date}, stock_code: {stock_code}): {e}", exc_info=True)
+            return pd.DataFrame()
+        
+
+    def fetch_daily_theme_stock(self, start_date: date, end_date: date) -> List[Tuple[str, str]]:
+        """
+        daily_universe 테이블에서 특정 기간에 해당하는 고유한 종목 코드를 가져옵니다.
+        daily_universe 테이블이 daily_theme 테이블의 역할을 대체하므로 이 테이블에서 가져옵니다.
+        """
+        conn = self.get_db_connection()
+        if not conn: return []
+        
+        sql = """
+        SELECT DISTINCT stock_code, stock_name
+        FROM daily_theme
+        WHERE date >= %s AND date <= %s
+        ORDER BY stock_code;
+        """
+        params = (start_date, end_date)
+        
+        stocks = []
+        try:
+            cursor = self.execute_sql(sql, params)
+            if cursor:
+                results = cursor.fetchall()
+                stocks = [(row['stock_code'], row['stock_name']) for row in results] 
+                cursor.close()
+        except Exception as e:
+            logger.error(f"daily_universe에서 종목 코드를 가져오는 중 오류 발생 (기간: {start_date} ~ {end_date}): {e}", exc_info=True)
+        return stocks
