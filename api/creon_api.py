@@ -525,16 +525,16 @@ class CreonAPIClient:
                     self._is_reits(code_name)):
                     continue
 
-                # 3. 관리/투자경고/거래정지 등 상태 필터링
-                # GetStockControlKind: 0:정상, 1:관리, 2:투자경고, 3:투자위험, 4:투자주의 등
-                if self.cp_code_mgr.GetStockControlKind(code) != 0: 
-                    continue
-                # GetStockSupervisionKind: 0:정상, 1:투자유의
-                if self.cp_code_mgr.GetStockSupervisionKind(code) != 0: 
-                    continue
-                # GetStockStatusKind: 0:정상, 2:거래정지, 3:거래중단
-                if self.cp_code_mgr.GetStockStatusKind(code) in [2, 3]: 
-                    continue
+                # 3. 관리/투자경고/거래정지 등 상태 필터링 -> 하지 않음
+                # # GetStockControlKind: 0:정상, 1:관리, 2:투자경고, 3:투자위험, 4:투자주의 등
+                # if self.cp_code_mgr.GetStockControlKind(code) != 0: 
+                #     continue
+                # # GetStockSupervisionKind: 0:정상, 1:투자유의
+                # if self.cp_code_mgr.GetStockSupervisionKind(code) != 0: 
+                #     continue
+                # # GetStockStatusKind: 0:정상, 2:거래정지, 3:거래중단
+                # if self.cp_code_mgr.GetStockStatusKind(code) in [2, 3]: 
+                #     continue
                 
                 self.stock_name_dic[code_name] = code
                 self.stock_code_dic[code] = code_name

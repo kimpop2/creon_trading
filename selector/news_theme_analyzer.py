@@ -1,6 +1,6 @@
 import pymysql
-from konlpy.tag import Komoran
-from pykospacing import Spacing
+# from konlpy.tag import Komoran # 제거됨
+# from pykospacing import Spacing # 제거됨
 import re
 import textwrap
 import datetime
@@ -31,35 +31,37 @@ def load_stock_names(cursor):
 def print_metric_explanations():
     """분석 결과에 사용되는 주요 지표에 대한 설명을 출력합니다."""
     print("\n--- 분석 결과 용어 설명 ---")
-    print("  * 테마 점수: 특정 키워드가 해당 테마와 얼마나 강하게 연결되어 있는지를 나타내는 점수입니다. (theme_word_relevance.relevance_score)")
-    print("  * 테마 등락률: 해당 키워드를 포함하는 뉴스와 연관된 종목들이 속한 '특정 테마 내에서' 기록한 평균 등락률입니다. (theme_word_relevance.avg_stock_rate_in_theme)")
-    print("  * 키워드 등락률: 특정 키워드가 나타난 '모든 종목의 모든 등락률을 평균'한 값입니다. (word_dic.avg_rate)")
-    print("  * 출현 빈도: 특정 키워드가 전체 기간 동안 뉴스에 나타난 총 횟수입니다. (word_dic.freq)")
+    print("   * 테마 점수: 특정 키워드가 해당 테마와 얼마나 강하게 연결되어 있는지를 나타내는 점수입니다. (theme_word_relevance.relevance_score)")
+    print("   * 테마 등락률: 해당 키워드를 포함하는 뉴스와 연관된 종목들이 속한 '특정 테마 내에서' 기록한 평균 등락률입니다. (theme_word_relevance.avg_stock_rate_in_theme)")
+    print("   * 키워드 등락률: 특정 키워드가 나타난 '모든 종목의 모든 등락률을 평균'한 값입니다. (word_dic.avg_rate)")
+    print("   * 출현 빈도: 특정 키워드가 전체 기간 동안 뉴스에 나타난 총 횟수입니다. (word_dic.freq)")
     print("----------------------------")
 
 def process_breaking_news(news_text, db_connection, stock_names_set):
-    komoran = Komoran()
-    spacing_tool = Spacing()
+    # komoran = Komoran() # 제거됨
+    # spacing_tool = Spacing() # 제거됨
 
     # 1단계: 속보 텍스트 처리
-    print(f"\n--- 속보 분석 시작 ({datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}) ---")
+    print(f"\n===== 속보 분석 시작 ({datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}) =====")
     print(f"뉴스 텍스트: {news_text[:100]}...") # 처음 100자 출력
 
-    # 띄어쓰기 교정 적용
-    corrected_news_text = spacing_tool(news_text) if spacing_tool else news_text
-    print(f"교정된 텍스트: {corrected_news_text[:100]}...")
-
-    # 명사 추출
-    raw_nouns = komoran.nouns(corrected_news_text)
+    # 띄어쓰기 교정 및 명사 추출 대신 단순 공백 분리 및 필터링
+    # 불필요한 특수 문자 제거 (한글, 영어, 숫자, 공백 제외) 및 소문자 변환
+    clean_text = re.sub(r'[^\w\s]', ' ', news_text).lower() 
+    # 여러 공백을 단일 공백으로 축소하고 양쪽 끝 공백 제거
+    clean_text = re.sub(r'\s+', ' ', clean_text).strip()
     
-    # 명사 필터링
+    # 공백으로 단어 분리
+    raw_words = clean_text.split()
+    
+    # 단어 필터링
     filtered_keywords = []
-    for noun in raw_nouns:
-        if (len(noun) == 1 or
-            re.match(r'^[-\d]', noun) or
-            noun in stock_names_set):
+    for word in raw_words:
+        if (len(word) <= 1 or # 1글자 이하 단어 제외
+            re.match(r'^[-\d]', word) or # 숫자나 하이픈으로 시작하는 단어 제외
+            word in stock_names_set): # 종목명 제외
             continue
-        filtered_keywords.append(noun)
+        filtered_keywords.append(word)
     
     if not filtered_keywords:
         print("뉴스에서 관련 키워드를 찾지 못했습니다.")
@@ -100,14 +102,11 @@ def process_breaking_news(news_text, db_connection, stock_names_set):
         if not results:
             print("이 키워드에 대한 관련 테마-단어 관계를 찾지 못했습니다.")
             return None
-            
-        # 용어 설명 출력
-        print_metric_explanations()
 
         # 3단계: 결과 집계 및 해석
         print("\n--- 쿼리 결과 (상위 10개) ---")
         for i, row in enumerate(results[:10]):
-            print(f"  {i+1}. 테마: {row['theme']}, 단어: {row['word']}, 테마 점수: {float(row['relevance_score']):.2f}, 테마 등락률: {float(row['avg_stock_rate_in_theme']):.2f}, 키워드 등락률: {float(row['word_global_avg_rate']):.2f}, 출현 빈도: {row['word_global_freq']}회")
+            print(f"   {i+1}. 테마: {row['theme']}, 단어: {row['word']}, 테마 점수: {float(row['relevance_score']):.2f}, 테마 등락률: {float(row['avg_stock_rate_in_theme']):.2f}, 키워드 등락률: {float(row['word_global_avg_rate']):.2f}, 출현 빈도: {row['word_global_freq']}회")
 
         # 추가 분석 (예: 집계된 관련성 점수별 상위 3개 테마 식별)
         theme_scores = defaultdict(float)
@@ -126,7 +125,7 @@ def process_breaking_news(news_text, db_connection, stock_names_set):
         for theme, score in sorted_themes[:5]: # 상위 5개 테마
             details = theme_details[theme]
             avg_theme_rate_overall = details['avg_rate_sum'] / details['word_count'] if details['word_count'] > 0 else 0
-            print(f"  테마: {theme}, 테마 점수 합계: {score:.2f}, 테마(키워드) 등락률: {avg_theme_rate_overall:.2f}")
+            print(f"   테마: {theme}, 테마 점수 합계: {score:.2f}, 테마(키워드) 등락률: {avg_theme_rate_overall:.2f}")
 
         print("\n--- 속보 분석 완료 ---")
         return results
@@ -165,6 +164,8 @@ if __name__ == "__main__":
         breaking_news_item_3 = "증시 전체적인 하락세 지속, 투자 심리 위축."
         breaking_news_item_4 = "엔비디아, 신형 AI 반도체 칩 출시로 자율주행 시장 선점 기대"
         breaking_news_item_5 = "원화 스테이블코인에 IT·게임 업계도 후끈... 네이버페이 대표도 \"주도적 역할 할 것\""
+        # 용어 설명 출력
+        print_metric_explanations()
 
         print("\n--- 속보 항목 1 처리 중 ---")
         process_breaking_news(breaking_news_item_1, conn, stock_names_set)
@@ -180,7 +181,9 @@ if __name__ == "__main__":
 
         print("\n--- 속보 항목 5 처리 중 ---")
         process_breaking_news(breaking_news_item_5, conn, stock_names_set)
-
+        
+        # 용어 설명 출력
+        print_metric_explanations()
     except pymysql.MySQLError as e:
         print(f"MariaDB 연결 오류: {e}")
     except Exception as e:

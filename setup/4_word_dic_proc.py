@@ -1,6 +1,6 @@
 import pandas as pd
 import pymysql
-from konlpy.tag import Komoran
+# from konlpy.tag import Komoran # Komoran 모듈 사용 중지
 from collections import defaultdict
 import os.path
 import sys
@@ -8,15 +8,15 @@ import re
 import textwrap
 import time
 import datetime
+import json # JSON 데이터 처리를 위해 추가
 
 # --- 설정 ---
 # MariaDB 연결 설정
-# 실제 사용하는 DB명으로 변경하세요
 db_config = {
     'host': 'localhost',
     'user': 'root',
     'password': 'admin',
-    'database': 'backtest_db', # 실제 DB명
+    'database': 'backtest_db',
     'charset': 'utf8mb4'
 }
 
@@ -33,16 +33,51 @@ def initialize_database_tables(cursor, connection):
     """필요한 데이터베이스 테이블(theme_class, theme_stock, daily_theme, word_dic)을 생성합니다."""
     print("\n--- 데이터베이스 테이블 초기화 시작 ---")
     
-    # 1. theme_class 테이블 생성 (기존 로직 유지)
+    # 1. theme_class 테이블 생성
+    create_theme_class_table_query = textwrap.dedent("""
+        CREATE TABLE IF NOT EXISTS theme_class (
+            theme_id VARCHAR(36) NOT NULL,
+            theme VARCHAR(30) NULL DEFAULT NULL,
+            PRIMARY KEY (theme_id),
+            UNIQUE INDEX theme_UNIQUE (theme)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    """)
+    cursor.execute(create_theme_class_table_query)
+    print("theme_class 테이블 존재 확인 및 필요시 생성 완료.")
 
+    # 2. theme_stock 테이블 생성
+    create_theme_stock_table_query = textwrap.dedent("""
+        CREATE TABLE IF NOT EXISTS theme_stock (
+            theme_id VARCHAR(36) NOT NULL,
+            stock_code VARCHAR(7) NOT NULL,
+            stock_score DECIMAL(10,4) DEFAULT 0.0000,
+            PRIMARY KEY (theme_id, stock_code),
+            INDEX idx_ts_stock_code (stock_code),
+            INDEX idx_ts_theme_id (theme_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    """)
+    cursor.execute(create_theme_stock_table_query)
+    print("theme_stock 테이블 존재 확인 및 필요시 생성 완료.")
 
-    # 2. theme_stock 테이블 생성 (기존 로직 유지)
+    # 3. daily_theme 테이블 생성 (reason_nouns 컬럼이 JSON 타입으로 존재함을 가정)
+    create_daily_theme_table_query = textwrap.dedent("""
+        CREATE TABLE IF NOT EXISTS daily_theme (
+            date DATE NOT NULL,
+            market VARCHAR(8) NOT NULL,
+            stock_code VARCHAR(7) NOT NULL,
+            stock_name VARCHAR(25) NOT NULL,
+            rate DECIMAL(5,2) NULL DEFAULT '0.00',
+            amount INT(11) NULL DEFAULT '0',
+            reason VARCHAR(250) NOT NULL,
+            reason_nouns JSON NULL, -- JSON 타입 컬럼
+            theme VARCHAR(250) NULL DEFAULT NULL,
+            PRIMARY KEY (date, market, stock_code) USING BTREE
+        );
+    """)
+    cursor.execute(create_daily_theme_table_query)
+    print("daily_theme 테이블 존재 확인 및 필요시 생성 완료.")
 
-
-    # 3. daily_theme 테이블 생성 (기존 로직 유지)
-
-
-    # 4. word_dic 테이블 생성 (새로운 로직)
+    # 4. word_dic 테이블 생성
     create_word_dic_table_query = textwrap.dedent("""
         CREATE TABLE IF NOT EXISTS word_dic (
             word VARCHAR(25) NOT NULL,
@@ -69,10 +104,10 @@ def load_stock_names(cursor):
     return stock_names
 
 def process_daily_theme_from_db_and_update_word_dic(cursor, connection, stock_names_set,
-                                                     data_period_days=40, # 추가: word_dic 계산에 사용할 최근 데이터 기간 (일수)
+                                                     data_period_days=90, # 추가: word_dic 계산에 사용할 최근 데이터 기간 (일수)
                                                      freq_threshold=0, avg_rate_threshold=1):
     """
-    daily_theme 테이블에서 데이터를 읽어 명사를 추출하여 word_dic 테이블에 누적/업데이트합니다.
+    daily_theme 테이블에서 데이터를 읽어 미리 추출된 명사를 활용하여 word_dic 테이블에 누적/업데이트합니다.
     'reason' 컬럼의 맞춤법 교정 로직은 제거되었으며, 추출된 명사 내의 공백이 제거됩니다.
     
     Args:
@@ -94,8 +129,9 @@ def process_daily_theme_from_db_and_update_word_dic(cursor, connection, stock_na
         start_date = datetime.date.today() - datetime.timedelta(days=data_period_days)
         print(f"조회 기간: {start_date} 부터 현재까지 ({data_period_days}일 데이터)")
 
+        # reason_nouns 컬럼을 함께 조회하도록 쿼리 수정
         cursor.execute("""
-            SELECT date, market, stock_code, stock_name, rate, reason, theme
+            SELECT date, market, stock_code, stock_name, rate, reason_nouns, theme
             FROM daily_theme
             WHERE date >= %s
         """, (start_date,))
@@ -107,20 +143,18 @@ def process_daily_theme_from_db_and_update_word_dic(cursor, connection, stock_na
             print("daily_theme 테이블에 유효한 데이터가 없어 분석을 진행할 수 없습니다.")
             return False
 
-        # --- 2. Initialize NLP Tools ---
-        komoran = Komoran()
+        # Komoran 초기화 코드 제거
         
         noun_counts = defaultdict(int)
         noun_weighted_sum = defaultdict(float) 
         
         processed_reason_count = 0
         
-        # --- 3. Process Each Record from daily_theme Table ---
-        print("daily_theme 테이블 각 레코드의 'reason' 컬럼 명사 추출 중...")
+        # --- 2. Process Each Record from daily_theme Table ---
+        print("daily_theme 테이블 각 레코드의 'reason_nouns' 컬럼 명사 추출 중 (사전 추출된 명사 사용)...")
         start_processing_records_time = time.time()
 
-        for dt_date, dt_market, dt_stock_code, dt_stock_name, dt_rate, dt_reason, dt_existing_theme in daily_theme_records:
-            current_reason = str(dt_reason).strip()
+        for dt_date, dt_market, dt_stock_code, dt_stock_name, dt_rate, dt_reason_nouns_json, dt_existing_theme in daily_theme_records:
             
             # 'rate' 유효성 검사 및 필터링
             try:
@@ -131,11 +165,23 @@ def process_daily_theme_from_db_and_update_word_dic(cursor, connection, stock_na
                 # rate가 유효하지 않은 경우 스킵
                 continue
 
-            nouns = komoran.nouns(current_reason) 
+            # reason_nouns JSON 컬럼에서 명사 리스트 파싱
+            nouns = []
+            if dt_reason_nouns_json:
+                try:
+                    nouns = json.loads(dt_reason_nouns_json)
+                    if not isinstance(nouns, list): # JSON이 리스트 형태가 아닐 경우 대비
+                        nouns = []
+                except json.JSONDecodeError:
+                    print(f"경고: reason_nouns JSON 파싱 오류. 레코드 건너김: {dt_reason_nouns_json[:50]}...")
+                    continue
+            
+            if not nouns: # 추출된 명사가 없으면 건너뜀
+                continue
             
             for noun in nouns:
                 # --- 추가/수정된 로직: 단어 내의 공백 제거 ---
-                cleaned_noun = noun.replace(" ", "") 
+                cleaned_noun = str(noun).strip().replace(" ", "") # 파싱된 명사도 문자열로 변환 및 공백 제거
                 
                 # 필터링 조건: 한 글자 명사 제외, 숫자/음수로 시작하는 명사 제외, 종목명과 일치하는 명사 제외
                 # 이제 cleaned_noun을 사용하여 필터링 및 통계 계산
@@ -152,7 +198,7 @@ def process_daily_theme_from_db_and_update_word_dic(cursor, connection, stock_na
         print_processing_summary(start_processing_records_time, end_processing_records_time,
                                  processed_reason_count, "명사 추출 및 통계 계산")
 
-        # --- 4. Prepare data for word_dic update ---
+        # --- 3. Prepare data for word_dic update ---
         data_to_update_word_dic = []
         for noun, count in noun_counts.items():
             cumul_rate = noun_weighted_sum[noun]
@@ -165,7 +211,7 @@ def process_daily_theme_from_db_and_update_word_dic(cursor, connection, stock_na
 
         print(f"word_dic 업데이트를 위한 최종 데이터 {len(data_to_update_word_dic)}개 준비 완료.")
 
-        # --- 5. Update/Insert into word_dic table ---
+        # --- 4. Update/Insert into word_dic table ---
         if data_to_update_word_dic:
             print("\n--- word_dic 테이블 업데이트/삽입 시작 ---")
             start_db_update_time = time.time()
@@ -204,7 +250,7 @@ def clean_word_dic(connection):
     cursor = connection.cursor()
 
     # --- 클리닝 임계값 (clean_word_dic 함수 내부로 이동하여 독립성 유지) ---
-    MIN_GLOBAL_FREQ = 5      # 이 값보다 적게 나타나는 단어는 제거됩니다
+    MIN_GLOBAL_FREQ = 5        # 이 값보다 적게 나타나는 단어는 제거됩니다
     MAX_GLOBAL_FREQ_PERCENTILE = 0.99 # 이 빈도 백분위수 이상의 단어는 제거될 수 있습니다 (상위 1%)
     MAX_COMMON_WORD_AVG_RATE_DEVIATION = 0.5 # 예: avg_rate가 -0.5와 +0.5 사이이고 빈도가 매우 높은 경우
     BLACKLIST_WORDS = ['기자', '사진', '뉴시스', '연합뉴스', '머니투데이', '코스피', '코스닥', '지수', '시장', '증시', '개장', '폐장', '마감', '시가총액'] # 발견되는 대로 더 추가하세요
@@ -295,7 +341,7 @@ if __name__ == "__main__":
         success = process_daily_theme_from_db_and_update_word_dic(
             cur, conn,
             stock_names,
-            data_period_days=40, # word_dic 계산에 사용할 기간을 180일(약 6개월)로 설정
+            data_period_days=90, # word_dic 계산에 사용할 기간을 90일로 설정 (원래 스크립트와 동일)
             freq_threshold=0,
             avg_rate_threshold=1
         )

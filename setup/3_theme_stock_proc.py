@@ -1,11 +1,15 @@
 import pandas as pd
 import pymysql
+# from konlpy.tag import Komoran # 이 스크립트에서는 Komoran을 사용하지 않으므로 주석 처리
+from collections import defaultdict
 import os.path
 import sys
 import re
 import textwrap
 import time
 from datetime import datetime, date, timedelta
+import json # JSON 데이터 처리를 위해 추가
+
 # 프로젝트 루트 경로를 sys.path에 추가 (data 디렉토리에서 실행 가능하도록)
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
@@ -31,8 +35,8 @@ db_config = {
 }
 
 # --- 새로운 스코어 계산을 위한 상수 정의 ---
-LOOKBACK_DAYS = 35 # 최근 시세 데이터를 조회할 기간 (일) 아래보다 15일 앞서야야
-RECENT_DAILY_THEME_DAYS = 20 # daily_theme에서 최근 언급된 기간 (일)
+LOOKBACK_DAYS = 100 # 최근 시세 데이터를 조회할 기간 (일) 아래보다 15일 앞서야야
+RECENT_DAILY_THEME_DAYS = 90 # daily_theme에서 최근 언급된 기간 (일)
 
 # 각 점수 요소의 가중치 (총합 100)
 WEIGHT_PRICE_TREND = 40
@@ -49,6 +53,95 @@ def print_query_execution_time(start_time, end_time, record_count, table_name=""
     print(f"[{table_name}] 처리된 레코드 건수: {record_count} 건")
     print(f"[{table_name}] 레코드 1건당 실행 시간: {time_per_record:.6f} 초")
     print(f"[{table_name}] Data insertion/update completed")
+
+def initialize_database_tables(cursor, connection):
+    """
+    필요한 데이터베이스 테이블(theme_class, theme_stock, daily_theme, word_dic, theme_word_relevance)을 생성합니다.
+    """
+    print("\n--- 데이터베이스 테이블 초기화 시작 ---")
+    
+    # 1. theme_class 테이블 생성 (사용자 제공 스키마 반영)
+    create_theme_class_table_query = textwrap.dedent("""
+        CREATE TABLE IF NOT EXISTS `theme_class` (
+            `theme_id` INT(11) NOT NULL AUTO_INCREMENT,
+            `theme` VARCHAR(30) NOT NULL ,
+            `theme_class` VARCHAR(30) NULL ,
+            `theme_synonyms` JSON NULL ,
+            `theme_hit` INT(11) NULL DEFAULT '0',
+            `theme_score` INT(11) NULL DEFAULT '0',
+            `momentum_score` DECIMAL(10,4) NULL DEFAULT '0.00',
+            `theme_desc` VARCHAR(200) NULL DEFAULT NULL ,
+            PRIMARY KEY (`theme_id`) USING BTREE,
+            INDEX `idx_theme` (`theme`) USING BTREE
+        );
+    """)
+    cursor.execute(create_theme_class_table_query)
+    print("theme_class 테이블 존재 확인 및 필요시 생성 완료.")
+
+    # 2. theme_stock 테이블 생성
+    create_theme_stock_table_query = textwrap.dedent("""
+        CREATE TABLE IF NOT EXISTS `theme_stock` (
+            `theme_id` INT(11) NOT NULL,
+            `stock_code` VARCHAR(7) NOT NULL ,
+            `stock_score` DECIMAL(10,4) NULL DEFAULT '0.0000', -- DECIMAL로 변경
+            PRIMARY KEY (`theme_id`, `stock_code`) USING BTREE,
+            INDEX `idx_ts_theme` (`theme_id`) USING BTREE,
+            INDEX `idx_ts_stock_code` (`stock_code`) USING BTREE
+        );
+    """)
+    cursor.execute(create_theme_stock_table_query)
+    print("theme_stock 테이블 존재 확인 및 필요시 생성 완료.")
+
+    # 3. daily_theme 테이블 생성 (reason_nouns JSON 컬럼 포함)
+    create_daily_theme_table_query = textwrap.dedent("""
+        CREATE TABLE IF NOT EXISTS `daily_theme` (
+            `date` DATE NOT NULL,
+            `market` VARCHAR(8) NOT NULL ,
+            `stock_code` VARCHAR(7) NOT NULL ,
+            `stock_name` VARCHAR(25) NOT NULL ,
+            `rate` DECIMAL(5,2) NULL DEFAULT '0.00',
+            `amount` INT(11) NULL DEFAULT '0',
+            `reason` VARCHAR(250) NOT NULL ,
+            `reason_nouns` JSON NULL , -- JSON 타입 컬럼
+            `theme` VARCHAR(250) NULL DEFAULT NULL ,
+            PRIMARY KEY (`date`, `market`, `stock_code`) USING BTREE
+        );
+    """)
+    cursor.execute(create_daily_theme_table_query)
+    print("daily_theme 테이블 존재 확인 및 필요시 생성 완료.")
+
+    # 4. word_dic 테이블 생성
+    create_word_dic_table_query = textwrap.dedent("""
+        CREATE TABLE IF NOT EXISTS word_dic (
+            word VARCHAR(25) NOT NULL,
+            freq INT NULL DEFAULT NULL,
+            cumul_rate DECIMAL(10,2) NULL DEFAULT NULL,
+            avg_rate DECIMAL(10,2) NULL DEFAULT NULL,
+            PRIMARY KEY (word)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    """)
+    cursor.execute(create_word_dic_table_query)
+    print("word_dic 테이블 존재 확인 및 필요시 생성 완료.")
+    
+    # 5. theme_word_relevance 테이블 생성
+    create_theme_word_relevance_table_query = textwrap.dedent("""
+        CREATE TABLE IF NOT EXISTS theme_word_relevance (
+            theme VARCHAR(30) NOT NULL,
+            word VARCHAR(25) NOT NULL,
+            relevance_score DECIMAL(10,4) NULL DEFAULT 0,
+            num_occurrences INT NULL DEFAULT 0,
+            avg_stock_rate_in_theme DECIMAL(10,2) NULL DEFAULT 0,
+            PRIMARY KEY (theme, word),
+            INDEX idx_twr_theme (theme),
+            INDEX idx_twr_word (word)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    """)
+    cursor.execute(create_theme_word_relevance_table_query)
+    print("theme_word_relevance 테이블 존재 확인 및 필요시 생성 완료.")
+
+    connection.commit()
+    print("--- 데이터베이스 테이블 초기화 완료 ---")
+
 
 def calculate_price_trend_score(df_stock_data):
     """
@@ -177,28 +270,11 @@ try:
     cursor = connection.cursor()
 
     # 실제 DBManager, APIManager 인스턴스를 생성하여 TraderManager에 전달
-    # 이 부분은 실제 DB/API 연결 정보에 맞게 수정해야 합니다.
-
     trader_manager = TraderManager()
-    # 1. theme_class 테이블 생성 (존재하지 않을 경우)
     
-    # 2. theme_stock 테이블 생성 (존재하지 않을 경우)
-    create_theme_stock_table_query = textwrap.dedent("""
-        CREATE TABLE IF NOT EXISTS theme_stock (
-            theme VARCHAR(30) NOT NULL,
-            stock_code VARCHAR(7) NOT NULL,
-            stock_score INT DEFAULT 0,
-            PRIMARY KEY (theme, stock_code),
-            INDEX idx_ts_theme (theme),
-            INDEX idx_ts_stock_code (stock_code)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-    """)
-    cursor.execute(create_theme_stock_table_query)
-    print("theme_stock 테이블 존재 확인 및 필요시 생성 완료.")
-     
-     # 3. daily_theme 테이블 생성 (존재하지 않을 경우)
-
-
+    # 1. 모든 필요한 테이블 생성/확인
+    initialize_database_tables(cursor, connection)
+    connection.commit() # initialize_database_tables 내부에서 commit을 하지만, 명시적으로 한번 더
 
     # --- 0. theme_stock 테이블 초기화 (매일 재계산 전에) ---
     print("\n--- theme_stock 테이블 초기화 ---")
@@ -208,18 +284,39 @@ try:
     end_time_reset_ts = time.time()
     print(f"theme_stock 테이블 stock_score 초기화 완료 ({end_time_reset_ts - start_time_reset_ts:.4f} 초)")
 
-
-    ## 1. theme_synonyms 및 theme_class (theme_id -> theme_name) 사전 로드
-    print("\n--- 테마 동의어 및 테마 이름 사전 로딩 ---")
+    ## 1. theme_class에서 테마 동의어 및 테마 이름 사전 로드
+    print("\n--- 테마 동의어 및 테마 이름 사전 로딩 (theme_class 테이블에서) ---")
     start_time_load_themes = time.time()
     
-    # theme_synonym과 해당 theme_id를 로드하여 매핑
-    cursor.execute("SELECT theme_synonym, theme_id FROM theme_synonyms")
-    theme_synonym_map = {row[0].strip(): row[1] for row in cursor.fetchall() if row[0].strip()}
-    
-    # theme_id를 통해 실제 theme 이름을 얻기 위한 맵 로드
-    cursor.execute("SELECT theme_id, theme FROM theme_class")
-    theme_id_to_name_map = {row[0]: row[1].strip() for row in cursor.fetchall()}
+    # theme_class 테이블에서 theme_id, theme, theme_synonyms (JSON) 로드
+    cursor.execute("SELECT theme_id, theme, theme_synonyms FROM theme_class")
+    theme_class_records = cursor.fetchall()
+
+    theme_id_to_name_map = {}
+    theme_synonym_map = {} # {synonym: theme_id}
+
+    for theme_id, theme_name, synonyms_json in theme_class_records:
+        theme_id_to_name_map[theme_id] = theme_name.strip()
+        
+        # 주 테마명도 동의어로 포함
+        theme_synonym_map[theme_name.strip()] = theme_id
+
+        # JSON 동의어 파싱
+        if synonyms_json:
+            try:
+                # DB에서 가져온 JSON은 bytes일 수 있으므로 decode
+                if isinstance(synonyms_json, bytes):
+                    synonyms_json = synonyms_json.decode('utf-8')
+                
+                parsed_synonyms = json.loads(synonyms_json)
+                if isinstance(parsed_synonyms, list):
+                    for syn in parsed_synonyms:
+                        if isinstance(syn, str) and syn.strip():
+                            theme_synonym_map[syn.strip()] = theme_id # 이미 존재하면 덮어쓰기 (하나의 동의어는 하나의 theme_id에 매핑)
+            except json.JSONDecodeError as e:
+                logger.warning(f"경고: theme_id {theme_id}의 theme_synonyms JSON 파싱 오류: {e}. 원본 JSON: {synonyms_json[:50]}...")
+            except Exception as e:
+                logger.warning(f"경고: theme_id {theme_id}의 theme_synonyms 처리 중 예상치 못한 오류: {e}")
 
     # 정규식 컴파일을 위한 동의어 리스트 (더 긴 것 먼저 매칭되도록 정렬)
     sorted_synonyms = sorted(list(theme_synonym_map.keys()), key=len, reverse=True)
@@ -236,7 +333,7 @@ try:
     start_time_process_daily = time.time()
 
     # 현재 날짜 기준
-    today = date.today() #- timedelta(days=18)
+    today = date.today() 
     one_month_ago = today - timedelta(days=RECENT_DAILY_THEME_DAYS)
 
     # 필터링된 종목 및 해당 종목에 연결된 theme_id 집합
@@ -246,7 +343,8 @@ try:
     # daily_theme 업데이트용 데이터
     daily_theme_updates = []
 
-    # 최근 한 달간의 daily_theme 레코드만 로드
+    # 최근 기간의 daily_theme 레코드만 로드
+    # reason_nouns 컬럼 대신 reason 컬럼을 사용합니다.
     cursor.execute("""
         SELECT date, market, stock_code, stock_name, rate, reason, theme 
         FROM daily_theme 
@@ -262,13 +360,15 @@ try:
         found_theme_ids_for_record = set()
         found_theme_names_for_record = set()
 
+        # reason 텍스트에서 정규식을 사용하여 테마 동의어 매칭
+        current_reason_text = str(dt_reason)
         for synonym, theme_id, synonym_regex in theme_synonym_regex_map:
-            if synonym_regex.search(dt_reason):
+            if synonym_regex.search(current_reason_text):
                 found_theme_ids_for_record.add(theme_id)
                 if theme_id in theme_id_to_name_map:
                     found_theme_names_for_record.add(theme_id_to_name_map[theme_id])
         
-        # daily_theme 업데이트용 데이터 준비 (기존 로직 유지)
+        # daily_theme 업데이트용 데이터 준비
         current_themes_in_db = set()
         if dt_existing_theme_str:
             current_themes_in_db.update([t.strip() for t in dt_existing_theme_str.split(',') if t.strip()])
@@ -281,7 +381,7 @@ try:
 
         # stock_score 계산을 위한 대상 종목 필터링 (rate 10% 이상)
         # 이 시점에서 종목과 관련된 모든 theme_id를 저장
-        if dt_rate >= 10 and found_theme_ids_for_record:
+        if dt_rate is not None and dt_rate >= 10 and found_theme_ids_for_record:
             if dt_stock_code not in target_stock_theme_mentions:
                 target_stock_theme_mentions[dt_stock_code] = {
                     'theme_ids': set(),
@@ -404,8 +504,6 @@ try:
     start_time_print_results = time.time()
 
     # theme_stock, stock_info, theme_class를 조인하여 필요한 정보 가져오기
-    # 여기서는 각 점수 요소 (주가 추세, 거래대금, 변동성, 테마 언급 빈도)를 DB에 별도로 저장하지 않았기 때문에
-    # '합계' 점수만 출력 가능합니다. 만약 각 점수를 DB에 저장한다면 여기에 추가할 수 있습니다.
     select_top_stocks_query = textwrap.dedent("""
         SELECT 
             ts.stock_code, 
@@ -422,7 +520,7 @@ try:
             ts.stock_score > 0 -- 점수가 0보다 큰 종목만 출력
         ORDER BY 
             ts.stock_score DESC
-        LIMIT 80; -- 상위 20개 종목만 출력
+        LIMIT 80; -- 상위 80개 종목만 출력 (원래 20개였으나, 80개로 변경)
     """)
     
     cursor.execute(select_top_stocks_query)

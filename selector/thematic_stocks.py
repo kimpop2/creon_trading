@@ -5,8 +5,9 @@ import datetime
 from collections import defaultdict
 from time import time
 import re, sys, textwrap
-from konlpy.tag import Komoran # 잠재적 신규 단어 발견용
-from pykospacing import Spacing # reason 표시용으로 여전히 사용되는 경우
+import json # JSON 파싱을 위해 추가
+# from konlpy.tag import Komoran # 제거됨
+# from pykospacing import Spacing # 제거됨
 
 # --- 설정 ---
 db_config = {
@@ -89,8 +90,9 @@ def process_daily_theme_data(cursor, connection, stock_names_set, stock_to_theme
         start_date = datetime.date.today() - datetime.timedelta(days=data_period_days)
         print(f"daily_theme 테이블에서 {start_date} 이후의 데이터 로드 중...")
 
+        # reason_nouns 컬럼 추가
         cursor.execute("""
-            SELECT date, market, stock_code, stock_name, rate, reason, theme 
+            SELECT date, market, stock_code, stock_name, rate, reason, theme, reason_nouns
             FROM daily_theme
             WHERE date >= %s
         """, (start_date,))
@@ -102,8 +104,7 @@ def process_daily_theme_data(cursor, connection, stock_names_set, stock_to_theme
             print("daily_theme 테이블에 유효한 데이터가 없어 분석을 진행할 수 없습니다.")
             return False
 
-        komoran = Komoran()
-        spacing_tool = Spacing() # 가독성을 위해 reason 컬럼 사용 시 (업데이트는 하지 않음)
+        # Komoran 및 Spacing 관련 객체 제거
 
         # word_dic 관련 집계는 남겨둠 (momentum_score 및 신규 테마 식별에 간접적으로 사용될 수 있으므로)
         word_dic_noun_counts = defaultdict(int)
@@ -114,20 +115,24 @@ def process_daily_theme_data(cursor, connection, stock_names_set, stock_to_theme
         
         processed_reason_count = 0
         
-        print("daily_theme 테이블 각 레코드의 'reason' 컬럼 분석 및 명사 추출 중...")
+        print("daily_theme 테이블 각 레코드의 'reason_nouns' 컬럼 분석 중...")
         start_processing_records_time = time()
 
-        for dt_date, dt_market, dt_stock_code, dt_stock_name, dt_rate, dt_reason, dt_processed_themes in daily_theme_records:
-            current_reason = str(dt_reason).strip()
+        for dt_date, dt_market, dt_stock_code, dt_stock_name, dt_rate, dt_reason, dt_processed_themes, dt_reason_nouns in daily_theme_records:
+            # Komoran 명사 추출 대신 reason_nouns 컬럼 사용
+            parsed_reason_nouns = []
+            if dt_reason_nouns: # reason_nouns 컬럼이 비어있지 않은지 확인
+                try:
+                    # reason_nouns는 JSON 문자열 형태의 명사 리스트로 가정
+                    parsed_reason_nouns = json.loads(dt_reason_nouns)
+                except json.JSONDecodeError as e:
+                    print(f"경고: reason_nouns JSON 파싱 오류 for {dt_stock_code}, {dt_date}: {e}")
+                    parsed_reason_nouns = []
+            
+            all_nouns_for_processing = set(parsed_reason_nouns)
 
             # daily_theme.theme 컬럼에서 콤마로 구분된 대표 테마명들을 파싱
             processed_themes_for_entry = [t.strip() for t in str(dt_processed_themes).split(',') if t.strip()]
-
-            # Komoran 명사 추출은 여전히 'reason' 컬럼에서 수행 (word_dic 및 theme_word_relevance를 위함)
-            komoran_nouns = komoran.nouns(current_reason)
-
-            # all_nouns_for_processing은 이제 단순히 Komoran에서 추출한 명사들
-            all_nouns_for_processing = set(komoran_nouns)
 
             # 등락률 유효성 검사
             try:
@@ -142,7 +147,7 @@ def process_daily_theme_data(cursor, connection, stock_names_set, stock_to_theme
             # theme_word_relevance용 집계 로직 변경
             # 이제 associated_themes_for_stock 대신 processed_themes_for_entry를 사용
             for noun in all_nouns_for_processing:
-                # word_dic 집계는 기존과 동일 (reason에서 추출된 모든 명사에 대해)
+                # word_dic 집계는 기존과 동일 (reason_nouns에서 추출된 모든 명사에 대해)
                 word_dic_noun_counts[noun] += 1
                 word_dic_noun_weighted_sum[noun] += rate
 
@@ -155,7 +160,7 @@ def process_daily_theme_data(cursor, connection, stock_names_set, stock_to_theme
         
         end_processing_records_time = time()
         print_processing_summary(start_processing_records_time, end_processing_records_time,
-                                 processed_reason_count, "reason 분석 및 집계")
+                                 processed_reason_count, "reason_nouns 분석 및 집계")
 
         # theme_class momentum_score 계산 및 업데이트
         theme_momentum_updates = []
@@ -327,7 +332,7 @@ def get_actionable_insights(cursor, limit_themes=5, limit_stocks_per_theme=3):
                 recent_rate = float(recent_data[0]) if recent_data and recent_data[0] else 0.0
                 recent_reason = recent_data[1] if recent_data and recent_data[1] else "N/A"
 
-                print(f"    - 종목: {stock_name} ({stock_code}), 테마 기여 점수: {stock_score}, 최근 등락률: {recent_rate:.2f}%, 최근 이유: {recent_reason}")
+                print(f"    - 종목: {stock_name} ({stock_code}), 테마 기여 점수: {stock_score}, 최근 등락률: {recent_rate:.2f}%, \n    * 이유: {recent_reason}")
                 theme_result['recommended_stocks'].append({
                     'stock_code': stock_code,
                     'stock_name': stock_name,
@@ -390,7 +395,7 @@ if __name__ == "__main__":
     conn = None
     # 테스트를 위한 data_period_days 설정 (원하는 값으로 변경 가능)
     # 예를 들어, 최근 30일 데이터만 보려면 `test_data_period_days = 30`으로 변경
-    test_data_period_days = 20 # 사용자의 요청에 따라 20일로 설정
+    test_data_period_days = 40 # 사용자의 요청에 따라 20일로 설정
 
     try:
         conn = pymysql.connect(**db_config)

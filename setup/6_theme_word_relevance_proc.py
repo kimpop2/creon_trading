@@ -1,6 +1,6 @@
 import pandas as pd
 import pymysql
-from konlpy.tag import Komoran
+# from konlpy.tag import Komoran # Komoran 모듈 사용 중지
 from collections import defaultdict
 import os.path
 import sys
@@ -8,6 +8,7 @@ import re
 import textwrap
 import time
 import datetime
+import json # JSON 데이터 처리를 위해 추가
 
 # --- 설정 ---
 # MariaDB 연결 설정
@@ -34,9 +35,38 @@ def initialize_database_tables(cursor, connection):
     print("\n--- 데이터베이스 테이블 초기화 시작 ---")
     
     # 1. theme_stock 테이블 생성 (기존 로직 유지)
+    create_theme_stock_table_query = textwrap.dedent("""
+        CREATE TABLE IF NOT EXISTS theme_stock (
+            theme_id VARCHAR(36) NOT NULL,
+            stock_code VARCHAR(7) NOT NULL,
+            stock_score DECIMAL(10,4) DEFAULT 0.0000,
+            PRIMARY KEY (theme_id, stock_code),
+            INDEX idx_ts_stock_code (stock_code),
+            INDEX idx_ts_theme_id (theme_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    """)
+    cursor.execute(create_theme_stock_table_query)
+    print("theme_stock 테이블 존재 확인 및 필요시 생성 완료.")
 
-    # 2. theme_stock 테이블 생성 (존재하지 않을 경우)
-    # 5. theme_word_relevance 테이블 생성 (NEW)
+    # 2. daily_theme 테이블 생성 (기존 로직 유지) - reason_nouns 컬럼이 JSON 타입으로 존재함을 가정
+    create_daily_theme_table_query = textwrap.dedent("""
+        CREATE TABLE IF NOT EXISTS daily_theme (
+            date DATE NOT NULL,
+            market VARCHAR(8) NOT NULL,
+            stock_code VARCHAR(7) NOT NULL,
+            stock_name VARCHAR(25) NOT NULL,
+            rate DECIMAL(5,2) NULL DEFAULT '0.00',
+            amount INT(11) NULL DEFAULT '0',
+            reason VARCHAR(250) NOT NULL,
+            reason_nouns JSON NULL, -- JSON 타입 컬럼
+            theme VARCHAR(250) NULL DEFAULT NULL,
+            PRIMARY KEY (date, market, stock_code) USING BTREE
+        );
+    """)
+    cursor.execute(create_daily_theme_table_query)
+    print("daily_theme 테이블 존재 확인 및 필요시 생성 완료.")
+
+    # 3. theme_word_relevance 테이블 생성 (NEW)
     create_theme_word_relevance_table_query = textwrap.dedent("""
         CREATE TABLE IF NOT EXISTS theme_word_relevance (
             theme VARCHAR(30) NOT NULL,
@@ -51,7 +81,7 @@ def initialize_database_tables(cursor, connection):
     """)
     cursor.execute(create_theme_word_relevance_table_query)
     print("theme_word_relevance 테이블 존재 확인 및 필요시 생성 완료.")
-    
+
     connection.commit()
     print("--- 데이터베이스 테이블 초기화 완료 ---")
 
@@ -90,9 +120,9 @@ def load_theme_stock_mapping(cursor):
 
 
 def calculate_and_update_theme_word_relevance(cursor, connection, stock_names_set, stock_to_themes_map,
-                                               theme_word_relevance_min_occurrences=1, data_period_days=40): # data_period_days 파라미터 추가
+                                               theme_word_relevance_min_occurrences=1, data_period_days=90):
     """
-    daily_theme 테이블에서 데이터를 읽어 명사를 추출하고,
+    daily_theme 테이블에서 데이터를 읽어 미리 추출된 명사를 활용하고,
     theme_stock 매핑을 활용하여 theme_word_relevance 테이블을 계산하고 업데이트합니다.
     
     Args:
@@ -112,8 +142,9 @@ def calculate_and_update_theme_word_relevance(cursor, connection, stock_names_se
         start_date = datetime.date.today() - datetime.timedelta(days=data_period_days)
         print(f"daily_theme 테이블에서 {start_date} 이후의 데이터 로드 중...")
         
+        # reason_nouns 컬럼을 함께 조회하도록 쿼리 수정
         cursor.execute("""
-            SELECT date, stock_code, rate, reason 
+            SELECT date, stock_code, rate, reason_nouns
             FROM daily_theme
             WHERE date >= %s
         """, (start_date,))
@@ -125,21 +156,19 @@ def calculate_and_update_theme_word_relevance(cursor, connection, stock_names_se
             print("daily_theme 테이블에 유효한 데이터가 없어 theme_word_relevance 계산을 진행할 수 없습니다.")
             return False
 
-        # --- 2. Initialize NLP Tools ---
-        komoran = Komoran()
-        
+        # Komoran 초기화 코드 제거
+
         # Data structure for theme_word_relevance aggregation
         # {theme: {word: {'count': N, 'sum_rate': R}}}
         theme_word_aggr = defaultdict(lambda: defaultdict(lambda: {'count': 0, 'sum_rate': 0.0}))
 
         processed_record_count = 0
         
-        # --- 3. Process Each Record from daily_theme Table ---
-        print("daily_theme 레코드 분석 및 테마-단어 관련성 집계 중...")
+        # --- 2. Process Each Record from daily_theme Table ---
+        print("daily_theme 레코드 분석 및 테마-단어 관련성 집계 중 (사전 추출된 명사 사용)...")
         start_processing_records_time = time.time()
 
-        for dt_date, dt_stock_code, dt_rate, dt_reason in daily_theme_records:
-            current_reason = str(dt_reason).strip()
+        for dt_date, dt_stock_code, dt_rate, dt_reason_nouns_json in daily_theme_records:
             
             # 'rate' 유효성 검사 및 필터링
             try:
@@ -149,8 +178,20 @@ def calculate_and_update_theme_word_relevance(cursor, connection, stock_names_se
             except (ValueError, TypeError):
                 continue
 
-            nouns = komoran.nouns(current_reason)
+            # reason_nouns JSON 컬럼에서 명사 리스트 파싱
+            nouns = []
+            if dt_reason_nouns_json:
+                try:
+                    nouns = json.loads(dt_reason_nouns_json)
+                    if not isinstance(nouns, list): # JSON이 리스트 형태가 아닐 경우 대비
+                        nouns = []
+                except json.JSONDecodeError:
+                    print(f"경고: reason_nouns JSON 파싱 오류. 레코드 건너뜀: {dt_reason_nouns_json[:50]}...")
+                    continue
             
+            if not nouns: # 추출된 명사가 없으면 건너뜀
+                continue
+
             # Get themes associated with this stock code
             associated_themes = stock_to_themes_map.get(dt_stock_code, [])
 
@@ -159,7 +200,7 @@ def calculate_and_update_theme_word_relevance(cursor, connection, stock_names_se
 
             for noun in nouns:
                 # 단어 내 공백 제거 (이전 요청 반영)
-                cleaned_noun = noun.replace(" ", "") 
+                cleaned_noun = str(noun).strip().replace(" ", "") # 파싱된 명사도 문자열로 변환 및 공백 제거
                 
                 # 필터링 조건: 한 글자 명사 제외, 숫자/음수로 시작하는 명사 제외, 종목명과 일치하는 명사 제외
                 if (len(cleaned_noun) == 1 or
@@ -178,7 +219,7 @@ def calculate_and_update_theme_word_relevance(cursor, connection, stock_names_se
         print_processing_summary(start_processing_records_time, end_processing_records_time,
                                  processed_record_count, "테마-단어 관련성 데이터 집계")
 
-        # --- 4. Prepare data for theme_word_relevance update ---
+        # --- 3. Prepare data for theme_word_relevance update ---
         data_to_update_theme_word_relevance = []
         for theme, words_data in theme_word_aggr.items():
             for word, metrics in words_data.items():
@@ -204,13 +245,12 @@ def calculate_and_update_theme_word_relevance(cursor, connection, stock_names_se
         
         print(f"theme_word_relevance 업데이트를 위한 최종 데이터 {len(data_to_update_theme_word_relevance)}개 준비 완료.")
 
-        # --- 5. Update/Insert into theme_word_relevance table ---
+        # --- 4. Update/Insert into theme_word_relevance table ---
         if data_to_update_theme_word_relevance:
             print("\n--- theme_word_relevance 테이블 업데이트/삽입 시작 ---")
             start_db_update_time = time.time()
-            # 기존 데이터를 모두 지우고 새로 삽입 (혹은 REPLACE INTO 사용)
-            # 여기서는 명시적으로 TRUNCATE 후 INSERT를 제안합니다.
-            # TRUNCATE TABLE은 매우 빠르게 테이블의 모든 데이터를 삭제합니다.
+            
+            # 기존 데이터를 모두 지우고 새로 삽입 (TRUNCATE 후 INSERT)
             cursor.execute("TRUNCATE TABLE theme_word_relevance")
             connection.commit()
             print("기존 theme_word_relevance 데이터 삭제 완료.")
@@ -233,7 +273,7 @@ def calculate_and_update_theme_word_relevance(cursor, connection, stock_names_se
 
 
         end_total_time = time.time()
-        print_processing_summary(start_total_time, end_total_time, total_records_loaded, "전체 theme_word_relevance 계산 및 업데이트")
+        print_processing_summary(end_total_time - start_total_time, end_total_time, total_records_loaded, "전체 theme_word_relevance 계산 및 업데이트")
         return True
 
     except pymysql.MySQLError as e:
@@ -273,7 +313,7 @@ if __name__ == "__main__":
             stock_names,
             stock_to_themes,
             theme_word_relevance_min_occurrences=4, # Minimum occurrences for (theme, word) pair in theme_word_relevance
-            data_period_days=40 # <-- 이 부분 추가: word_dic과 동일하게 6개월 (180일)로 기간 제한
+            data_period_days=90 # <-- 이 부분 추가: word_dic과 동일하게 6개월 (180일)로 기간 제한
         )
 
         if not success:
