@@ -125,13 +125,13 @@ class Broker(AbstractBroker):
         loss_ratio = self._calculate_loss_ratio(current_price, avg_price)
         
         # 1. 단순 손절 (stop_loss_ratio)
-        if self.stop_loss_params['stop_loss_ratio'] is not None and loss_ratio <= self.stop_loss_params['stop_loss_ratio']:
+        if self.stop_loss_params is not None and self.stop_loss_params['stop_loss_ratio'] is not None and loss_ratio <= self.stop_loss_params['stop_loss_ratio']:
             logging.info(f"[개별 손절매 발생] {stock_code}: 현재 손실률 {loss_ratio:.2f}%가 기준치 {self.stop_loss_params['stop_loss_ratio']}%를 초과. {current_dt.isoformat()}")
             self.execute_order(stock_code, 'sell', current_price, pos_info['size'], current_dt)
             return True
         
         # 2. 트레일링 스탑 (trailing_stop_ratio)
-        if self.stop_loss_params['trailing_stop_ratio'] is not None and highest_price > 0:
+        if self.stop_loss_params is not None and self.stop_loss_params['trailing_stop_ratio'] is not None and highest_price > 0:
             trailing_loss_ratio = self._calculate_loss_ratio(current_price, highest_price)
             if trailing_loss_ratio <= self.stop_loss_params['trailing_stop_ratio']:
                 logging.info(f"[트레일링 스탑 발생] {stock_code}: 현재가 {current_price:,.0f}원이 최고가 {highest_price:,.0f}원 대비 {trailing_loss_ratio:.2f}% 하락. {current_dt.isoformat()}")
@@ -139,7 +139,7 @@ class Broker(AbstractBroker):
                 return True
         
         # 3. 보유 기간 기반 손절 (early_stop_loss)
-        if self.stop_loss_params['early_stop_loss'] is not None and pos_info['entry_date'] is not None:
+        if self.stop_loss_params is not None and self.stop_loss_params['early_stop_loss'] is not None and pos_info['entry_date'] is not None:
             holding_days = (current_dt.date() - pos_info['entry_date']).days
             if holding_days <= 5 and loss_ratio <= self.stop_loss_params['early_stop_loss']:
                 logging.info(f"[조기 손절매 발생] {stock_code}: 매수 후 {holding_days}일 이내 손실률 {loss_ratio:.2f}%가 조기 손절 기준 {self.stop_loss_params['early_stop_loss']}% 초과. {current_dt.isoformat()}")
@@ -158,7 +158,7 @@ class Broker(AbstractBroker):
             return False
 
         # 1. 전체 손실폭 기준 (portfolio_stop_loss)
-        if self.stop_loss_params['portfolio_stop_loss'] is not None:
+        if self.stop_loss_params is not None and self.stop_loss_params['portfolio_stop_loss'] is not None:
             total_cost = 0
             total_current_value = 0
             
@@ -172,10 +172,10 @@ class Broker(AbstractBroker):
                 if total_loss_ratio <= self.stop_loss_params['portfolio_stop_loss']:
                     logging.info(f'[포트폴리오 손절] {current_dt.isoformat()} - 전체 손실률: {total_loss_ratio:.2f}%')
                     self._execute_portfolio_sellout(current_prices, current_dt)
-                    return True
+                    
 
         # 2. 동시다발적 손실 기준 (max_losing_positions)
-        if self.stop_loss_params['max_losing_positions'] is not None:
+        if self.stop_loss_params is not None and self.stop_loss_params['max_losing_positions'] is not None:
             if self.stop_loss_params['stop_loss_ratio'] is None:
                 logging.warning("max_losing_positions 사용을 위해서는 stop_loss_ratio가 설정되어야 합니다.")
                 return False
@@ -190,23 +190,24 @@ class Broker(AbstractBroker):
             if losing_positions_count >= self.stop_loss_params['max_losing_positions']:
                 logging.info(f'[포트폴리오 손절] {current_dt.isoformat()} - 손실 종목 수: {losing_positions_count}개 (기준: {self.stop_loss_params["max_losing_positions"]}개)')
                 self._execute_portfolio_sellout(current_prices, current_dt)
-                return True
-
+                
         return False
 
     def _execute_portfolio_sellout(self, current_prices: Dict[str, float], current_dt: datetime):
         """포트폴리오 전체 청산을 실행합니다."""
         for stock_code in list(self.positions.keys()):
-            if self.positions[stock_code]['size'] > 0:
-                #current_prices[stock_code]
-                self.positions[stock_code]['size']
-                # self.execute_order(stock_code, 'sell', current_prices[stock_code], 
-                #                   self.positions[stock_code]['size'], current_dt)
+            self.execute_order(stock_code, 'sell', current_prices[stock_code], self.positions[stock_code]['size'], current_dt)
+
+            # if self.positions[stock_code]['size'] > 0:
+            #     if stock_code in current_prices: #################### 종목코드가 없는 경우가 있어서 안전 처리리
+            #         self.execute_order(stock_code, 'sell', current_prices[stock_code], self.positions[stock_code]['size'], current_dt)
+            #         return True
+            #     else:
+            #         logging.warning(f"[포트폴리오 청산] {stock_code}의 현재가 정보가 없어 매도 실행을 건너뜁니다.")
+            #         return False
                 
     def reset_daily_transactions(self):
         """일일 거래 초기화를 수행합니다. 현재는 빈 메서드로 두어 향후 확장 가능하도록 합니다."""
         # 일일 거래 관련 상태를 초기화하는 로직이 필요할 때 여기에 추가
         # 예: 일일 거래 횟수 제한, 일일 손실 한도 등
         pass
-
-

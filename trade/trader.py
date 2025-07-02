@@ -12,7 +12,7 @@ from trade.brokerage import Brokerage
 from trade.trader_report import TraderReport # Reporter 타입 힌트를 위해 남겨둠
 from api.creon_api import CreonAPIClient
 from manager.trader_manager import TraderManager # TraderManager 타입 힌트를 위해 남겨둠
-from selector.stock_selector import StockSelector # StockSelector 타입 힌트를 위해 남겨둠
+from manager.db_manager import DBManager    
 
 from strategies.strategy import DailyStrategy, MinuteStrategy 
 from util.strategies_util import calculate_performance_metrics, get_next_weekday 
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 class Trader:
     # __init__ 메서드를 외부에서 필요한 인스턴스를 주입받도록 변경
     def __init__(self, api_client: CreonAPIClient, initial_cash: float, 
-                 trader_manager: TraderManager, trader_report: TraderReport, stock_selector: StockSelector,
+                 manager: TraderManager, report: TraderReport, db_manager: DBManager,
                  save_to_db: bool = True):  # DB 저장 여부 파라미터 추가
         self.api_client = api_client
         self.broker = Brokerage(initial_cash, commission_rate=0.0016, slippage_rate=0.0004) # 커미션 0.16% + 슬리피지 0.04% = 총 0.2%
@@ -40,9 +40,9 @@ class Trader:
         self.minute_strategy: MinuteStrategy = None
 
         # 외부에서 주입받은 인스턴스를 사용
-        self.trader_manager = trader_manager
-        self.report = trader_report
-        self.stock_selector = stock_selector
+        self.manager = manager
+        self.report = report
+        self.db_manager = db_manager
         
         self.current_day_signals = {}
         # NEW: 현재 날짜의 분봉 매매를 위해 사용될 신호들을 저장
@@ -110,62 +110,61 @@ class Trader:
         initial_portfolio_value = self.broker.get_portfolio_value({}) # 초기 현금만 반영
         self.portfolio_values.append((current_date - datetime.timedelta(days=1), initial_portfolio_value))
         
-        while current_date <= end_date:
-            
-            # 오늘이 영업일인지 확인 (데이터가 없으면 건너뛰기)
-            daily_data_available = False
-            for stock_code in self.data_store['daily']:
-                # 의미 없음
-                # if self.daily_strategy and stock_code == self.daily_strategy.strategy_params.get('safe_asset_code'):
-                #     daily_data_available = True
-                #     break
-                
-                # 오늘 일봉이 하나라도 있다면 영업일
-                if not self.data_store['daily'][stock_code].empty and \
-                   current_date in self.data_store['daily'][stock_code].index.date:
-                    daily_data_available = True
-                    break
-            # end for
+        # 시장 캘린더 데이터 로드
+        market_calendar_df = self.db_manager.fetch_market_calendar(start_date, end_date)
+        if market_calendar_df.empty:
+            logger.error("시장 캘린더 데이터를 가져올 수 없습니다. 백테스트를 중단합니다.")
+            return
+        # 영업일만 필터링하고 날짜를 리스트로 변환하여 정렬
+        trading_dates = market_calendar_df[market_calendar_df['is_holiday'] == 0]['date'].dt.date.tolist()
+        trading_dates.sort() # 날짜가 오름차순으로 정렬되도록 보장
+        if not trading_dates:
+            logger.warning("지정된 기간 내 영업일이 없습니다. daily_universe 채우기를 건너뜁니다.")
+            return
 
-            # 영업일이 아니라면 일봉 신호, 분봉에 전달할 신호, 포토폴리오 체크시간 및 손절 플래그 초기화
-            if not daily_data_available:
-                logging.info(f"{current_date.isoformat()}는 휴장(공휴일)입니다. (일봉 데이터 없음)")
-                # 신호 저장소도 초기화
-                self.current_day_signals = {}
-                self.signals_for_minute_trading = {}
-                self.last_portfolio_check = None
-                self.portfolio_stop_flag = False
-                # 영럽일이 아니면 다음날로 이동하고 루프 다시 시작 == 여기서 실행 끝
-                current_date += datetime.timedelta(days=1)
-                continue 
-            # 영업일 체크 끝
+        # 영업일을 순회하며 SetupManager 실행
+        for current_date in trading_dates:  
 
             # 영업일이면 백테스트 시작
             logging.info(f"\n--- 현재 백테스트 날짜: {current_date.isoformat()} ---")
 
-            # 1. 이전 날짜에 일봉 전략이 생성한 신호를 '오늘' 사용할 신호로 복사하고, 다음 날을 위해 신호 저장소를 비웁니다.
-            # 백테스트 첫날이 아닌 경우에만 이전 신호를 복사
-            # if current_date > start_date:
-            #     self.signals_for_minute_trading = self.current_day_signals.copy()
+            # 전일 날짜 계산
+            current_date_index = trading_dates.index(current_date)
+            prev_date = None
+            if current_date_index == 0 :
+                prev_date = start_date - datetime.timedelta(days=1)
+            else:
+                prev_date = trading_dates[current_date_index - 1]            # self.data_store 
+            
+            fetch_date = current_date - datetime.timedelta(days=180)
+            self.data_store['daily'] = {} # 보유종목과 유니버스 종목을 다시 담기 위해 초기화
+            
+            # 보유종목 구하기
+            #self.positions = {}  # {stock_code: {'size': int, 'avg_price': float, 'entry_date': datetime.date, 'highest_price': float}}
+            for stock_code, position_info in self.broker.positions.items(): # .items()를 사용하여 키와 값을 모두 가져옵니다.
+                if position_info['size'] > 0: # position_info['size']로 직접 접근합니다.
+                    daily_df = self.manager.cache_daily_ohlcv(stock_code, fetch_date, prev_date)
+                    self.data_store['daily'][stock_code] = daily_df
+                    # self.data_store['daily']가 초기화되지 않았을 가능성을 대비하여 확인 후 할당합니다.
+                    # if 'daily' not in self.data_store:
+                    #     self.data_store['daily'] = {}
+                    #     self.data_store['daily'][stock_code] = daily_df
+
+            # 유니버스 종목 하루전
+            stocks = self.db_manager.fetch_daily_theme_stock(prev_date, prev_date)
+            #print(stocks)
+            for i, (stock_code, stock_name) in enumerate(stocks):
+                daily_df = self.manager.cache_daily_ohlcv(stock_code, fetch_date, prev_date)
+                self.data_store['daily'][stock_code] = daily_df
 
             # 2. 전일 일봉 데이터를 기반으로 '오늘 실행할' 신호를 생성합니다.
             if self.daily_strategy:
-                # 전일 날짜 계산
-                prev_trading_day = None
-                for stock_code in self.data_store['daily']:
-                    # 종목의 직전 영업일 찾는 로직
-                    df = self.data_store['daily'][stock_code]
-                    if not df.empty and current_date in df.index.date:
-                        idx = list(df.index.date).index(current_date) # 오늘날짜 인덱스
-                        if idx > 0:
-                            prev_trading_day = df.index.date[idx-1]   # 오늘날짜 인덱스-1 -> 직전영업일
-                            break
                 
                 # 직전영업일이 있다. (지표계산을 위해 백테스트 시작일 이전 1달치 일봉데이터도 저장되어 있음)
-                if prev_trading_day:
+                if prev_date:
                     ##############################
                     # 전일 데이터로 일봉 전략 실행 - 오늘은 아직 장이 시작하지 않았으므로(전일 종가까지 데이터로)
-                    self.daily_strategy.run_daily_logic(prev_trading_day)
+                    self.daily_strategy.run_daily_logic(prev_date)
                     # self.daily_strategy.signals 에 전략 실행결과가 보관 됨
                     ##############################
 
@@ -178,21 +177,11 @@ class Trader:
                                 **signal_info,
                                 'traded_today': False, # 초기화된 상태로 전달
                                 # 신호발생일은 전영업일: 신호는 전영업일 종가로 생성 (전영업일을 구하는 데 사용해도 됨)
-                                'signal_date': prev_trading_day 
+                                'signal_date': prev_date 
                             }
 
-                    logging.debug(f"[{current_date.isoformat()}] 전일({prev_trading_day.isoformat()}) 일봉 전략 실행 완료: {len(self.current_day_signals)}개의 당일 매매 신호 생성.")
-                else:
-                    # 직전영업일이(오류) 없다, 다음날짜 이동 - 일봉 신호, 분봉에 전달할 신호, 포토폴리오 체크시간 및 손절 플래그 초기화
-                    logging.warning(f"[{current_date.isoformat()}] 전일 데이터를 찾을 수 없어(오류) 일봉 전략을 건너뜁니다.")
-                    # 신호 저장소도 초기화
-                    self.current_day_signals = {}
-                    self.signals_for_minute_trading = {}
-                    self.last_portfolio_check = None
-                    self.portfolio_stop_flag = False
-                    # 영럽일이 아니면 다음날로 이동하고 루프 다시 시작 == 여기서 실행 끝
-                    current_date += datetime.timedelta(days=1)
-                    continue 
+                    logging.debug(f"[{current_date.isoformat()}] 전일({prev_date.isoformat()}) 일봉 전략 실행 완료: {len(self.current_day_signals)}개의 당일 매매 신호 생성.")
+
 
             # 3. 오늘 분봉 매매 로직을 실행합니다.
             # 분봉전략명이 OpenMinute 인지 확인 해서 아래에서 다르게 처리한다. 
@@ -274,7 +263,7 @@ class Trader:
 
                             if prev_trading_day:
                                 # TraderManager를 사용하여 분봉 데이터 로드 (전일~당일)
-                                minute_df = self.trader_manager.cache_minute_ohlcv(
+                                minute_df = self.manager.cache_minute_ohlcv(
                                     stock_code,
                                     prev_trading_day,  # 전일 영업일부터
                                     current_date       # 당일까지
@@ -382,32 +371,13 @@ class Trader:
             # 일일 포트폴리오 가치 기록 (장 마감 시점)
             # 장 마감 종가를 가져오기 위해 일봉 데이터 사용
             current_day_close_prices = {}
-            for stock_code, df in self.data_store['daily'].items():
-                # 오늘 날짜에 데이터가 있으면 사용
-                day_data = df[df.index.date == current_date]
-                if not day_data.empty:
-                    # 오늘의 종가
-                    current_day_close_prices[stock_code] = day_data['close'].iloc[0]
-                else:
-                    # 오늘 데이터가 없으면, 전 영업일의 종가 사용
-                    # 종목의 직전 영업일 찾는 로직
-                    # 전일 날짜 계산
-                    prev_trading_day = None
-                    df = self.data_store['daily'][stock_code]
-                    if not df.empty and current_date in df.index.date:
-                        idx = list(df.index.date).index(current_date) # 오늘날짜 인덱스
-                        if idx > 0:
-                            prev_trading_day = df.index.date[idx-1]   # 오늘날짜 인덱스-1 -> 직전영업일
-                            break
+            #for stock_code, df in self.data_store['daily'].items():
+            for stock_code, position_info in self.broker.positions.items(): # .items()를 사용하여 키와 값을 모두 가져옵니다.
+                # 오늘 일봉데이터 다시 가져오기
+                df = self.manager.cache_daily_ohlcv(stock_code, fetch_date, current_date)
+                self.data_store['daily'][stock_code] = df
+                current_day_close_prices[stock_code] = df['close'].iloc[0]
 
-                    prev_data = df[df.index.date == prev_trading_day]
-                    if not prev_data.empty:
-                        last_close = prev_data['close'].iloc[-1]
-                        current_day_close_prices[stock_code] = last_close
-                        logging.warning(f"경고: {stock_code}의 현재 가격 데이터가 없어 최근 영업일({prev_data.index[-1].date()}) 종가({last_close})를 사용합니다.")
-                    else:
-                        logging.warning(f"경고: {stock_code}의 현재 및 과거 가격 데이터가 모두 없습니다. 포트폴리오 가치 계산에서 제외됩니다.")
-            
             daily_portfolio_value = self.broker.get_portfolio_value(current_day_close_prices)
             self.portfolio_values.append((current_date, daily_portfolio_value))
             logging.info(f"[{current_date.isoformat()}] 장 마감 포트폴리오 가치: {daily_portfolio_value:,.0f}원, 현금: {self.broker.cash:,.0f}원")

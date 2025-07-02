@@ -29,8 +29,6 @@ from trade.trader_report import TraderReport
 from manager.trader_manager import TraderManager
 from manager.backtest_manager import BacktestManager
 from manager.db_manager import DBManager
-from selector.stock_selector import StockSelector
-from config.sector_config import sector_stocks  # 공통 설정 파일에서 import
 # 전략파일 임포트
 from strategies.triple_screen_daily import TripleScreenDaily
 from strategies.dual_momentum_daily import DualMomentumDaily
@@ -66,8 +64,8 @@ if __name__ == '__main__':
     logging.info("적응형 전략 자동매매를 실행합니다.")
 
     # 자동매매 기간 설정 (최적화 기간과 동일)
-    trader_start_date     = datetime.datetime(2025, 1, 1, 9, 0, 0).date()
-    trader_end_date       = datetime.datetime(2025, 2, 1, 3, 30, 0).date()
+    trader_start_date     = datetime.datetime(2025, 6, 1, 9, 0, 0).date()
+    trader_end_date       = datetime.datetime(2025, 7, 1, 3, 30, 0).date()
 
     # 일봉 데이터 가져오기 시작일을 자동매매 시작일 한 달 전으로 자동 설정
     trader_fetch_start = (trader_start_date - datetime.timedelta(days=30)).replace(day=1)
@@ -83,14 +81,13 @@ if __name__ == '__main__':
     
     db_manager = DBManager() # DBManager 인스턴스 생성
     trader_report = TraderReport(db_manager=db_manager) # Report 초기화 시 db_manager 전달
-    stock_selector = StockSelector(backtest_manager=backtest_manager, api_client=creon_api, sector_stocks_config=sector_stocks)
     
     # 백테스터 초기화 - TraderManager, Report, StockSelector 인스턴스 주입
     trader_instance = Trader(
-        trader_manager=trader_manager, 
+        manager=trader_manager, 
         api_client=creon_api, 
-        trader_report=trader_report, 
-        stock_selector=stock_selector,
+        report=trader_report, 
+        db_manager=db_manager,
         initial_cash=10_000_000
     )
 
@@ -180,7 +177,6 @@ if __name__ == '__main__':
     #trader_instance.set_strategies(daily_strategy=temp_daily_strategy, minute_strategy=rsi_minute_strategy)
     # 전환 2.59 -> 상승: 미손절 20.54, 손절 -> 5.29 하락 : 손절 0.25 
     trader_instance.set_strategies(daily_strategy=sma_daily_strategy, minute_strategy=rsi_minute_strategy)
-    #
     #trader_instance.set_strategies(daily_strategy=sma_daily_strategy, minute_strategy=open_minute_strategy)
     
     # Broker에 손절매 파라미터 설정 (기본 설정)
@@ -201,35 +197,35 @@ if __name__ == '__main__':
 
     # 종목 코드 확인 및 일봉 데이터 로딩
     # 안전자산 코드도 미리 추가
-    safe_asset_code = triple_screen_daily_strategy.strategy_params['safe_asset_code'] # 삼중창 전략의 안전자산 코드 사용
+    # safe_asset_code = triple_screen_daily_strategy.strategy_params['safe_asset_code'] # 삼중창 전략의 안전자산 코드 사용
 
-    logging.info(f"'안전자산' (코드: {safe_asset_code}) 안전자산 일봉 데이터 로딩 중... (기간: {trader_fetch_start.strftime('%Y%m%d')} ~ {trader_end_date.strftime('%Y%m%d')})")
-    daily_df = trader_manager.cache_daily_ohlcv(safe_asset_code, trader_fetch_start, trader_end_date)
-    trader_instance.add_daily_data(safe_asset_code, daily_df)
-    if daily_df.empty:
-        logging.warning(f"'안전자산' (코드: {safe_asset_code}) 종목의 일봉 데이터를 가져올 수 없습니다. 종료합니다.")
-        exit(1)
-    logging.debug(f"'안전자산' (코드: {safe_asset_code}) 종목의 일봉 데이터 로드 완료. 데이터 수: {len(daily_df)}행")
+    # logging.info(f"'안전자산' (코드: {safe_asset_code}) 안전자산 일봉 데이터 로딩 중... (기간: {trader_fetch_start.strftime('%Y%m%d')} ~ {trader_end_date.strftime('%Y%m%d')})")
+    # daily_df = trader_manager.cache_daily_ohlcv(safe_asset_code, trader_fetch_start, trader_end_date)
+    # trader_instance.add_daily_data(safe_asset_code, daily_df)
+    # if daily_df.empty:
+    #     logging.warning(f"'안전자산' (코드: {safe_asset_code}) 종목의 일봉 데이터를 가져올 수 없습니다. 종료합니다.")
+    #     exit(1)
+    # logging.debug(f"'안전자산' (코드: {safe_asset_code}) 종목의 일봉 데이터 로드 완료. 데이터 수: {len(daily_df)}행")
 
-    # 모든 종목 데이터 로딩
-    all_target_stock_names = stock_names
-    for name in all_target_stock_names:
-        code = creon_api.get_stock_code(name)
-        if code:
-            logging.info(f"'{name}' (코드: {code}) 종목 일봉 데이터 로딩 중... (기간: {trader_fetch_start.strftime('%Y%m%d')} ~ {trader_end_date.strftime('%Y%m%d')})")
-            daily_df = trader_manager.cache_daily_ohlcv(code, trader_fetch_start, trader_end_date)
+    # # 모든 종목 데이터 로딩
+    # all_target_stock_names = stock_names
+    # for name in all_target_stock_names:
+    #     code = creon_api.get_stock_code(name)
+    #     if code:
+    #         logging.info(f"'{name}' (코드: {code}) 종목 일봉 데이터 로딩 중... (기간: {trader_fetch_start.strftime('%Y%m%d')} ~ {trader_end_date.strftime('%Y%m%d')})")
+    #         daily_df = trader_manager.cache_daily_ohlcv(code, trader_fetch_start, trader_end_date)
             
-            if daily_df.empty:
-                logging.warning(f"{name} ({code}) 종목의 일봉 데이터를 가져올 수 없습니다. 해당 종목을 건너뜁니다.")
-                continue
-            logging.debug(f"{name} ({code}) 종목의 일봉 데이터 로드 완료. 데이터 수: {len(daily_df)}행")
-            trader_instance.add_daily_data(code, daily_df)
-        else:
-            logging.warning(f"'{name}' 종목의 코드를 찾을 수 없습니다. 해당 종목을 건너뜁니다.")
+    #         if daily_df.empty:
+    #             logging.warning(f"{name} ({code}) 종목의 일봉 데이터를 가져올 수 없습니다. 해당 종목을 건너뜁니다.")
+    #             continue
+    #         logging.debug(f"{name} ({code}) 종목의 일봉 데이터 로드 완료. 데이터 수: {len(daily_df)}행")
+    #         trader_instance.add_daily_data(code, daily_df)
+    #     else:
+    #         logging.warning(f"'{name}' 종목의 코드를 찾을 수 없습니다. 해당 종목을 건너뜁니다.")
 
-    if not trader_instance.data_store['daily']:
-        logging.error("자동매매를 위한 유효한 일봉 데이터가 없습니다. 프로그램을 종료합니다.")
-        sys.exit(1)
+    # if not trader_instance.data_store['daily']:
+    #     logging.error("자동매매를 위한 유효한 일봉 데이터가 없습니다. 프로그램을 종료합니다.")
+    #     sys.exit(1)
             
     # 자동매매 실행
     portfolio_values, metrics = trader_instance.run(trader_start_date, trader_end_date)

@@ -65,8 +65,8 @@ if __name__ == '__main__':
     logging.info("적응형 전략 백테스트를 실행합니다.")
 
     # 백테스트 기간 설정 (최적화 기간과 동일)
-    backtest_start_date     = datetime.datetime(2025, 5, 1, 9, 0, 0).date()
-    backtest_end_date       = datetime.datetime(2025, 6, 20, 3, 30, 0).date()
+    backtest_start_date     = datetime.datetime(2024, 11, 20, 9, 0, 0).date()
+    backtest_end_date       = datetime.datetime(2025, 1, 1, 3, 30, 0).date()
 
     # 일봉 데이터 가져오기 시작일을 백테스트 시작일 한 달 전으로 자동 설정
     backtest_fetch_start = (backtest_start_date - datetime.timedelta(days=30)).replace(day=1)
@@ -80,14 +80,13 @@ if __name__ == '__main__':
     backtest_manager = BacktestManager()
     db_manager = DBManager() # DBManager 인스턴스 생성
     backtest_report = BacktestReport(db_manager=db_manager) # Reporter 초기화 시 db_manager 전달
-    stock_selector = StockSelector(backtest_manager=backtest_manager, api_client=creon_api, sector_stocks_config=sector_stocks)
     
     # 백테스터 초기화 - BacktestManager, Reporter, StockSelector 인스턴스 주입
     backtest_instance = Backtest(
         backtest_manager=backtest_manager, 
         api_client=creon_api, 
         backtest_report=backtest_report, 
-        stock_selector=stock_selector,
+        db_manager=db_manager,
         initial_cash=10_000_000
     )
 
@@ -172,9 +171,9 @@ if __name__ == '__main__':
     # 전환 57.51
     #backtest_instance.set_strategies(daily_strategy=dual_daily_strategy, minute_strategy=rsi_minute_strategy)
     # 전환 84.41%
-    backtest_instance.set_strategies(daily_strategy=temp_daily_strategy, minute_strategy=rsi_minute_strategy)
+    #backtest_instance.set_strategies(daily_strategy=temp_daily_strategy, minute_strategy=rsi_minute_strategy)
     # 전환 -4.75 
-    #backtest_instance.set_strategies(daily_strategy=sma_daily_strategy, minute_strategy=rsi_minute_strategy)
+    backtest_instance.set_strategies(daily_strategy=sma_daily_strategy, minute_strategy=rsi_minute_strategy)
     # 전환 83.11
     #backtest_instance.set_strategies(daily_strategy=dual_daily_strategy, minute_strategy=open_minute_strategy)
     
@@ -195,35 +194,35 @@ if __name__ == '__main__':
 
     # 종목 코드 확인 및 일봉 데이터 로딩
     # 안전자산 코드도 미리 추가
-    safe_asset_code = triple_screen_daily_strategy.strategy_params['safe_asset_code'] # 삼중창 전략의 안전자산 코드 사용
+    # safe_asset_code = triple_screen_daily_strategy.strategy_params['safe_asset_code'] # 삼중창 전략의 안전자산 코드 사용
 
-    logging.info(f"'안전자산' (코드: {safe_asset_code}) 안전자산 일봉 데이터 로딩 중... (기간: {backtest_fetch_start.strftime('%Y%m%d')} ~ {backtest_end_date.strftime('%Y%m%d')})")
-    daily_df = backtest_manager.cache_daily_ohlcv(safe_asset_code, backtest_fetch_start, backtest_end_date)
-    backtest_instance.add_daily_data(safe_asset_code, daily_df)
-    if daily_df.empty:
-        logging.warning(f"'안전자산' (코드: {safe_asset_code}) 종목의 일봉 데이터를 가져올 수 없습니다. 종료합니다.")
-        exit(1)
-    logging.debug(f"'안전자산' (코드: {safe_asset_code}) 종목의 일봉 데이터 로드 완료. 데이터 수: {len(daily_df)}행")
+    # logging.info(f"'안전자산' (코드: {safe_asset_code}) 안전자산 일봉 데이터 로딩 중... (기간: {backtest_fetch_start.strftime('%Y%m%d')} ~ {backtest_end_date.strftime('%Y%m%d')})")
+    # daily_df = backtest_manager.cache_daily_ohlcv(safe_asset_code, backtest_fetch_start, backtest_end_date)
+    # backtest_instance.add_daily_data(safe_asset_code, daily_df)
+    # if daily_df.empty:
+    #     logging.warning(f"'안전자산' (코드: {safe_asset_code}) 종목의 일봉 데이터를 가져올 수 없습니다. 종료합니다.")
+    #     exit(1)
+    # logging.debug(f"'안전자산' (코드: {safe_asset_code}) 종목의 일봉 데이터 로드 완료. 데이터 수: {len(daily_df)}행")
 
-    # 모든 종목 데이터 로딩
-    all_target_stock_names = stock_names
-    for name in all_target_stock_names:
-        code = creon_api.get_stock_code(name)
-        if code:
-            logging.info(f"'{name}' (코드: {code}) 종목 일봉 데이터 로딩 중... (기간: {backtest_fetch_start.strftime('%Y%m%d')} ~ {backtest_end_date.strftime('%Y%m%d')})")
-            daily_df = backtest_manager.cache_daily_ohlcv(code, backtest_fetch_start, backtest_end_date)
+    # # 모든 종목 데이터 로딩
+    # all_target_stock_names = stock_names
+    # for name in all_target_stock_names:
+    #     code = creon_api.get_stock_code(name)
+    #     if code:
+    #         logging.info(f"'{name}' (코드: {code}) 종목 일봉 데이터 로딩 중... (기간: {backtest_fetch_start.strftime('%Y%m%d')} ~ {backtest_end_date.strftime('%Y%m%d')})")
+    #         daily_df = backtest_manager.cache_daily_ohlcv(code, backtest_fetch_start, backtest_end_date)
             
-            if daily_df.empty:
-                logging.warning(f"{name} ({code}) 종목의 일봉 데이터를 가져올 수 없습니다. 해당 종목을 건너뜁니다.")
-                continue
-            logging.debug(f"{name} ({code}) 종목의 일봉 데이터 로드 완료. 데이터 수: {len(daily_df)}행")
-            backtest_instance.add_daily_data(code, daily_df)
-        else:
-            logging.warning(f"'{name}' 종목의 코드를 찾을 수 없습니다. 해당 종목을 건너뜁니다.")
+    #         if daily_df.empty:
+    #             logging.warning(f"{name} ({code}) 종목의 일봉 데이터를 가져올 수 없습니다. 해당 종목을 건너뜁니다.")
+    #             continue
+    #         logging.debug(f"{name} ({code}) 종목의 일봉 데이터 로드 완료. 데이터 수: {len(daily_df)}행")
+    #         backtest_instance.add_daily_data(code, daily_df)
+    #     else:
+    #         logging.warning(f"'{name}' 종목의 코드를 찾을 수 없습니다. 해당 종목을 건너뜁니다.")
 
-    if not backtest_instance.data_store['daily']:
-        logging.error("백테스트를 위한 유효한 일봉 데이터가 없습니다. 프로그램을 종료합니다.")
-        sys.exit(1)
+    # if not backtest_instance.data_store['daily']:
+    #     logging.error("백테스트를 위한 유효한 일봉 데이터가 없습니다. 프로그램을 종료합니다.")
+    #     sys.exit(1)
             
     # 백테스트 실행
     portfolio_values, metrics = backtest_instance.run(backtest_start_date, backtest_end_date)
