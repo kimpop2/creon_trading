@@ -32,9 +32,12 @@ from manager.db_manager import DBManager
 # 전략파일 임포트
 from strategies.triple_screen_daily import TripleScreenDaily
 from strategies.dual_momentum_daily import DualMomentumDaily
-from strategies.rsi_minute import RSIMinute
 from strategies.temp_daily import TempletDaily
 from strategies.sma_daily import SMADaily
+from strategies.breakout_daily import BreakoutDaily
+from strategies.breakout_minute import BreakoutMinute
+
+from strategies.rsi_minute import RSIMinute
 from strategies.open_minute import OpenMinute
 
 # # --- 로깅 설정 ---
@@ -64,8 +67,8 @@ if __name__ == '__main__':
     logging.info("적응형 전략 자동매매를 실행합니다.")
 
     # 자동매매 기간 설정 (최적화 기간과 동일)
-    trader_start_date     = datetime.datetime(2025, 6, 1, 9, 0, 0).date()
-    trader_end_date       = datetime.datetime(2025, 7, 1, 3, 30, 0).date()
+    trader_start_date     = datetime.datetime(2025, 5, 1, 9, 0, 0).date()
+    trader_end_date       = datetime.datetime(2025, 6, 1, 3, 30, 0).date()
 
     # 일봉 데이터 가져오기 시작일을 자동매매 시작일 한 달 전으로 자동 설정
     trader_fetch_start = (trader_start_date - datetime.timedelta(days=30)).replace(day=1)
@@ -91,80 +94,105 @@ if __name__ == '__main__':
         initial_cash=10_000_000
     )
 
-    # 삼중창 전략 설정 (기본 설정 + 거래비용 고려)
-    triple_screen_daily_strategy = TripleScreenDaily(
-        data_store=trader_instance.data_store,
-        strategy_params={
-            'trend_ma_period': 20,          # 유지
-            'momentum_rsi_period': 7,      # 유지
-            'momentum_rsi_oversold': 35,    # 30 → 35 (매수 조건 더 보수적)
-            'momentum_rsi_overbought': 65,  # 70 → 65 (매도 조건 더 보수적)
-            'volume_ma_period': 7,         # 유지
-            'num_top_stocks': 7,            # 5 → 3 (집중 투자로 승률 향상)
-            'safe_asset_code': 'A439870',   # 안전자산 코드 (국고채 ETF)
-            'min_trend_strength': 0.02,     # 기본값: 0.02 (2% 추세)
-        },
-        broker=trader_instance.broker
-    )
+    # # 삼중창 전략 설정 (기본 설정 + 거래비용 고려)
+    # triple_screen_daily_strategy = TripleScreenDaily(
+    #     data_store=trader_instance.data_store,
+    #     strategy_params={
+    #         'trend_ma_period': 20,          # 유지
+    #         'momentum_rsi_period': 7,      # 유지
+    #         'momentum_rsi_oversold': 35,    # 30 → 35 (매수 조건 더 보수적)
+    #         'momentum_rsi_overbought': 65,  # 70 → 65 (매도 조건 더 보수적)
+    #         'volume_ma_period': 7,         # 유지
+    #         'num_top_stocks': 7,            # 5 → 3 (집중 투자로 승률 향상)
+    #         'safe_asset_code': 'A439870',   # 안전자산 코드 (국고채 ETF)
+    #         'min_trend_strength': 0.02,     # 기본값: 0.02 (2% 추세)
+    #     },
+    #     broker=trader_instance.broker
+    # )
 
-    # 듀얼 모멘텀 전략 설정 (DualMomentumDaily 인스턴스 생성 및 Trader에 주입)
-    dual_daily_strategy = DualMomentumDaily(
-        data_store=trader_instance.data_store,
-        strategy_params={
-            'momentum_period': 15,         #  15일
-            'rebalance_weekday': 0,        #  월요일 (0)
-            'num_top_stocks': 7,           #  5개
-            'safe_asset_code': 'A439870',  # 안전자산 코드 (국고채 ETF)
-        },
-        broker=trader_instance.broker
-    )
+    # # 듀얼 모멘텀 전략 설정 (DualMomentumDaily 인스턴스 생성 및 Trader에 주입)
+    # dual_daily_strategy = DualMomentumDaily(
+    #     data_store=trader_instance.data_store,
+    #     strategy_params={
+    #         'momentum_period': 15,         #  15일
+    #         'rebalance_weekday': 0,        #  월요일 (0)
+    #         'num_top_stocks': 7,           #  5개
+    #         'safe_asset_code': 'A439870',  # 안전자산 코드 (국고채 ETF)
+    #     },
+    #     broker=trader_instance.broker
+    # )
 
-    temp_daily_strategy = TempletDaily(
-        data_store=trader_instance.data_store,
-        strategy_params={
-            'momentum_period': 15,         # 듀얼 모멘텀처럼 기간 설정이 필요하다면 추가
-            'num_top_stocks': 5,           #  5개
-            'safe_asset_code': 'A439870', # 안전자산 코드
-        },
-        broker=trader_instance.broker 
-    )
+    # temp_daily_strategy = TempletDaily(
+    #     data_store=trader_instance.data_store,
+    #     strategy_params={
+    #         'momentum_period': 15,         # 듀얼 모멘텀처럼 기간 설정이 필요하다면 추가
+    #         'num_top_stocks': 5,           #  5개
+    #         'safe_asset_code': 'A439870', # 안전자산 코드
+    #     },
+    #     broker=trader_instance.broker 
+    # )
     
     # SMA 일봉 전략 설정 (최적화 결과 반영)
     sma_daily_strategy = SMADaily(
         data_store=trader_instance.data_store,
         strategy_params={
-            'short_sma_period': 4,          #  4일
-            'long_sma_period': 15,          #  10일
-            'volume_ma_period': 6,          #  6일
+            'short_sma_period': 3,          #  4일
+            'long_sma_period': 5,          #  10일
+            'volume_ma_period': 5,          #  6일
             'num_top_stocks': 5,            #  5개
             'safe_asset_code': 'A439870',   # 안전자산 코드
         },
         broker=trader_instance.broker
     )
-
-    # OpenMinute 분봉 전략 설정
-    open_minute_strategy = OpenMinute(
+    
+    # RSI 분봉 전략 설정 (실제 RSI 계산 및 매매)
+    rsi_minute_strategy = RSIMinute(
         data_store=trader_instance.data_store,
         strategy_params={
-            'minute_rsi_period': 52,        #  52분
-            'minute_rsi_oversold': 34,      # 과매도 
-            'minute_rsi_overbought': 70,    # 과매수
+            'minute_rsi_period': 20,       #  52분
+            'minute_rsi_oversold': 40,      # 과매도 -> 매수실행
+            'minute_rsi_overbought': 80,    # 과매수 -> 매도실행
             'num_top_stocks': 7,            # 일봉 전략과 동일한 값으로 설정
+        },
+        broker=trader_instance.broker
+    )
+    
+    
+    # 돌파매매 전략 설정 (최적화 결과 반영)
+    breakout_daily_strategy = BreakoutDaily(
+        data_store=trader_instance.data_store,
+        strategy_params = {
+            'breakout_period': 10,          # 20일 신고가 돌파
+            'volume_ma_period': 20,         # 거래량 20일 이동평균
+            'volume_multiplier': 1.5,       # 거래량 이동평균의 1.5배 이상일 때 돌파 인정
+            'num_top_stocks': 5,            # 매수할 상위 5개 종목 선정
+            'min_holding_days': 2           # 최소 보유 기간 2일 (5일 이내 매도 유도를 위함)
         },
         broker=trader_instance.broker
     )
 
     # RSI 분봉 전략 설정 (실제 RSI 계산 및 매매)
-    rsi_minute_strategy = RSIMinute(
+    breakout_minute_strategy = BreakoutMinute(
         data_store=trader_instance.data_store,
         strategy_params={
-            'minute_rsi_period': 52,        #  52분
-            'minute_rsi_oversold': 34,      # 과매도 
-            'minute_rsi_overbought': 70,    # 과매수
-            'num_top_stocks': 7,            # 일봉 전략과 동일한 값으로 설정
+            'minute_breakout_period': 10,       # 10분봉 최고가 돌파 확인 기간 (예: 지난 10개 분봉 중 최고가)
+            'minute_volume_multiplier': 1.8     # 분봉 거래량 이동평균의 1.8배 이상일 때 돌파 인정
         },
         broker=trader_instance.broker
     )
+
+
+    # # OpenMinute 분봉 전략 설정
+    # open_minute_strategy = OpenMinute(
+    #     data_store=trader_instance.data_store,
+    #     strategy_params={
+    #         'minute_rsi_period': 52,        #  52분
+    #         'minute_rsi_oversold': 34,      # 과매도 
+    #         'minute_rsi_overbought': 70,    # 과매수
+    #         'num_top_stocks': 7,            # 일봉 전략과 동일한 값으로 설정
+    #     },
+    #     broker=trader_instance.broker
+    # )
 
     # 전략 설정 (삼중창 일봉 + RSI 분봉 전략 사용)
     # 전환 14.91
@@ -176,16 +204,18 @@ if __name__ == '__main__':
     # 전환 84.41%
     #trader_instance.set_strategies(daily_strategy=temp_daily_strategy, minute_strategy=rsi_minute_strategy)
     # 전환 2.59 -> 상승: 미손절 20.54, 손절 -> 5.29 하락 : 손절 0.25 
-    trader_instance.set_strategies(daily_strategy=sma_daily_strategy, minute_strategy=rsi_minute_strategy)
+    #trader_instance.set_strategies(daily_strategy=sma_daily_strategy, minute_strategy=rsi_minute_strategy)
+    # 전환 2.59 -> 상승: 미손절 20.54, 손절 -> 5.29 하락 : 손절 0.25 
+    trader_instance.set_strategies(daily_strategy=breakout_daily_strategy, minute_strategy=breakout_minute_strategy)
     #trader_instance.set_strategies(daily_strategy=sma_daily_strategy, minute_strategy=open_minute_strategy)
     
     # Broker에 손절매 파라미터 설정 (기본 설정)
     stop_loss_params = {
-        'early_stop_loss': -3,         # 기본값: -5.0% (매수 후 3일이내)
-        'stop_loss_ratio': -5,         # 기본값: -5.0% (매수가 기준 손절율)
-        'trailing_stop_ratio': -3,     # 기본값: -3.0% (최고가 기준 손절률)
-        'portfolio_stop_loss': -5.0,  # 기본값: -5.0% (전량매도 : 자본금 손실률)
-        'max_losing_positions': 5,     # 기본값: 3개   (전량매도 : 손절 종목수)
+        'early_stop_loss': -3.5,        # 매수 후 초기 손실 제한: -3.5% (매수 후 3일 이내)
+        'stop_loss_ratio': -6.0,        # 매수가 기준 손절율: -6.0%
+        'trailing_stop_ratio': -4.0,    # 최고가 기준 트레일링 손절률: -4.0%
+        'portfolio_stop_loss': -4.0,    # 전체 자본금 손실률 (전량매도 조건): -4.0%
+        'max_losing_positions': 3       # 최대 손절 종목 수 (전량매도 조건): 3개
     }
     #stop_loss_params = None # 주석을 풀면 미작동
     trader_instance.set_broker_stop_loss_params(stop_loss_params)

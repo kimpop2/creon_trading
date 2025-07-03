@@ -136,10 +136,10 @@ class Trader:
             else:
                 prev_date = trading_dates[current_date_index - 1]            # self.data_store 
             
-            fetch_date = current_date - datetime.timedelta(days=180)
+            fetch_date = current_date - datetime.timedelta(days=60)
             self.data_store['daily'] = {} # 보유종목과 유니버스 종목을 다시 담기 위해 초기화
             
-            # 보유종목 구하기
+            # 보유종목 분봉 데이터 설정
             #self.positions = {}  # {stock_code: {'size': int, 'avg_price': float, 'entry_date': datetime.date, 'highest_price': float}}
             for stock_code, position_info in self.broker.positions.items(): # .items()를 사용하여 키와 값을 모두 가져옵니다.
                 if position_info['size'] > 0: # position_info['size']로 직접 접근합니다.
@@ -151,7 +151,7 @@ class Trader:
                     #     self.data_store['daily'][stock_code] = daily_df
 
             # 유니버스 종목 하루전
-            stocks = self.db_manager.fetch_daily_theme_stock(prev_date, prev_date)
+            stocks = self.db_manager.fetch_daily_theme_stock(prev_date - datetime.timedelta(days=1), prev_date)
             #print(stocks)
             for i, (stock_code, stock_name) in enumerate(stocks):
                 daily_df = self.manager.cache_daily_ohlcv(stock_code, fetch_date, prev_date)
@@ -339,7 +339,7 @@ class Trader:
                                     if code in self.minute_strategy.last_prices:
                                         current_prices[code] = self.minute_strategy.last_prices[code]
                                     else:
-                                        price_data = self._get_bar_at_time('minute', code, trade_time)
+                                        price_data = self.minute_strategy._get_bar_at_time('minute', code, trade_time)
                                         if price_data is not None:
                                             current_prices[code] = price_data['close']
                                             self.minute_strategy.last_prices[code] = price_data['close']

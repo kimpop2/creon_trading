@@ -52,22 +52,22 @@ class SMADaily(DailyStrategy):
         수정: 매도 신호도 생성하도록 데드크로스 조건 추가
         """
         logging.info(f"{current_date} - --- 일간 SMA 로직 실행 중 (전일 데이터 기준) ---")
+        prev_trading_day = current_date
+        # # 0. 전 영업일 계산 (일봉 인덱스에서 today 바로 전 날짜)
+        # prev_trading_day = None
+        # for stock_code in self.data_store['daily']:
+        #     df = self.data_store['daily'][stock_code]
+        #     if not df.empty and current_date in df.index.date:
+        #         idx = list(df.index.date).index(current_date)
+        #         if idx > 0:
+        #             prev_trading_day = df.index.date[idx-1]
+        #             break
+        # self.prev_trading_day = prev_trading_day
 
-        # 0. 전 영업일 계산 (일봉 인덱스에서 today 바로 전 날짜)
-        prev_trading_day = None
-        for stock_code in self.data_store['daily']:
-            df = self.data_store['daily'][stock_code]
-            if not df.empty and current_date in df.index.date:
-                idx = list(df.index.date).index(current_date)
-                if idx > 0:
-                    prev_trading_day = df.index.date[idx-1]
-                    break
-        self.prev_trading_day = prev_trading_day
-
-        # 수정: 전일 데이터가 없으면 실행하지 않음
-        if prev_trading_day is None:
-            logging.warning(f"{current_date}: 전일 데이터를 찾을 수 없어 SMA 전략을 건너뜁니다.")
-            return
+        # # 수정: 전일 데이터가 없으면 실행하지 않음
+        # if prev_trading_day is None:
+        #     logging.warning(f"{current_date}: 전일 데이터를 찾을 수 없어 SMA 전략을 건너뜁니다.")
+        #     return
 
         # 1. SMA 신호 점수 계산 (전일 데이터까지만 사용)
         buy_scores = {}  # 매수 점수
@@ -75,8 +75,6 @@ class SMADaily(DailyStrategy):
         all_stock_codes = list(self.data_store['daily'].keys())
         
         for stock_code in all_stock_codes:
-            if stock_code == self.strategy_params.get('safe_asset_code'):
-                continue
             historical_data = self._get_historical_data_up_to('daily', stock_code, prev_trading_day, lookback_period=max(self.strategy_params['long_sma_period'], self.strategy_params['volume_ma_period']) + 1)
             if historical_data.empty or len(historical_data) < max(self.strategy_params['long_sma_period'], self.strategy_params['volume_ma_period']) + 1:
                 continue

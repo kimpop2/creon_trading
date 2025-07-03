@@ -142,7 +142,7 @@ class Brokerage(AbstractBroker):
         # 3. 보유 기간 기반 손절 (early_stop_loss)
         if self.stop_loss_params is not None and self.stop_loss_params['early_stop_loss'] is not None and pos_info['entry_date'] is not None:
             holding_days = (current_dt.date() - pos_info['entry_date']).days
-            if holding_days <= 5 and loss_ratio <= self.stop_loss_params['early_stop_loss']:
+            if holding_days <= 3 and loss_ratio <= self.stop_loss_params['early_stop_loss']:
                 logging.info(f"[조기 손절매 발생] {stock_code}: 매수 후 {holding_days}일 이내 손실률 {loss_ratio:.2f}%가 조기 손절 기준 {self.stop_loss_params['early_stop_loss']}% 초과. {current_dt.isoformat()}")
                 self.execute_order(stock_code, 'sell', current_price, pos_info['size'], current_dt)
                 return True
