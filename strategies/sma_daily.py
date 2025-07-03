@@ -3,31 +3,34 @@
 import logging
 import pandas as pd
 import numpy as np
-from util.strategies_util import calculate_sma, calculate_sma_incremental, calculate_volume_ma_incremental
+from datetime import datetime, timedelta
+from typing import Dict, List, Tuple, Any
+from trade.trader import Trader
 from strategies.strategy import DailyStrategy
+from util.strategies_util import *
+
+logger = logging.getLogger(__name__)
 
 class SMADaily(DailyStrategy):
     """
     SMA(Simple Moving Average) 기반 일봉 전략입니다.
     골든 크로스/데드 크로스와 거래량 조건을 활용하여 매매 신호를 생성합니다.
     """
-    
-    def __init__(self, data_store, strategy_params, broker):
-        super().__init__(data_store, strategy_params, broker)
-        self.signals = {}
-        self._initialize_signals_for_all_stocks() # This method likely populates self.signals initially
-        
+    def __init__(self, trade:Trader, strategy_params: Dict[str, Any]):
+        # DailyStrategy 에서 trade의 broker, data_store 연결, signal 초기화 진행
+        super().__init__(trade, strategy_params)
+        #self.strategy_params = strategy_params
+        self._validate_strategy_params() # 전략 파라미터 검증
+
         # SMA 누적 계산을 위한 캐시 추가
         self.sma_cache = {}  # SMA 캐시
         self.volume_cache = {}  # 거래량 MA 캐시
         self.last_prices = {}  # 마지막 가격 캐시
         self.last_volumes = {}  # 마지막 거래량 캐시
+
         self.strategy_name = "SMADaily"
         
-        # SMA 전략 파라미터 검증
-        self._validate_parameters()
-        
-    def _validate_parameters(self):
+    def _validate_strategy_params(self):
         """전략 파라미터의 유효성을 검증합니다."""
         required_params = ['short_sma_period', 'long_sma_period', 'volume_ma_period', 'num_top_stocks']
         
@@ -45,7 +48,7 @@ class SMADaily(DailyStrategy):
                    f"거래량MA={self.strategy_params['volume_ma_period']}, "
                    f"선택종목수={self.strategy_params['num_top_stocks']}")
 
-    def run_daily_logic(self, current_date):
+    def run_daily_logic(self, current_date: datetime.date):
         """
         듀얼 모멘텀 스타일로 리팩터링: SMA 신호 점수 계산 → 상위 N개 종목 선정 → _generate_signals → _log_rebalancing_summary 호출
         수정: 전일 데이터까지만 사용하여 장전 판단이 가능하도록 함

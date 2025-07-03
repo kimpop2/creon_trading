@@ -2,10 +2,11 @@ import datetime
 import logging
 import pandas as pd
 import numpy as np 
-
+from datetime import datetime, timedelta
+from typing import Dict, List, Tuple, Any
+from trade.backtest import Backtest
 from strategies.strategy import MinuteStrategy 
 from util.strategies_util import calculate_momentum # You might want to remove this if not used
-# from util.strategies_util import calculate_rsi # Not needed for breakout minute logic
 
 logger = logging.getLogger(__name__)
 
@@ -14,16 +15,18 @@ class BreakoutMinute(MinuteStrategy):
     일봉 돌파 전략에서 발생한 매수/매도 신호를 받아 분봉에서 실제 거래를 실행하는 전략입니다.
     분봉에서도 추가적인 돌파 조건 또는 시간 기반의 강제 매매 조건을 활용합니다.
     """
-    def __init__(self, data_store, strategy_params, broker): 
-        super().__init__(data_store, strategy_params, broker)
-        self.strategy_name = "BreakoutMinute"
-        self.signals = {}  # DailyStrategy에서 업데이트 받을 시그널 저장
+    def __init__(self, trade:Backtest, strategy_params: Dict[str, Any]):
+        super().__init__(trade, strategy_params)
+        self.broker = trade.broker
+        self.data_store = trade.data_store
+        # 전략 파라미터 검증
+        self.strategy_params = None
+        self._validate_parameters()
+        # self.signals 초기화
+        self.signals = {}        
+
         self.last_portfolio_check = None  # 마지막 포트폴리오 체크 시간 (필요시 사용)
         self.last_prices = {}  # 마지막 가격 캐시 추가
-
-        self.broker = broker
-        # 돌파매매 분봉 전략 파라미터 검증
-        self._validate_strategy_params()
         
     # 필수: 파라미터 검증
     def _validate_strategy_params(self):

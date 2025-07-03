@@ -9,6 +9,7 @@ import numpy as np
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Any
 from strategies.strategy import DailyStrategy
+from trade.backtest import Backtest
 from util.strategies_util import (
     calculate_rsi_incremental, calculate_macd_incremental, 
     initialize_indicator_caches, calculate_volume_ma_incremental_simple
@@ -93,21 +94,22 @@ class TripleScreenDaily(DailyStrategy):
     - 3단계: 단기 진입점 확인 (일봉 패턴)
     """
     
-    def __init__(self, data_store: Dict, strategy_params: Dict[str, Any], broker):
-        super().__init__(data_store, strategy_params, broker)
-        self.strategy_name = "TripleScreenDaily"
-        
-        # signals 속성 초기화 (백테스터에서 참조)
+    def __init__(self, trade:Backtest, strategy_params: Dict[str, Any]):
+        super().__init__(trade, strategy_params)
+        self.broker = trade.broker
+        self.data_store = trade.data_store
+        # 전략 파라미터 검증
+        self.strategy_params = None
+        self._validate_parameters()
+        # self.signals 초기화
         self.signals = {}
         self._initialize_signals_for_all_stocks()
+        self.strategy_name = "TripleScreenDaily"
         
         # 증분 계산을 위한 캐시 초기화
         self.macd_cache = {}  # {stock_code: {'macd': float, 'signal': float, 'histogram': float, 'last_date': date}}
         self.rsi_cache = {}   # {stock_code: {'rsi': float, 'avg_gain': float, 'avg_loss': float, 'last_date': date}}
         self.volume_cache = {} # {stock_code: {'ratio': float, 'current': float, 'average': float, 'last_date': date}}
-        
-        # 파라미터 검증
-        self._validate_parameters()
         
     def _validate_parameters(self):
         """전략 파라미터 검증"""

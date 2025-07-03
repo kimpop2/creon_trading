@@ -67,8 +67,8 @@ if __name__ == '__main__':
     logging.info("적응형 전략 자동매매를 실행합니다.")
 
     # 자동매매 기간 설정 (최적화 기간과 동일)
-    trader_start_date     = datetime.datetime(2025, 5, 1, 9, 0, 0).date()
-    trader_end_date       = datetime.datetime(2025, 6, 1, 3, 30, 0).date()
+    trader_start_date     = datetime.datetime(2025, 6, 1, 9, 0, 0).date()
+    trader_end_date       = datetime.datetime(2025, 7, 1, 3, 30, 0).date()
 
     # 일봉 데이터 가져오기 시작일을 자동매매 시작일 한 달 전으로 자동 설정
     trader_fetch_start = (trader_start_date - datetime.timedelta(days=30)).replace(day=1)
@@ -94,43 +94,43 @@ if __name__ == '__main__':
         initial_cash=10_000_000
     )
 
-    # # 삼중창 전략 설정 (기본 설정 + 거래비용 고려)
-    # triple_screen_daily_strategy = TripleScreenDaily(
-    #     data_store=trader_instance.data_store,
-    #     strategy_params={
-    #         'trend_ma_period': 20,          # 유지
-    #         'momentum_rsi_period': 7,      # 유지
-    #         'momentum_rsi_oversold': 35,    # 30 → 35 (매수 조건 더 보수적)
-    #         'momentum_rsi_overbought': 65,  # 70 → 65 (매도 조건 더 보수적)
-    #         'volume_ma_period': 7,         # 유지
-    #         'num_top_stocks': 7,            # 5 → 3 (집중 투자로 승률 향상)
-    #         'safe_asset_code': 'A439870',   # 안전자산 코드 (국고채 ETF)
-    #         'min_trend_strength': 0.02,     # 기본값: 0.02 (2% 추세)
-    #     },
-    #     broker=trader_instance.broker
-    # )
+    # 삼중창 전략 설정 (기본 설정 + 거래비용 고려)
+    triple_screen_daily_strategy = TripleScreenDaily(
+        data_store=trader_instance.data_store,
+        strategy_params={
+            'trend_ma_period': 20,          # 유지
+            'momentum_rsi_period': 7,      # 유지
+            'momentum_rsi_oversold': 35,    # 30 → 35 (매수 조건 더 보수적)
+            'momentum_rsi_overbought': 65,  # 70 → 65 (매도 조건 더 보수적)
+            'volume_ma_period': 7,         # 유지
+            'num_top_stocks': 7,            # 5 → 3 (집중 투자로 승률 향상)
+            'safe_asset_code': 'A439870',   # 안전자산 코드 (국고채 ETF)
+            'min_trend_strength': 0.02,     # 기본값: 0.02 (2% 추세)
+        },
+        broker=trader_instance.broker
+    )
 
-    # # 듀얼 모멘텀 전략 설정 (DualMomentumDaily 인스턴스 생성 및 Trader에 주입)
-    # dual_daily_strategy = DualMomentumDaily(
-    #     data_store=trader_instance.data_store,
-    #     strategy_params={
-    #         'momentum_period': 15,         #  15일
-    #         'rebalance_weekday': 0,        #  월요일 (0)
-    #         'num_top_stocks': 7,           #  5개
-    #         'safe_asset_code': 'A439870',  # 안전자산 코드 (국고채 ETF)
-    #     },
-    #     broker=trader_instance.broker
-    # )
+    # 듀얼 모멘텀 전략 설정 (DualMomentumDaily 인스턴스 생성 및 Trader에 주입)
+    dual_daily_strategy = DualMomentumDaily(
+        data_store=trader_instance.data_store,
+        strategy_params={
+            'momentum_period': 15,         #  15일
+            'rebalance_weekday': 0,        #  월요일 (0)
+            'num_top_stocks': 7,           #  5개
+            'safe_asset_code': 'A439870',  # 안전자산 코드 (국고채 ETF)
+        },
+        broker=trader_instance.broker
+    )
 
-    # temp_daily_strategy = TempletDaily(
-    #     data_store=trader_instance.data_store,
-    #     strategy_params={
-    #         'momentum_period': 15,         # 듀얼 모멘텀처럼 기간 설정이 필요하다면 추가
-    #         'num_top_stocks': 5,           #  5개
-    #         'safe_asset_code': 'A439870', # 안전자산 코드
-    #     },
-    #     broker=trader_instance.broker 
-    # )
+    temp_daily_strategy = TempletDaily(
+        data_store=trader_instance.data_store,
+        strategy_params={
+            'momentum_period': 15,         # 듀얼 모멘텀처럼 기간 설정이 필요하다면 추가
+            'num_top_stocks': 5,           #  5개
+            'safe_asset_code': 'A439870', # 안전자산 코드
+        },
+        broker=trader_instance.broker 
+    )
     
     # SMA 일봉 전략 설정 (최적화 결과 반영)
     sma_daily_strategy = SMADaily(
@@ -149,9 +149,9 @@ if __name__ == '__main__':
     rsi_minute_strategy = RSIMinute(
         data_store=trader_instance.data_store,
         strategy_params={
-            'minute_rsi_period': 20,       #  52분
-            'minute_rsi_oversold': 40,      # 과매도 -> 매수실행
-            'minute_rsi_overbought': 80,    # 과매수 -> 매도실행
+            'minute_rsi_period': 52,       #  52분
+            'minute_rsi_oversold': 30,      # 과매도 -> 매수실행
+            'minute_rsi_overbought': 70,    # 과매수 -> 매도실행
             'num_top_stocks': 7,            # 일봉 전략과 동일한 값으로 설정
         },
         broker=trader_instance.broker
@@ -182,17 +182,17 @@ if __name__ == '__main__':
     )
 
 
-    # # OpenMinute 분봉 전략 설정
-    # open_minute_strategy = OpenMinute(
-    #     data_store=trader_instance.data_store,
-    #     strategy_params={
-    #         'minute_rsi_period': 52,        #  52분
-    #         'minute_rsi_oversold': 34,      # 과매도 
-    #         'minute_rsi_overbought': 70,    # 과매수
-    #         'num_top_stocks': 7,            # 일봉 전략과 동일한 값으로 설정
-    #     },
-    #     broker=trader_instance.broker
-    # )
+    # OpenMinute 분봉 전략 설정
+    open_minute_strategy = OpenMinute(
+        data_store=trader_instance.data_store,
+        strategy_params={
+            'minute_rsi_period': 52,        #  52분
+            'minute_rsi_oversold': 34,      # 과매도 
+            'minute_rsi_overbought': 70,    # 과매수
+            'num_top_stocks': 7,            # 일봉 전략과 동일한 값으로 설정
+        },
+        broker=trader_instance.broker
+    )
 
     # 전략 설정 (삼중창 일봉 + RSI 분봉 전략 사용)
     # 전환 14.91
@@ -201,21 +201,21 @@ if __name__ == '__main__':
     #trader_instance.set_strategies(daily_strategy=dual_daily_strategy, minute_strategy=rsi_minute_strategy)
     # 상승 30.97            하락 손절 손절 13.81 미손절 8.74 
     #trader_instance.set_strategies(daily_strategy=dual_daily_strategy, minute_strategy=open_minute_strategy)
+    #trader_instance.set_strategies(daily_strategy=breakout_daily_strategy, minute_strategy=breakout_minute_strategy)
     # 전환 84.41%
     #trader_instance.set_strategies(daily_strategy=temp_daily_strategy, minute_strategy=rsi_minute_strategy)
     # 전환 2.59 -> 상승: 미손절 20.54, 손절 -> 5.29 하락 : 손절 0.25 
-    #trader_instance.set_strategies(daily_strategy=sma_daily_strategy, minute_strategy=rsi_minute_strategy)
+    trader_instance.set_strategies(daily_strategy=sma_daily_strategy, minute_strategy=rsi_minute_strategy)
     # 전환 2.59 -> 상승: 미손절 20.54, 손절 -> 5.29 하락 : 손절 0.25 
-    trader_instance.set_strategies(daily_strategy=breakout_daily_strategy, minute_strategy=breakout_minute_strategy)
     #trader_instance.set_strategies(daily_strategy=sma_daily_strategy, minute_strategy=open_minute_strategy)
     
     # Broker에 손절매 파라미터 설정 (기본 설정)
     stop_loss_params = {
-        'early_stop_loss': -3.5,        # 매수 후 초기 손실 제한: -3.5% (매수 후 3일 이내)
-        'stop_loss_ratio': -6.0,        # 매수가 기준 손절율: -6.0%
-        'trailing_stop_ratio': -4.0,    # 최고가 기준 트레일링 손절률: -4.0%
-        'portfolio_stop_loss': -4.0,    # 전체 자본금 손실률 (전량매도 조건): -4.0%
-        'max_losing_positions': 3       # 최대 손절 종목 수 (전량매도 조건): 3개
+        'early_stop_loss': -4,        # 매수 후 초기 손실 제한: -3.5% (매수 후 3일 이내)
+        'stop_loss_ratio': -6,        # 매수가 기준 손절율: -6.0%
+        'trailing_stop_ratio': -4,    # 최고가 기준 트레일링 손절률: -4.0%
+        'portfolio_stop_loss': -4,    # 전체 자본금 손실률 (전량매도 조건): -4.0%
+        'max_losing_positions': 5       # 최대 손절 종목 수 (전량매도 조건): 3개
     }
     #stop_loss_params = None # 주석을 풀면 미작동
     trader_instance.set_broker_stop_loss_params(stop_loss_params)
@@ -225,37 +225,5 @@ if __name__ == '__main__':
     from config.sector_config import get_all_stock_names
     stock_names = get_all_stock_names()
 
-    # 종목 코드 확인 및 일봉 데이터 로딩
-    # 안전자산 코드도 미리 추가
-    # safe_asset_code = triple_screen_daily_strategy.strategy_params['safe_asset_code'] # 삼중창 전략의 안전자산 코드 사용
-
-    # logging.info(f"'안전자산' (코드: {safe_asset_code}) 안전자산 일봉 데이터 로딩 중... (기간: {trader_fetch_start.strftime('%Y%m%d')} ~ {trader_end_date.strftime('%Y%m%d')})")
-    # daily_df = trader_manager.cache_daily_ohlcv(safe_asset_code, trader_fetch_start, trader_end_date)
-    # trader_instance.add_daily_data(safe_asset_code, daily_df)
-    # if daily_df.empty:
-    #     logging.warning(f"'안전자산' (코드: {safe_asset_code}) 종목의 일봉 데이터를 가져올 수 없습니다. 종료합니다.")
-    #     exit(1)
-    # logging.debug(f"'안전자산' (코드: {safe_asset_code}) 종목의 일봉 데이터 로드 완료. 데이터 수: {len(daily_df)}행")
-
-    # # 모든 종목 데이터 로딩
-    # all_target_stock_names = stock_names
-    # for name in all_target_stock_names:
-    #     code = creon_api.get_stock_code(name)
-    #     if code:
-    #         logging.info(f"'{name}' (코드: {code}) 종목 일봉 데이터 로딩 중... (기간: {trader_fetch_start.strftime('%Y%m%d')} ~ {trader_end_date.strftime('%Y%m%d')})")
-    #         daily_df = trader_manager.cache_daily_ohlcv(code, trader_fetch_start, trader_end_date)
-            
-    #         if daily_df.empty:
-    #             logging.warning(f"{name} ({code}) 종목의 일봉 데이터를 가져올 수 없습니다. 해당 종목을 건너뜁니다.")
-    #             continue
-    #         logging.debug(f"{name} ({code}) 종목의 일봉 데이터 로드 완료. 데이터 수: {len(daily_df)}행")
-    #         trader_instance.add_daily_data(code, daily_df)
-    #     else:
-    #         logging.warning(f"'{name}' 종목의 코드를 찾을 수 없습니다. 해당 종목을 건너뜁니다.")
-
-    # if not trader_instance.data_store['daily']:
-    #     logging.error("자동매매를 위한 유효한 일봉 데이터가 없습니다. 프로그램을 종료합니다.")
-    #     sys.exit(1)
-            
     # 자동매매 실행
     portfolio_values, metrics = trader_instance.run(trader_start_date, trader_end_date)

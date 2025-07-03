@@ -1,34 +1,38 @@
 # backtest/backtester.py
 import datetime
-from datetime import time
+from datetime import datetime, time, timedelta
 import logging
 import pandas as pd
 import numpy as np
 import time as time_module
 import sys
 import os
+# 프로젝트 루트 경로를 sys.path에 추가 (manager 디렉토리에서 실행 가능하도록)
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 from trade.brokerage import Brokerage
 from trade.trader_report import TraderReport # Reporter 타입 힌트를 위해 남겨둠
 from api.creon_api import CreonAPIClient
 from manager.trader_manager import TraderManager # TraderManager 타입 힌트를 위해 남겨둠
 from manager.db_manager import DBManager    
-
 from strategies.strategy import DailyStrategy, MinuteStrategy 
-from util.strategies_util import calculate_performance_metrics, get_next_weekday 
+from util.strategies_util import *
 
-# 현재 스크립트의 경로를 sys.path에 추가하여 모듈 임포트 가능하게 함
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
-# --- 로거 설정 (스크립트 최상단에서 설정하여 항상 보이도록 함) ---
 logger = logging.getLogger(__name__)
-# logger.setLevel(logging.DEBUG) # 테스트 시 DEBUG로 설정하여 모든 로그 출력 - 제거
 
 class Trader:
     # __init__ 메서드를 외부에서 필요한 인스턴스를 주입받도록 변경
-    def __init__(self, api_client: CreonAPIClient, initial_cash: float, 
-                 manager: TraderManager, report: TraderReport, db_manager: DBManager,
-                 save_to_db: bool = True):  # DB 저장 여부 파라미터 추가
+    def __init__(self, 
+                 api_client: CreonAPIClient, 
+                 manager: TraderManager, 
+                 report: TraderReport, 
+                 db_manager: DBManager,
+                 initial_cash: float, 
+                 save_to_db: bool = True
+        ):  # DB 저장 여부 파라미터 추가
+        
         self.api_client = api_client
         self.broker = Brokerage(initial_cash, commission_rate=0.0016, slippage_rate=0.0004) # 커미션 0.16% + 슬리피지 0.04% = 총 0.2%
         self.data_store = {'daily': {}, 'minute': {}} # {stock_code: DataFrame}
@@ -62,7 +66,7 @@ class Trader:
             self.minute_strategy = minute_strategy
             logging.info(f"분봉 전략 '{minute_strategy.__class__.__name__}' 설정 완료.")
 
-    def set_broker_stop_loss_params(self, params: dict):
+    def set_broker_stop_loss_params(self, params: dict = None):
         self.broker.set_stop_loss_params(params)
         logging.info("브로커 손절매 파라미터 설정 완료.")
 
@@ -108,7 +112,7 @@ class Trader:
         
         # 시작일 이전의 초기 포트폴리오 가치 기록
         initial_portfolio_value = self.broker.get_portfolio_value({}) # 초기 현금만 반영
-        self.portfolio_values.append((current_date - datetime.timedelta(days=1), initial_portfolio_value))
+        self.portfolio_values.append((current_date - timedelta(days=1), initial_portfolio_value))
         
         # 시장 캘린더 데이터 로드
         market_calendar_df = self.db_manager.fetch_market_calendar(start_date, end_date)
@@ -132,30 +136,28 @@ class Trader:
             current_date_index = trading_dates.index(current_date)
             prev_date = None
             if current_date_index == 0 :
-                prev_date = start_date - datetime.timedelta(days=1)
+                continue
             else:
                 prev_date = trading_dates[current_date_index - 1]            # self.data_store 
             
-            fetch_date = current_date - datetime.timedelta(days=60)
-            self.data_store['daily'] = {} # 보유종목과 유니버스 종목을 다시 담기 위해 초기화
-            
-            # 보유종목 분봉 데이터 설정
+            # fetch_date = current_date - timedelta(days=60)
+            # self.data_store['daily'] = {} # 보유종목과 유니버스 종목을 다시 담기 위해 초기화
+            # 일봉 데이터를 가져오는 대상은 1. 보유종목 2. 유니버스 종목이다. 
+            # OpenMinute는 오늘 일봉이 있어야, 분봉 가상화 처리를 하므로 오늘 일봉까지 전달한다.
+            # 일봉전략은 지표계산을 할 때 iloc[-2] 처리 등으로 오늘 일봉을 지표에 반영하지 않도록 해야 한다.
+            # 보유종목 일봉 데이터 설정
             #self.positions = {}  # {stock_code: {'size': int, 'avg_price': float, 'entry_date': datetime.date, 'highest_price': float}}
-            for stock_code, position_info in self.broker.positions.items(): # .items()를 사용하여 키와 값을 모두 가져옵니다.
-                if position_info['size'] > 0: # position_info['size']로 직접 접근합니다.
-                    daily_df = self.manager.cache_daily_ohlcv(stock_code, fetch_date, prev_date)
-                    self.data_store['daily'][stock_code] = daily_df
-                    # self.data_store['daily']가 초기화되지 않았을 가능성을 대비하여 확인 후 할당합니다.
-                    # if 'daily' not in self.data_store:
-                    #     self.data_store['daily'] = {}
-                    #     self.data_store['daily'][stock_code] = daily_df
+            # for stock_code, position_info in self.broker.positions.items(): # .items()를 사용하여 키와 값을 모두 가져옵니다.
+            #     if position_info['size'] > 0: # position_info['size']로 직접 접근합니다.
+            #         daily_df = self.manager.cache_daily_ohlcv(stock_code, fetch_date, current_date)
+            #         self.data_store['daily'][stock_code] = daily_df
 
-            # 유니버스 종목 하루전
-            stocks = self.db_manager.fetch_daily_theme_stock(prev_date - datetime.timedelta(days=1), prev_date)
-            #print(stocks)
-            for i, (stock_code, stock_name) in enumerate(stocks):
-                daily_df = self.manager.cache_daily_ohlcv(stock_code, fetch_date, prev_date)
-                self.data_store['daily'][stock_code] = daily_df
+            # # 하루전 선정된 유니버스 종목들을 가져온다.  
+            # stocks = self.db_manager.fetch_daily_theme_stock(current_date - timedelta(days=20), prev_date)
+            # #print(stocks)
+            # for i, (stock_code, stock_name) in enumerate(stocks):
+            #     daily_df = self.manager.cache_daily_ohlcv(stock_code, fetch_date, current_date)
+            #     self.data_store['daily'][stock_code] = daily_df
 
             # 2. 전일 일봉 데이터를 기반으로 '오늘 실행할' 신호를 생성합니다.
             if self.daily_strategy:
@@ -165,6 +167,16 @@ class Trader:
                     ##############################
                     # 전일 데이터로 일봉 전략 실행 - 오늘은 아직 장이 시작하지 않았으므로(전일 종가까지 데이터로)
                     self.daily_strategy.run_daily_logic(prev_date)
+                    # --- [핵심 변경 사항 시작] ---
+                    # 1. 일봉 전략에서 생성된 신호(self.signals)를 Trader 내부에 저장
+                    self.signals_for_minute_trading = self.daily_strategy.signals
+                    logging.debug(f"[{current_date.isoformat()}] Trader에 일봉 전략 신호 ({len(self.signals_for_minute_trading)}개) 저장.")
+
+                    # 2. 저장된 신호를 분봉 전략으로 전달
+                    if self.minute_strategy:
+                        self.minute_strategy.update_signals(self.signals_for_minute_trading)
+                        logging.info(f"[{current_date.isoformat()}] 일봉 전략 신호 분봉 전략으로 전달 완료.")
+                    # --- [핵심 변경 사항 끝] ---
                     # self.daily_strategy.signals 에 전략 실행결과가 보관 됨
                     ##############################
 
@@ -214,7 +226,7 @@ class Trader:
                         logging.info(f"[{current_date.isoformat()}] OpenMinute 전략: 분봉 데이터 로딩 없이 9:01에 매매 실행")
                         
                         # 9:01 시간 생성 (첫 분봉 완성 후)
-                        trade_time = datetime.datetime.combine(current_date, time(9, 1))
+                        trade_time = datetime.combine(current_date, time(9, 1))
                         
                         # OpenMinute 전략에 신호 업데이트 (target_quantity 정보 포함)
                         # 신호 전달 브릿지 로그 추가
@@ -309,9 +321,9 @@ class Trader:
                         # 장 시작 시간부터 장 마감 시간까지 1분 단위로 반복하며 분봉 전략 실행
                         start_time = time(9, 0) # 9시 정각
                         end_time = time(15, 30) # 3시 30분 (장 마감)
-                        trade_time = datetime.datetime.combine(current_date, start_time) # 날짜+분
+                        trade_time = datetime.combine(current_date, start_time) # 날짜+분
 
-                        while trade_time <= datetime.datetime.combine(current_date, end_time):
+                        while trade_time <= datetime.combine(current_date, end_time):
                             
                             ##############################
                             # 분봉 전략 실행 및 매매 처리
@@ -361,7 +373,7 @@ class Trader:
                             # 포트폴리오 손절 ------------------------
                             
                             # 다음 분으로 이동
-                            trade_time += datetime.timedelta(minutes=1)
+                            trade_time += timedelta(minutes=1)
                         # while -------------------------------------
 
                 # end if 분봉매매
@@ -374,7 +386,7 @@ class Trader:
             #for stock_code, df in self.data_store['daily'].items():
             for stock_code, position_info in self.broker.positions.items(): # .items()를 사용하여 키와 값을 모두 가져옵니다.
                 # 오늘 일봉데이터 다시 가져오기
-                df = self.manager.cache_daily_ohlcv(stock_code, fetch_date, current_date)
+                df = self.manager.cache_daily_ohlcv(stock_code, current_date, current_date)
                 self.data_store['daily'][stock_code] = df
                 current_day_close_prices[stock_code] = df['close'].iloc[0]
 
@@ -397,11 +409,11 @@ class Trader:
             logging.debug(f"[{current_date.isoformat()}] 일일 신호 초기화 완료 - 다음날을 위해 모든 신호 저장소 비움")
 
             # 다음날로 이동
-            current_date += datetime.timedelta(days=1)
+            current_date += timedelta(days=1)
             # 다음 장 개장일까지 스킵: get_next_weekday()의 'target_weekday' 인자 누락 오류를 해결하기 위해 인라인 로직으로 대체
             temp_date = current_date
             while temp_date.weekday() >= 5: # 토요일(5), 일요일(6)
-                temp_date += datetime.timedelta(days=1)
+                temp_date += timedelta(days=1)
             current_date = temp_date
 
             self.portfolio_stop_flag = False  # 새로운 날짜마다 플래그 초기화
@@ -439,3 +451,252 @@ class Trader:
         )
         final_metrics = calculate_performance_metrics(portfolio_value_series)
         return portfolio_value_series, final_metrics
+    
+def load_stocks(trade, manager, db_manager, start_date, end_date):
+    # 섹터별 대표 종목 리스트 (간소화) - 기존과 동일
+    sector_stocks = {
+        '반도체': [
+            ('삼성전자', 'IT'), ('SK하이닉스', 'IT'), ('DB하이텍', 'IT'),
+            ('네패스아크', 'IT'), ('와이아이케이', 'IT')
+        ],
+        '2차전지': [
+            ('LG에너지솔루션', '2차전지'), ('삼성SDI', '2차전지'), ('SK이노베이션', '2차전지'),
+            ('에코프로비엠', '2차전지'), ('포스코퓨처엠', '2차전지'), ('LG화학', '2차전지'),
+            ('일진머티리얼즈', '2차전지'), ('엘앤에프', '2차전지')
+        ],
+        '바이오': [
+            ('삼성바이오로직스', '바이오'), ('셀트리온', '바이오'), ('SK바이오사이언스', '바이오'),
+            ('유한양행', '바이오'), ('한미약품', '바이오')
+        ],
+        '플랫폼/인터넷': [
+            ('NAVER', 'IT'), ('카카오', 'IT'), ('크래프톤', 'IT'),
+            ('엔씨소프트', 'IT'), ('넷마블', 'IT')
+        ],
+        '자동차': [
+            ('현대차', '자동차'), ('기아', '자동차'), ('현대모비스', '자동차'),
+            ('만도', '자동차'), ('한온시스템', '자동차')
+        ],
+        '철강/화학': [
+            ('POSCO홀딩스', '철강'), ('고려아연', '철강'), ('롯데케미칼', '화학'),
+            ('금호석유', '화학'), ('효성첨단소재', '화학')
+        ],
+        '금융': [
+            ('KB금융', '금융'), ('신한지주', '금융'), ('하나금융지주', '금융'),
+            ('우리금융지주', '금융'), ('메리츠금융지주', '금융')
+        ],
+        '통신': [
+            ('SK텔레콤', '통신'), ('KT', '통신'), ('LG유플러스', '통신'),
+            ('SK스퀘어', '통신')
+        ],
+        '유통/소비재': [
+            ('CJ제일제당', '소비재'), ('오리온', '소비재'), ('롯데쇼핑', '유통'),
+            ('이마트', '유통'), ('BGF리테일', '유통')
+        ],
+        '건설/기계': [
+            ('현대건설', '건설'), ('대우건설', '건설'), ('GS건설', '건설'),
+            ('두산에너빌리티', '기계'), ('두산밥캣', '기계')
+        ],
+        '조선/항공': [
+            ('한국조선해양', '조선'), ('삼성중공업', '조선'), ('대한항공', '항공'),
+            ('현대미포조선', '조선')
+        ],
+        '에너지': [
+            ('한국전력', '에너지'), ('한국가스공사', '에너지'), ('두산퓨얼셀', '에너지'),
+            ('에스디바이오센서', '에너지')
+        ],
+        '반도체장비': [
+            ('원익IPS', 'IT'), ('피에스케이', 'IT'), ('주성엔지니어링', 'IT'),
+            ('테스', 'IT'), ('에이피티씨', 'IT')
+        ],
+        '디스플레이': [
+            ('LG디스플레이', 'IT'), ('덕산네오룩스', 'IT'), ('동운아나텍', 'IT'),
+            ('매크로젠', 'IT')
+        ],
+        '방산': [
+            ('한화에어로스페이스', '방산'), ('LIG넥스원', '방산'), ('한화시스템', '방산'),
+            ('현대로템', '방산')
+        ]
+    }
+    # 모든 종목 데이터 로딩
+    # 모든 종목을 하나의 리스트로 변환
+    fetch_start = start_date - timedelta(days=20)
+    stock_names = []
+    for sector, stocks in sector_stocks.items():
+        for stock_name, _ in stocks:
+            stock_names.append(stock_name)
+
+    all_target_stock_names = stock_names
+    for name in all_target_stock_names:
+        code = api_client.get_stock_code(name)
+        if code:
+            logging.info(f"'{name}' (코드: {code}) 종목 일봉 데이터 로딩 중... (기간: {fetch_start.strftime('%Y%m%d')} ~ {end_date.strftime('%Y%m%d')})")
+            daily_df = manager.cache_daily_ohlcv(code, fetch_start, end_date)
+            
+            if daily_df.empty:
+                logging.warning(f"{name} ({code}) 종목의 일봉 데이터를 가져올 수 없습니다. 해당 종목을 건너뜁니다.")
+                continue
+            logging.debug(f"{name} ({code}) 종목의 일봉 데이터 로드 완료. 데이터 수: {len(daily_df)}행")
+            trade.add_daily_data(code, daily_df)
+        else:
+            logging.warning(f"'{name}' 종목의 코드를 찾을 수 없습니다. 해당 종목을 건너뜁니다.")
+
+if __name__ == "__main__":
+    """
+    Trader 클래스 테스트 실행 코드
+    """
+    from datetime import date, datetime
+    from strategies.triple_screen_daily import TripleScreenDaily
+    from strategies.dual_momentum_daily import DualMomentumDaily
+    from strategies.sma_daily import SMADaily
+    from strategies.rsi_minute import RSIMinute
+    from strategies.open_minute import OpenMinute
+    
+    logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s - %(levelname)s - %(message)s',
+                    handlers=[
+                        logging.FileHandler("logs/trader_run.log", encoding='utf-8'),
+                        logging.StreamHandler(sys.stdout)
+                    ])    
+    try:
+        # 1. 필요한 인스턴스들 생성
+        logger.info("=== Trader 테스트 시작 ===")
+        # API 클라이언트 (실제 거래용이 아닌 테스트용)
+        api_client = CreonAPIClient()
+        # DB 매니저
+        db_manager = DBManager()
+        # Trader 매니저
+        manager = TraderManager()
+        # 리포트 생성기
+        report = TraderReport(db_manager)
+        
+        # 2. Trader 인스턴스 생성
+        initial_cash = 10_000_000  # 1천만원
+        
+        trader = Trader(
+            api_client=api_client,
+            initial_cash=initial_cash,
+            manager=manager,
+            report=report,
+            db_manager=db_manager,
+            save_to_db=True
+        )
+        
+        # 3. 전략 설정
+        # 일봉 전략 파라미터 ------------------------------
+        
+        # 삼중창 전략 설정 (기본 설정 + 거래비용 고려)
+        triple_screen_daily_params={
+            'trend_ma_period': 20,          # 유지
+            'momentum_rsi_period': 7,      # 유지
+            'momentum_rsi_oversold': 35,    # 30 → 35 (매수 조건 더 보수적)
+            'momentum_rsi_overbought': 65,  # 70 → 65 (매도 조건 더 보수적)
+            'volume_ma_period': 7,         # 유지
+            'num_top_stocks': 7,            # 5 → 3 (집중 투자로 승률 향상)
+            'safe_asset_code': 'A439870',   # 안전자산 코드 (국고채 ETF)
+            'min_trend_strength': 0.02,     # 기본값: 0.02 (2% 추세)
+        }
+
+        # 듀얼 모멘텀 전략 설정 (DualMomentumDaily 인스턴스 생성 및 Trader에 주입)
+        dual_daily_params={
+            'momentum_period': 15,         #  15일
+            'rebalance_weekday': 0,        #  월요일 (0)
+            'num_top_stocks': 7,           #  5개
+            'safe_asset_code': 'A439870',  # 안전자산 코드 (국고채 ETF)
+        }
+        
+        # 돌파매매 전략 설정 (최적화 결과 반영)
+        breakout_daily_params = {
+            'breakout_period': 10,          # 20일 신고가 돌파
+            'volume_ma_period': 20,         # 거래량 20일 이동평균
+            'volume_multiplier': 1.5,       # 거래량 이동평균의 1.5배 이상일 때 돌파 인정
+            'num_top_stocks': 5,            # 매수할 상위 5개 종목 선정
+            'min_holding_days': 2           # 최소 보유 기간 2일 (5일 이내 매도 유도를 위함)
+        }
+        
+        # SMA 일봉 전략 설정 (최적화 결과 반영)
+        sma_daily_params={
+            'short_sma_period': 4,          #  4일
+            'long_sma_period': 10,          #  10일
+            'volume_ma_period': 6,          #  6일
+            'num_top_stocks': 5,            #  5개
+        }
+
+        # 분봉 전략 파라미터 ------------------------------
+        
+        # 돌파 분봉 전략 설정 (실제 RSI 계산 및 매매)
+        breakout_minute_params={
+            'minute_breakout_period': 10,       # 10분봉 최고가 돌파 확인 기간 (예: 지난 10개 분봉 중 최고가)
+            'minute_volume_multiplier': 1.8     # 분봉 거래량 이동평균의 1.8배 이상일 때 돌파 인정
+        }
+
+        # RSI 분봉 전략 설정
+        rsi_minute_params={
+            'minute_rsi_period': 5,       #  52분
+            'minute_rsi_oversold': 30,      # 과매도 -> 매수실행
+            'minute_rsi_overbought': 70,    # 과매수 -> 매도실행
+            'num_top_stocks': 5,            # 일봉 전략과 동일한 값으로 설정
+        }
+        
+        # RSI 가상 분봉 전략 설정
+        open_minute_params={
+            'minute_rsi_period': 52,        #  52분
+            'minute_rsi_oversold': 34,      # 과매도 
+            'minute_rsi_overbought': 70,    # 과매수
+            'num_top_stocks': 10,            # 일봉 전략과 동일한 값으로 설정
+        }
+
+        # 전략 인스턴스 생성
+        daily_strategy = SMADaily(trade=trader, strategy_params=sma_daily_params)
+        #minute_strategy = OpenMinute(trade=trader, strategy_params=open_minute_params)
+        minute_strategy = RSIMinute(trade=trader, strategy_params=rsi_minute_params)
+        
+        # 4. 손절매 파라미터 설정 (선택사항)
+        stop_loss_params = {
+            'early_stop_loss': -4,        # 매수 후 초기 손실 제한: -3.5% (매수 후 3일 이내)
+            'stop_loss_ratio': -5,        # 매수가 기준 손절율: -6.0%
+            'trailing_stop_ratio': -3,    # 최고가 기준 트레일링 손절률: -4.0%
+            'portfolio_stop_loss': -4,    # 전체 자본금 손실률 (전량매도 조건): -4.0%
+            'max_losing_positions': 4       # 최대 손절 종목 수 (전량매도 조건): 3개
+        }
+
+        start_date = date(2025, 6, 1)
+        end_date = date(2025, 7, 1)
+
+        # 전략 설정 ===========================
+        load_stocks(trader, manager, db_manager, start_date, end_date)
+
+        trader.set_strategies(
+            daily_strategy=daily_strategy,
+            minute_strategy=minute_strategy
+        )
+        #손절 설정 None면 손절기능 사용 않음        
+        trader.set_broker_stop_loss_params(stop_loss_params)
+        #trader.set_broker_stop_loss_params() # 손절 않음
+        
+
+        # 5. 백테스트 실행
+
+        # 끝 전략 설정 =========================
+        
+        # 백테스트 실행
+        trader.run(start_date, end_date)
+        
+        # 6. 결과 출력
+        # logger.info(f"백테스트 기간: {start_date} ~ {end_date}")
+        # logger.info(f"초기 자본: {initial_cash:,}원")
+        # logger.info("=== 백테스트 결과 ===")
+        # logger.info(f"최종 포트폴리오 가치: {metrics.get('final_value', 0):,.0f}원")
+        # logger.info(f"총 수익률: {metrics.get('total_return', 0):.2%}")
+        # logger.info(f"연간 수익률: {metrics.get('annual_return', 0):.2%}")
+        # logger.info(f"최대 낙폭: {metrics.get('max_drawdown', 0):.2%}")
+        # logger.info(f"샤프 비율: {metrics.get('sharpe_ratio', 0):.2f}")
+        
+        # logger.info("=== Trader 테스트 완료 ===")
+        
+    except Exception as e:
+        logger.error(f"Trader 테스트 중 오류 발생: {e}", exc_info=True)
+    finally:
+        # 리소스 정리
+        if 'db_manager' in locals():
+            db_manager.close()
+

@@ -168,7 +168,7 @@ class DailyUniverseFiller:
 
 if __name__ == "__main__":
     # --- 전체 데이터 채우기 기간 설정 (main 함수 실행 시 기준) ---
-    start_fill_date_main = date(2024, 8, 1) # 예시 시작 날짜 (사용자 정의 가능)
+    start_fill_date_main = date(2025, 7, 2) # 예시 시작 날짜 (사용자 정의 가능)
     end_fill_date_main = datetime.today().date() # 오늘 날짜
 
     # SetupManager에 적용할 고정 파라미터 설정 (main 함수에서 전달)

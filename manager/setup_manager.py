@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 import pymysql
 import os.path
 import sys
@@ -32,7 +33,7 @@ class SetupManager:
     # --- 상수 정의 (필요에 따라 클래스 속성 또는 __init__ 인자로 관리) ---
     # `LOOKBACK_DAYS_OHLCV`는 _calculate_stock_scores 내부에서
     # to_date를 기준으로 과거 데이터를 가져올 때 사용됩니다.
-    LOOKBACK_DAYS_OHLCV = 100 
+    LOOKBACK_DAYS_OHLCV = 60 
     # LOOKBACK_DAYS_OHLCV의 기본값 또는 최소 필요 기간을 위한 상수
     LOOKBACK_DAYS_OHLCV_MIN_BUFFER = 20 ############ 계산된 값에 더할 여유분
     # 각 점수 요소의 가중치 (총합 100)
@@ -48,6 +49,21 @@ class SetupManager:
     # 변동성 점수 계산을 위한 
     ATR_WINDOW = 10 # ATR 기간
     DAILY_RANGE_RATIO_WINDOW = 5 # 일중 변동폭 비율 기간 (최소 데이터 요구 사항 및 평균 계산 기간)
+    # 새로운 상수 추가 (테마 언급 점수 보완용)
+    THEME_MENTION_AVG_WINDOW = 30 # 과거 평균 언급 빈도 계산 기간 (일)
+    THEME_MENTION_GROWTH_BONUS = 10 # 언급 빈도 증가 시 추가 점수
+    THEME_MENTION_DECREASE_PENALTY = 5 # 언급 빈도 감소 시 감점
+
+    # 새로운 상수 추가 (거래대금 점수 보완용)
+    VOLUME_AVG_WINDOW = 20 # 과거 평균 거래대금 계산 기간 (일)
+    VOLUME_DECREASE_PENALTY_RATIO = 0.1 # 거래대금 감소 시 감점 비율
+    DYNAMIC_VOLUME_THRESHOLD_MULTIPLIER = 0.01 # 동적 거래대금 기준을 위한 곱셈자 (예: 시장 평균 거래대금의 1%)
+
+    # 새로운 상수 추가 (변동성 점수 보완용 - 예시)
+    LOW_VOLATILITY_THRESHOLD_ATR = 1.5 # ATR 비율이 이 값 이하일 때 가점 (예: 1.5%)
+    LOW_VOLATILITY_THRESHOLD_DAILY_RANGE = 2.0 # 일중 변동폭 비율이 이 값 이하일 때 가점 (예: 2.0%)
+    ATR_SCORE_MULTIPLIER = 10 # ATR 가점 배율
+    DAILY_RANGE_SCORE_MULTIPLIER = 10 # 일중 변동폭 가점 배율
     # word_dic 클리닝 임계값 (금요일에만 적용)
     WORD_DIC_MIN_GLOBAL_FREQ = 5
     WORD_DIC_MAX_GLOBAL_FREQ_PERCENTILE = 0.99
@@ -397,50 +413,71 @@ class SetupManager:
 
         df_stock_data['MA5'] = df_stock_data['close'].rolling(window=self.MA_WINDOW_SHORT).mean() # 5 -> self.MA_WINDOW_SHORT
         df_stock_data['MA20'] = df_stock_data['close'].rolling(window=self.MA_WINDOW_LONG).mean() # 20 -> self.MA_WINDOW_LONG
-                
+                        
         latest_data = df_stock_data.iloc[-1]
         
         score = 0
         
+        # 이동평균선 정배열 시 가점, 역배열 시 감점
         if latest_data['MA5'] > latest_data['MA20']:
             score += 30
+        else: # 역배열 시 감점 추가
+            score -= 15 # 예시 감점
         
-        if len(df_stock_data) >= 5:
-            start_price_5 = df_stock_data.tail(5).iloc[0]['close']
-            end_price_5 = df_stock_data.tail(5).iloc[-1]['close']
+        # 5일 누적 수익률 반영 (음의 수익률 감점 추가)
+        if len(df_stock_data) >= self.MA_WINDOW_SHORT:
+            start_price_5 = df_stock_data.tail(self.MA_WINDOW_SHORT).iloc[0]['close']
+            end_price_5 = df_stock_data.tail(self.MA_WINDOW_SHORT).iloc[-1]['close']
             if start_price_5 > 0:
                 return_5_day = ((end_price_5 - start_price_5) / start_price_5) * 100
                 if return_5_day > 0:
                     score += min(return_5_day, 50) * 0.5 
-        
-        if len(df_stock_data) >= 20:
-            start_price_20 = df_stock_data.tail(20).iloc[0]['close']
-            end_price_20 = df_stock_data.tail(20).iloc[-1]['close']
+                else: # 음의 수익률 감점
+                    score -= abs(return_5_day) * 0.5 # 하락폭에 비례하여 감점
+
+        # 20일 누적 수익률 반영 (음의 수익률 감점 추가)
+        if len(df_stock_data) >= self.MA_WINDOW_LONG:
+            start_price_20 = df_stock_data.tail(self.MA_WINDOW_LONG).iloc[0]['close']
+            end_price_20 = df_stock_data.tail(self.MA_WINDOW_LONG).iloc[-1]['close']
             if start_price_20 > 0:
                 return_20_day = ((end_price_20 - start_price_20) / start_price_20) * 100
                 if return_20_day > 0:
                     score += min(return_20_day, 100) * 0.2 
+                else: # 음의 수익률 감점
+                    score -= abs(return_20_day) * 0.2 # 하락폭에 비례하여 감점
         
         return min(max(score, 0), 100) 
 
     def _calculate_trading_volume_score(self, df_stock_data):
         """거래대금 점수 계산: 최근 거래대금 증가율 및 절대적인 규모 반영"""
-        if len(df_stock_data) < self.MA_WINDOW_LONG: # MA_WINDOW_LONG을 기준으로 충분한지 확인
-            logger.debug(f"거래대금 점수 계산: 데이터 부족 ({len(df_stock_data)}개). 최소 {self.MA_WINDOW_LONG}개 필요.")
+        if len(df_stock_data) < self.VOLUME_AVG_WINDOW: # 충분한 과거 데이터 확인
+            logger.debug(f"거래대금 점수 계산: 데이터 부족 ({len(df_stock_data)}개). 최소 {self.VOLUME_AVG_WINDOW}개 필요.")
             return 0
             
         df_stock_data = df_stock_data.sort_values(by='date').copy()
         
-        recent_volume = df_stock_data['trading_value'].tail(self.VOLUME_RECENT_DAYS).mean() # VOLUME_RECENT_DAYS 사용
-        avg_volume = df_stock_data['trading_value'].mean()
+        recent_volume = df_stock_data['trading_value'].tail(self.VOLUME_RECENT_DAYS).mean()
+        # 과거 평균 거래대금 계산 (최근 거래대금 기간보다 긴 기간 사용)
+        avg_volume_past = df_stock_data['trading_value'].iloc[-(self.VOLUME_RECENT_DAYS + self.VOLUME_AVG_WINDOW):-self.VOLUME_RECENT_DAYS].mean()
         
         score = 0
         
-        if avg_volume > 0:
-            volume_growth_rate = ((recent_volume - avg_volume) / avg_volume) * 100
+        if avg_volume_past > 0:
+            volume_growth_rate = ((recent_volume - avg_volume_past) / avg_volume_past) * 100
             if volume_growth_rate > 0:
                 score += min(volume_growth_rate * 0.2, 50) 
-        
+            else: # 거래대금 감소 시 감점 추가
+                score -= abs(volume_growth_rate) * self.VOLUME_DECREASE_PENALTY_RATIO # 감소율에 비례하여 감점
+
+        # 절대적인 거래대금 기준 (동적으로 변경 가능하도록)
+        # 예시: 시장 전체 평균 거래대금 등을 고려하여 동적 기준 설정 (여기서는 단순 예시)
+        # self.backtest_manager.get_market_avg_trading_value() 같은 함수가 있다고 가정
+        # market_avg_volume = self.backtest_manager.get_market_avg_trading_value()
+        # dynamic_threshold_1 = market_avg_volume * self.DYNAMIC_VOLUME_THRESHOLD_MULTIPLIER * 10
+        # dynamic_threshold_2 = market_avg_volume * self.DYNAMIC_VOLUME_THRESHOLD_MULTIPLIER * 50
+        # dynamic_threshold_3 = market_avg_volume * self.DYNAMIC_VOLUME_THRESHOLD_MULTIPLIER * 100
+
+        # 임시로 고정값 사용 (실제 구현 시 위 동적 기준 고려)
         if recent_volume >= 10_000_000_000: score += 10 
         if recent_volume >= 50_000_000_000: score += 10 
         if recent_volume >= 100_000_000_000: score += 10 
@@ -448,12 +485,12 @@ class SetupManager:
         return min(max(score, 0), 100) 
 
     def _calculate_volatility_score(self, df_stock_data):
-        """변동성 점수 계산: ATR 기반 변동성 및 일중 변동폭 반영"""
+        """변동성 점수 계산: ATR 기반 변동성 및 일중 변동폭 반영 (변동성 낮을수록 가점)"""
         required_volatility_data = max(self.ATR_WINDOW, self.DAILY_RANGE_RATIO_WINDOW)
         if len(df_stock_data) < required_volatility_data:
             logger.debug(f"변동성 점수 계산: 데이터 부족 ({len(df_stock_data)}개). 최소 {required_volatility_data}개 필요.")
             return 0
-        
+            
         df_stock_data = df_stock_data.sort_values(by='date').copy()
 
         high_low = df_stock_data['high'] - df_stock_data['low']
@@ -461,29 +498,57 @@ class SetupManager:
         low_prev_close = abs(df_stock_data['low'] - df_stock_data['close'].shift(1))
         tr = pd.concat([high_low, high_prev_close, low_prev_close], axis=1).max(axis=1)
 
-        # atr = tr.rolling(window=10).mean().iloc[-1] # 기존
-        atr = tr.rolling(window=self.ATR_WINDOW).mean().iloc[-1] # ATR_WINDOW 사용
+        atr = tr.rolling(window=self.ATR_WINDOW).mean().iloc[-1]
 
         latest_close = df_stock_data.iloc[-1]['close']
         score = 0
 
         if latest_close > 0:
             atr_ratio = (atr / latest_close) * 100
-            score += min(atr_ratio * 5, 50) # 이 '5'와 '50'은 가중치/상한값이므로, 필요 시 추가 파라미터화 고려
+            # 변동성이 낮을수록 점수 부여 (역비례)
+            if atr_ratio < self.LOW_VOLATILITY_THRESHOLD_ATR:
+                score += (self.LOW_VOLATILITY_THRESHOLD_ATR - atr_ratio) * self.ATR_SCORE_MULTIPLIER
+            else: # 변동성이 높으면 감점
+                score -= (atr_ratio - self.LOW_VOLATILITY_THRESHOLD_ATR) * self.ATR_SCORE_MULTIPLIER * 0.5 # 감점 폭 조절
 
-        # if len(df_stock_data) >= 5: # 기존
-        if len(df_stock_data) >= self.DAILY_RANGE_RATIO_WINDOW: # DAILY_RANGE_RATIO_WINDOW 사용
+        if len(df_stock_data) >= self.DAILY_RANGE_RATIO_WINDOW:
             df_stock_data['daily_range_ratio'] = ((df_stock_data['high'] - df_stock_data['low']) / df_stock_data['close']) * 100
-            # avg_daily_range_ratio = df_stock_data['daily_range_ratio'].tail(5).mean() # 기존
-            avg_daily_range_ratio = df_stock_data['daily_range_ratio'].tail(self.DAILY_RANGE_RATIO_WINDOW).mean() # DAILY_RANGE_RATIO_WINDOW 사용
-            score += min(avg_daily_range_ratio * 2, 50) # 이 '2'와 '50'은 가중치/상한값이므로, 필요 시 추가 파라미터화 고려
+            avg_daily_range_ratio = df_stock_data['daily_range_ratio'].tail(self.DAILY_RANGE_RATIO_WINDOW).mean()
+            # 일중 변동폭이 낮을수록 점수 부여 (역비례)
+            if avg_daily_range_ratio < self.LOW_VOLATILITY_THRESHOLD_DAILY_RANGE:
+                score += (self.LOW_VOLATILITY_THRESHOLD_DAILY_RANGE - avg_daily_range_ratio) * self.DAILY_RANGE_SCORE_MULTIPLIER
+            else: # 일중 변동폭이 높으면 감점
+                score -= (avg_daily_range_ratio - self.LOW_VOLATILITY_THRESHOLD_DAILY_RANGE) * self.DAILY_RANGE_SCORE_MULTIPLIER * 0.5 # 감점 폭 조절
 
         return min(max(score, 0), 100)
 
-    def _calculate_theme_mention_score(self, mention_count_in_period):
-        """테마 언급 빈도 점수 계산: 최근 한달 내 언급 횟수에 비례"""
-        score = min(mention_count_in_period * 20, 100) 
-        return max(0, score) 
+    def _calculate_theme_mention_score(self, mention_count_today, historical_mention_counts):
+        """
+        테마 언급 빈도 점수 계산: 최근 언급 횟수에 비례하며, 과거 대비 증가율 반영.
+        historical_mention_counts: 최근 N일간의 일별 언급 횟수 리스트 (가장 최근 데이터가 리스트의 마지막)
+        """
+        score = min(mention_count_today * 20, 100) # 기본 점수 (기존 로직)
+
+        if not historical_mention_counts or len(historical_mention_counts) < self.THEME_MENTION_AVG_WINDOW:
+            logger.debug("테마 언급 점수 계산: 과거 언급 데이터 부족. 기본 점수만 반영.")
+            return max(0, score)
+
+        # 과거 평균 언급 빈도 계산 (최근 N일 제외)
+        # historical_mention_counts는 이미 정렬되어 있다고 가정
+        past_avg_mention = np.mean(historical_mention_counts[-self.THEME_MENTION_AVG_WINDOW:-1])
+
+        if past_avg_mention > 0:
+            mention_growth_rate = ((mention_count_today - past_avg_mention) / past_avg_mention) * 100
+            
+            if mention_growth_rate > 0:
+                # 언급 빈도 증가 시 추가 가점 (성장률에 비례)
+                score += min(mention_growth_rate * 0.5, self.THEME_MENTION_GROWTH_BONUS)
+            else:
+                # 언급 빈도 감소 시 감점 (감소율에 비례)
+                score -= abs(mention_growth_rate) * 0.5 # 예시: 감소율의 절반만큼 감점
+                score = max(score, 0) # 점수가 음수가 되지 않도록 최소 0
+
+        return min(max(score, 0), 100) 
 
     def _calculate_stock_scores(self, target_stock_theme_mentions):
         """
@@ -505,26 +570,49 @@ class SetupManager:
             from_date_ohlcv = self.to_date - timedelta(days=self.LOOKBACK_DAYS_OHLCV)
             to_date_ohlcv = self.to_date
 
+            # 시세 데이터 로드
             df_stock_data = self.backtest_manager.cache_daily_ohlcv(stock_code, from_date_ohlcv, to_date_ohlcv)
             
-            #if 'trading_value' not in df_stock_data.columns:
-            df_stock_data['trading_value'] = df_stock_data['close'] * df_stock_data['volume']
-            logger.debug(f"종목 {stock_code}: 'trading_value' 컬럼이 없어 'close * volume'으로 생성했습니다.")
-        
+            # 'trading_value' 컬럼이 없으면 생성
+            if 'trading_value' not in df_stock_data.columns:
+                df_stock_data['trading_value'] = df_stock_data['close'] * df_stock_data['volume']
+                logger.debug(f"종목 {stock_code}: 'trading_value' 컬럼이 없어 'close * volume'으로 생성했습니다.")
+            
             df_stock_data = df_stock_data.reset_index().rename(columns={'index': 'date'})
             df_stock_data['date'] = pd.to_datetime(df_stock_data['date']).dt.date
 
-            if df_stock_data.empty or len(df_stock_data) < 20: 
+            # 충분한 데이터가 없으면 스킵
+            if df_stock_data.empty or len(df_stock_data) < self.MA_WINDOW_LONG: # 가장 긴 MA 기간 기준으로 변경
                 logger.debug(f"종목 {stock_code}: 시세 데이터 부족 ({len(df_stock_data)}개), 점수 계산 스킵.")
                 continue
 
+            # 각 점수 계산
             price_trend_score = self._calculate_price_trend_score(df_stock_data)
             trading_volume_score = self._calculate_trading_volume_score(df_stock_data)
             volatility_score = self._calculate_volatility_score(df_stock_data)
             
             mention_data = target_stock_theme_mentions[stock_code]
-            theme_mention_score = self._calculate_theme_mention_score(mention_data['mention_count'])
+            # 테마 언급 점수 계산 시 과거 언급 데이터도 함께 전달 (가상의 함수 호출)
+            # 실제 구현에서는 mention_data['historical_mention_counts']와 같이 과거 데이터를 포함해야 함
+            # 여기서는 예시를 위해 임의의 과거 데이터 생성
+            # 실제로는 DB에서 해당 종목의 과거 테마 언급 빈도 데이터를 조회해야 합니다.
+            # 예를 들어, self.backtest_manager.get_historical_theme_mentions(stock_code, theme_id, self.THEME_MENTION_AVG_WINDOW)
+            
+            # 임시 데이터 생성 (실제 구현 시 DB에서 가져와야 함)
+            # mention_count_today는 mention_data['mention_count']
+            # historical_mention_counts는 to_date 이전 THEME_MENTION_AVG_WINDOW 기간 동안의 일별 언급 횟수
+            
+            # 예시: 과거 30일간의 언급 횟수를 랜덤으로 생성 (실제로는 DB에서 가져옴)
+            historical_mention_counts = [np.random.randint(0, 10) for _ in range(self.THEME_MENTION_AVG_WINDOW)]
+            historical_mention_counts.append(mention_data['mention_count']) # 오늘 언급 횟수를 마지막에 추가
+            
+            theme_mention_score = self._calculate_theme_mention_score(
+                mention_data['mention_count'],
+                historical_mention_counts[:-1] # 오늘 언급 횟수를 제외한 과거 데이터 전달
+            )
 
+
+            # 최종 stock_score 계산
             final_stock_score = (
                 (price_trend_score * self.WEIGHT_PRICE_TREND) +
                 (trading_volume_score * self.WEIGHT_TRADING_VOLUME) +
@@ -534,6 +622,7 @@ class SetupManager:
             
             final_stock_score = round(final_stock_score, 2)
 
+            # 결과 저장
             for theme_id in mention_data['theme_ids']:
                 key = (theme_id, stock_code)
                 theme_stock_score_updates[key] = (
@@ -547,6 +636,7 @@ class SetupManager:
         end_time = time.time()
         self._print_processing_summary(start_time, end_time, len(all_stock_codes_to_process), "stock_score 계산")
         return theme_stock_score_updates
+
 
     def _update_theme_stock_table(self, theme_stock_score_updates):
         """theme_stock 테이블을 새로운 스코어로 업데이트합니다."""

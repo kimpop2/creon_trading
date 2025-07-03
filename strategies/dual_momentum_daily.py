@@ -258,7 +258,48 @@ class DualMomentumDaily(DailyStrategy): # DailyStrategy 상속
             combined_scores[stock_code] = combined_score
         
         return combined_scores
+    def _calculate_safe_asset_momentum(self, current_daily_date):
+        """안전자산의 모멘텀을 계산합니다."""
+        safe_asset_df = self.data_store['daily'].get(self.strategy_params['safe_asset_code'])
+        safe_asset_momentum = 0
+        if safe_asset_df is not None and not safe_asset_df.empty:
+            safe_asset_data = self._get_historical_data_up_to(
+                'daily',
+                self.strategy_params['safe_asset_code'],
+                current_daily_date,
+                lookback_period=self.strategy_params['momentum_period'] + 1
+            )
+            if len(safe_asset_data) >= self.strategy_params['momentum_period']:
+                safe_asset_momentum = calculate_momentum(safe_asset_data, self.strategy_params['momentum_period']).iloc[-1]
+        return safe_asset_momentum
     
+    def _calculate_momentum_scores(self, current_daily_date):
+        """모든 종목의 모멘텀 스코어를 계산합니다."""
+        momentum_scores = {}
+        for stock_code in self.data_store['daily']:
+            if stock_code == self.strategy_params['safe_asset_code']:
+                continue  # 안전자산은 모멘텀 계산에서 제외
+
+            daily_df = self.data_store['daily'][stock_code]
+            if daily_df.empty:
+                continue
+
+            historical_data = self._get_historical_data_up_to(
+                'daily',
+                stock_code,
+                current_daily_date,
+                lookback_period=self.strategy_params['momentum_period'] + 1
+            )
+
+            if len(historical_data) < self.strategy_params['momentum_period']:
+                logging.debug(f'{stock_code} 종목의 모멘텀 계산을 위한 데이터가 부족합니다.')
+                continue
+
+            momentum_score = calculate_momentum(historical_data, self.strategy_params['momentum_period']).iloc[-1]
+            momentum_scores[stock_code] = momentum_score
+
+        return momentum_scores
+        
     def _select_top_stocks(self, momentum_scores: Dict[str, float]) -> List[str]:
         """상위 종목 선택"""
         if not momentum_scores:

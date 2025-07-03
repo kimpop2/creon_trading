@@ -2,24 +2,25 @@ import datetime
 import logging
 import pandas as pd
 import numpy as np 
-
+from datetime import datetime, timedelta
+from typing import Dict, List, Tuple, Any
+from trade.trader import Trader
 from strategies.strategy import MinuteStrategy 
 from util.strategies_util import calculate_momentum, calculate_rsi 
 
 logger = logging.getLogger(__name__)
 
 class RSIMinute(MinuteStrategy): 
-    def __init__(self, data_store, strategy_params, broker): 
-        super().__init__(data_store, strategy_params, broker)
-        self.strategy_name = "RSIMinute"
-        self.signals = {}  # DailyStrategy에서 업데이트 받을 시그널 저장
-        self.last_portfolio_check = None  # 마지막 포트폴리오 체크 시간
-        self.broker = broker
+    def __init__(self, trade:Trader, strategy_params: Dict[str, Any]):
+        super().__init__(trade, strategy_params)
+        
+        self._validate_strategy_params() # 전략 파라미터 검증
+
         self.rsi_cache = {}  # RSI 캐시 추가
         self.last_prices = {}  # 마지막 가격 캐시 추가
         self.last_rsi_values = {}  # 마지막 RSI 값 캐시 추가
-        # RSI 전략 파라미터 검증
-        self._validate_strategy_params()
+
+        self.strategy_name = "RSIMinute"
 
     # 필수 : 파라미터 검증
     def _validate_strategy_params(self):
@@ -37,18 +38,18 @@ class RSIMinute(MinuteStrategy):
         # 파라미터 로그
         logging.info(f"RSI 분봉 전략 파라미터 검증 완료: RSI 분봉 기간={self.strategy_params['minute_rsi_period']}, "
                     f"과매수 점수={self.strategy_params['minute_rsi_oversold']}, "
-                    f"과매도 점수={self.strategy_params['minute_rsi_overbought']}, "
+                    f"과매도 점수={self.strategy_params['minute_rsi_overbought']} "
                     f"선택종목수={self.strategy_params['num_top_stocks']}")
 
-    # 필수 : 부모 클래스에 올릴 지 판다
-    def update_signals(self, signals):
-        """
-        DailyStrategy에서 생성된 신호들을 업데이트합니다.
-        """
-        self.signals = {
-            stock_code: {**info, 'traded_today': False}
-            for stock_code, info in signals.items()
-        }
+    # # 필수 : 부모 클래스에 올릴 지 판다
+    # def update_signals(self, signals):
+    #     """
+    #     DailyStrategy에서 생성된 신호들을 업데이트합니다.
+    #     """
+    #     self.signals = {
+    #         stock_code: {**info, 'traded_today': False}
+    #         for stock_code, info in signals.items()
+    #     }
 
     # 필수 : 지표계산
     def _calculate_rsi(self, historical_data, stock_code):
@@ -157,7 +158,7 @@ class RSIMinute(MinuteStrategy):
         # ########################
         # 매수 매도 공통
         # ########################
-        target_range = 0.3 # 타임컷         
+        target_range = 0.2 # 타임컷         
 
         current_rsi_value = self._calculate_rsi(historical_minute_data, stock_code)
         if current_rsi_value is None:

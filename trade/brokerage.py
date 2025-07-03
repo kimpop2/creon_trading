@@ -26,6 +26,7 @@ class Brokerage(AbstractBroker):
 
     
     def execute_order(self, stock_code, order_type, price, quantity, current_dt):
+        print("주문:", stock_code, order_type, quantity, current_dt)
         """매매 주문을 실행합니다."""
         if quantity <= 0:
             logging.warning(f"[{current_dt.isoformat()}] {stock_code}: {order_type} 수량 0. 주문 실행하지 않음.")

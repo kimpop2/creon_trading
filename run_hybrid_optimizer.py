@@ -18,11 +18,10 @@ from api.creon_api import CreonAPIClient
 from manager.backtest_manager import BacktestManager
 from manager.db_manager import DBManager
 from trade.backtest_report import BacktestReport
-from selector.stock_selector import StockSelector
 from optimizer.progressive_refinement_optimizer import ProgressiveRefinementOptimizer, GridSearchStrategy
 from optimizer.bayesian_optimizer import BayesianOptimizationStrategy
 
-from config.sector_config import sector_stocks  # 공통 설정 파일에서 import
+# from config.sector_config import sector_stocks  # 더 이상 필요 없으므로 삭제
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO,
@@ -37,19 +36,21 @@ logger = logging.getLogger(__name__)
 class HybridOptimizer:
     """하이브리드 최적화 클래스"""
     
-    def __init__(self, api_client, backtest_manager, report, stock_selector):
+    def __init__(self, api_client, backtest_manager, report, db_manager):
         self.api_client = api_client
         self.backtest_manager = backtest_manager
         self.report = report
-        self.stock_selector = stock_selector
+        self.db_manager = db_manager
         
-    def run_hybrid_optimization(self, start_date, end_date, sector_stocks, daily_strategy_name='sma_daily'):
+    # run_hybrid_optimization, _run_grid_search, _run_bayesian_refinement 메서드에서 sector_stocks 인자 제거
+    def run_hybrid_optimization(self, start_date, end_date, daily_strategy_name='sma_daily'):
         """하이브리드 최적화 실행"""
         logger.info("=== 하이브리드 최적화 시작 ===")
         
         # 1단계: 그리드서치로 대략적인 최적 영역 찾기
         logger.info("1단계: 그리드서치 최적화 시작")
-        grid_results = self._run_grid_search(start_date, end_date, sector_stocks, daily_strategy_name)
+        # sector_stocks 인자 제거
+        grid_results = self._run_grid_search(start_date, end_date, daily_strategy_name) 
         
         if not grid_results or not grid_results.get('best_params'):
             logger.error("그리드서치에서 최적 파라미터를 찾지 못했습니다.")
@@ -57,8 +58,9 @@ class HybridOptimizer:
         
         # 2단계: 베이지안으로 최적점 주변 세밀 탐색
         logger.info("2단계: 베이지안 세밀 최적화 시작")
+        # sector_stocks 인자 제거
         bayesian_results = self._run_bayesian_refinement(
-            grid_results['best_params'], start_date, end_date, sector_stocks, daily_strategy_name
+            grid_results['best_params'], start_date, end_date, daily_strategy_name
         )
         
         # 3단계: 결과 비교 및 최종 선택
@@ -66,7 +68,8 @@ class HybridOptimizer:
         
         return final_results
     
-    def _run_grid_search(self, start_date, end_date, sector_stocks, daily_strategy_name='sma_daily'):
+    # sector_stocks 인자 제거
+    def _run_grid_search(self, start_date, end_date, daily_strategy_name='sma_daily'):
         """그리드서치 최적화 실행"""
         grid_strategy = GridSearchStrategy()
         optimizer = ProgressiveRefinementOptimizer(
@@ -74,23 +77,22 @@ class HybridOptimizer:
             api_client=self.api_client,
             backtest_manager=self.backtest_manager,
             report=self.report,
-            stock_selector=self.stock_selector,
+            db_manager=self.db_manager, # db_manager를 전달하여 내부에서 종목 조회 가능
             initial_cash=10_000_000
         )
         
         results = optimizer.run_progressive_optimization(
             start_date=start_date,
             end_date=end_date,
-            sector_stocks=sector_stocks,
-            refinement_levels=2,
-            initial_combinations=30,
+            # sector_stocks=sector_stocks, # <-- 이 인자는 더 이상 필요 없으므로 제거
             daily_strategy_name=daily_strategy_name,
             minute_strategy_name='open_minute'
         )
         
         return results
     
-    def _run_bayesian_refinement(self, best_params, start_date, end_date, sector_stocks, daily_strategy_name='sma_daily'):
+    # sector_stocks 인자 제거
+    def _run_bayesian_refinement(self, best_params, start_date, end_date, daily_strategy_name='sma_daily'):
         """베이지안 세밀 최적화 실행"""
         # 최적 파라미터 주변으로 범위 설정
         refined_ranges = self._create_refined_ranges(best_params, daily_strategy_name)
@@ -107,14 +109,14 @@ class HybridOptimizer:
             api_client=self.api_client,
             backtest_manager=self.backtest_manager,
             report=self.report,
-            stock_selector=self.stock_selector,
+            db_manager=self.db_manager, # db_manager를 전달하여 내부에서 종목 조회 가능
             initial_cash=10_000_000
         )
         
         results = optimizer.run_progressive_optimization(
             start_date=start_date,
             end_date=end_date,
-            sector_stocks=sector_stocks,
+            # sector_stocks=sector_stocks, # <-- 이 인자는 더 이상 필요 없으므로 제거
             refinement_levels=1,  # 베이지안은 1단계만
             initial_combinations=None,
             daily_strategy_name=daily_strategy_name,
@@ -125,6 +127,8 @@ class HybridOptimizer:
     
     def _create_refined_ranges(self, best_params, daily_strategy_name='sma_daily'):
         """최적 파라미터 주변으로 세밀화된 범위 생성"""
+        # 이 함수는 파라미터 범위만 생성하므로, sector_stocks와 직접적인 관련 없음
+        # 기존 로직 유지
         refined_ranges = {
             'strategy_params': {
                 'sma_daily': {
@@ -141,7 +145,9 @@ class HybridOptimizer:
                             max(2, best_params.get('sma_params', {}).get('volume_ma_period', 5) - 1),
                             best_params.get('sma_params', {}).get('volume_ma_period', 5) + 1
                         ],
-                        'num_top_stocks': [
+                        # 'num_top_stocks'는 이제 daily_universe에서 결정되므로,
+                        # 전략 파라미터에서 제거하거나, 최적화 대상이 아니라면 고정값으로 처리
+                        'num_top_stocks': [ # 이 부분은 전략의 'num_top_stocks'가 여전히 파라미터로 필요하다면 유지
                             max(2, best_params.get('sma_params', {}).get('num_top_stocks', 5) - 1),
                             best_params.get('sma_params', {}).get('num_top_stocks', 5) + 1
                         ],
@@ -216,6 +222,7 @@ class HybridOptimizer:
     
     def _compare_and_select_best(self, grid_results, bayesian_results):
         """결과 비교 및 최종 선택"""
+        # 기존 로직 유지
         grid_score = grid_results.get('best_metrics', {}).get('sharpe_ratio', 0)
         bayesian_score = bayesian_results.get('best_metrics', {}).get('sharpe_ratio', 0)
         
@@ -247,19 +254,14 @@ def main():
     db_manager = DBManager()
     report = BacktestReport(db_manager=db_manager)
     
-    # 공통 설정 파일에서 sector_stocks 가져오기
-    stock_selector = StockSelector(
-        backtest_manager=backtest_manager, 
-        api_client=api_client, 
-        sector_stocks_config=sector_stocks
-    )
-    
+
     # 백테스터 초기화 - DB 저장 비활성화 (최적화 시 DB 저장 비활성화)
+    # Backtest 클래스도 내부적으로 daily_universe를 사용하도록 수정 필요
     backtest_instance = Backtest(
         backtest_manager=backtest_manager, 
         api_client=api_client, 
         backtest_report=report, 
-        stock_selector=stock_selector,
+        db_manager=db_manager, # db_manager를 Backtest에 전달하여 종목 조회에 사용
         initial_cash=10_000_000,
         save_to_db=False  # 최적화 시 DB 저장 비활성화
     )
@@ -269,21 +271,21 @@ def main():
         api_client=api_client,
         backtest_manager=backtest_manager,
         report=report,
-        stock_selector=stock_selector
+        db_manager=db_manager
     )
     
     # ===========================================================
     # 백테스트 기간 설정
-    start_date = datetime.datetime(2025, 4, 1).date()
+    start_date = datetime.datetime(2025, 5, 1).date()
     end_date = datetime.datetime(2025, 6, 15).date()
     
     logger.info(f"최적화 기간: {start_date} ~ {end_date}")
 
-    # 전체 구간 최적화만 실행 (월별 구간 최적화 제거)
+    # run_hybrid_optimization 호출 시 sector_stocks 인자 제거
     results = hybrid_optimizer.run_hybrid_optimization(
         start_date=start_date,
         end_date=end_date,
-        sector_stocks=sector_stocks,
+        # sector_stocks=sector_stocks, # <-- 이 인자 제거
         daily_strategy_name='sma_daily'  ################ 전략 사용
     )
     # ===========================================================
@@ -313,11 +315,16 @@ def main():
         days_diff = (end_date - start_date).days
         print(f"백테스팅 기간: {start_date} ~ {end_date} ({days_diff}일)")
         
-        # 대상 종목수 계산 (공통 설정 파일 사용)
-        from config.sector_config import get_total_stock_count, get_sector_names
-        total_stocks = get_total_stock_count()
-        sector_names = get_sector_names()
-        print(f"대상 종목수: {total_stocks}개 ({', '.join(sector_names)} 섹터)")
+        # 대상 종목수 계산 (daily_universe에서 동적으로 가져오도록 변경)
+        # from config.sector_config import get_total_stock_count, get_sector_names # <-- 이 줄 삭제
+        # total_stocks = get_total_stock_count() # <-- 이 부분도 삭제
+        # sector_names = get_sector_names() # <-- 이 부분도 삭제
+        # print(f"대상 종목수: {total_stocks}개 ({', '.join(sector_names)} 섹터)") # <-- 이 부분도 수정
+        
+        # 백테스트 기간 동안 daily_universe에 등장한 고유 종목 수를 집계 (예시)
+        # 이 부분은 실제 백테스트 결과 객체(results)에 포함되도록 백테스트 로직을 수정해야 합니다.
+        # 현재는 임시로 "DB의 daily_universe에서 동적으로 선택됨"으로 표시
+        print(f"대상 종목: DB의 daily_universe에서 동적으로 선택됨") 
         
         if results.get('best_metrics'):
             metrics = results['best_metrics']
@@ -368,4 +375,4 @@ def main():
     logger.info("하이브리드 최적화가 완료되었습니다.")
 
 if __name__ == "__main__":
-    main() 
+    main()

@@ -3,6 +3,10 @@
 import logging
 import pandas as pd
 import numpy as np
+from datetime import datetime, timedelta
+from typing import Dict, List, Tuple, Any
+
+from trade.backtest import Backtest
 from util.strategies_util import calculate_volume_ma_incremental
 from strategies.strategy import DailyStrategy
 
@@ -12,16 +16,23 @@ class BreakoutDaily(DailyStrategy):
     최근 N봉 신고가 돌파와 거래량 조건을 활용하여 매매 신호를 생성합니다.
     """
     
-    def __init__(self, data_store, strategy_params, broker):
-        super().__init__(data_store, strategy_params, broker)
+    def __init__(self, trade:Backtest, strategy_params: Dict[str, Any]):
+        super().__init__(trade, strategy_params)
+        self.broker = trade.broker
+        self.data_store = trade.data_store
+        # 전략 파라미터 검증
+        self.strategy_params = None
+        self._validate_parameters()
+        # self.signals 초기화
         self.signals = {}
-        self._initialize_signals_for_all_stocks() # This method likely populates self.signals initially
+        self._initialize_signals_for_all_stocks()   
         
         # 돌파 매매 누적 계산을 위한 캐시 추가
         self.high_price_cache = {}  # 최고가 캐시
         self.volume_cache = {}  # 거래량 MA 캐시
         self.last_prices = {}  # 마지막 가격 캐시 (부모 클래스에서 관리될 수 있음)
         self.last_volumes = {}  # 마지막 거래량 캐시 (부모 클래스에서 관리될 수 있음)
+
         self.strategy_name = "BreakoutDaily"
         
         # 돌파 매매 전략 파라미터 검증

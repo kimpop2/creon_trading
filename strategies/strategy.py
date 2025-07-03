@@ -1,7 +1,11 @@
 import abc # Abstract Base Class
 import pandas as pd
-import datetime
+from datetime import datetime, timedelta
+from typing import Dict, List, Tuple, Any
 import logging
+import sys
+import os
+
 from util.strategies_util import *
 
 # --- 로거 설정 (스크립트 최상단에서 설정하여 항상 보이도록 함) ---
@@ -9,11 +13,11 @@ logger = logging.getLogger(__name__)
 # logger.setLevel(logging.DEBUG) # 테스트 시 DEBUG로 설정하여 모든 로그 출력 - 제거
 class BaseStrategy(abc.ABC):
     """모든 전략의 기반이 되는 추상 클래스."""
-    def __init__(self, data_store, strategy_params, broker, position_info=None):
-        self.data_store = data_store
+    def __init__(self, trade, strategy_params: Dict[str, Any]):
+        self.broker = trade.broker
+        self.data_store = trade.data_store
         self.strategy_params = strategy_params
-        self.broker = broker
-        self.position_info = position_info if position_info is not None else {}
+        self.strategy_params = strategy_params
 
     @abc.abstractmethod
     def run_daily_logic(self, current_date):
@@ -82,11 +86,14 @@ class BaseStrategy(abc.ABC):
             return filtered_df
         return pd.DataFrame()
 
-    
+   
 class DailyStrategy(BaseStrategy):
     """일봉 전략을 위한 추상 클래스."""
-    def __init__(self, data_store, strategy_params, broker, position_info=None):
-        super().__init__(data_store, strategy_params, broker, position_info)
+    def __init__(self, trade, strategy_params: Dict[str, Any]):
+        super().__init__(trade, strategy_params)
+
+        self.signals = {}
+        self._initialize_signals_for_all_stocks()   # self.signals 초기화
 
     @abc.abstractmethod
     def run_daily_logic(self, current_date):
@@ -98,48 +105,6 @@ class DailyStrategy(BaseStrategy):
     def run_minute_logic(self, current_minute_dt, stock_code):
         """일봉 전략은 분봉 로직을 직접 수행하지 않으므로 이 메서드는 비워둡니다."""
         pass 
-
-    def _calculate_safe_asset_momentum(self, current_daily_date):
-        """안전자산의 모멘텀을 계산합니다."""
-        safe_asset_df = self.data_store['daily'].get(self.strategy_params['safe_asset_code'])
-        safe_asset_momentum = 0
-        if safe_asset_df is not None and not safe_asset_df.empty:
-            safe_asset_data = self._get_historical_data_up_to(
-                'daily',
-                self.strategy_params['safe_asset_code'],
-                current_daily_date,
-                lookback_period=self.strategy_params['momentum_period'] + 1
-            )
-            if len(safe_asset_data) >= self.strategy_params['momentum_period']:
-                safe_asset_momentum = calculate_momentum(safe_asset_data, self.strategy_params['momentum_period']).iloc[-1]
-        return safe_asset_momentum
-    
-    def _calculate_momentum_scores(self, current_daily_date):
-        """모든 종목의 모멘텀 스코어를 계산합니다."""
-        momentum_scores = {}
-        for stock_code in self.data_store['daily']:
-            if stock_code == self.strategy_params['safe_asset_code']:
-                continue  # 안전자산은 모멘텀 계산에서 제외
-
-            daily_df = self.data_store['daily'][stock_code]
-            if daily_df.empty:
-                continue
-
-            historical_data = self._get_historical_data_up_to(
-                'daily',
-                stock_code,
-                current_daily_date,
-                lookback_period=self.strategy_params['momentum_period'] + 1
-            )
-
-            if len(historical_data) < self.strategy_params['momentum_period']:
-                logging.debug(f'{stock_code} 종목의 모멘텀 계산을 위한 데이터가 부족합니다.')
-                continue
-
-            momentum_score = calculate_momentum(historical_data, self.strategy_params['momentum_period']).iloc[-1]
-            momentum_scores[stock_code] = momentum_score
-
-        return momentum_scores
 
     def _calculate_target_quantity(self, stock_code, current_price, num_stocks=None):
         """
@@ -227,17 +192,6 @@ class DailyStrategy(BaseStrategy):
         """모든 신호를 완전히 초기화합니다. (다음날을 위해)"""
         self.signals = {}  # 모든 신호를 완전히 삭제
         logging.debug("일봉 전략의 모든 신호를 완전히 초기화했습니다.")
-
-    def _select_buy_candidates(self, momentum_scores, safe_asset_momentum):
-        """모멘텀 스코어를 기반으로 매수 대상 종목을 선정합니다."""
-        sorted_stocks = sorted(momentum_scores.items(), key=lambda x: x[1], reverse=True)
-        buy_candidates = set()
-        
-        for rank, (stock_code, score) in enumerate(sorted_stocks, 1):
-            if rank <= self.strategy_params['num_top_stocks'] and score > safe_asset_momentum:
-                buy_candidates.add(stock_code)
-
-        return buy_candidates, sorted_stocks
 
     def _generate_signals(self, current_daily_date, buy_candidates, sorted_stocks, sell_candidates=None):
         """매수/매도/홀딩 신호를 생성하고 업데이트합니다."""
@@ -401,12 +355,25 @@ class DailyStrategy(BaseStrategy):
         else:
             logging.debug(f'매도 신호 - {stock_code} (미보유): 목표가격 {current_price_daily:,.0f}원 (전일 종가)')
 
+    # 모멘텀 전략으로 보낼 것
+    def _select_buy_candidates(self, momentum_scores, safe_asset_momentum):
+        """모멘텀 스코어를 기반으로 매수 대상 종목을 선정합니다."""
+        sorted_stocks = sorted(momentum_scores.items(), key=lambda x: x[1], reverse=True)
+        buy_candidates = set()
+        
+        for rank, (stock_code, score) in enumerate(sorted_stocks, 1):
+            if rank <= self.strategy_params['num_top_stocks'] and score > safe_asset_momentum:
+                buy_candidates.add(stock_code)
+
+        return buy_candidates, sorted_stocks
+
 
 class MinuteStrategy(BaseStrategy):
     """분봉 전략을 위한 추상 클래스."""
-    def __init__(self, data_store, strategy_params, broker, position_info=None):
-        super().__init__(data_store, strategy_params, broker, position_info)
-        self.signals = {} # 일봉 전략으로부터 받을 시그널을 저장할 속성
+    def __init__(self, trade, strategy_params: Dict[str, Any]):
+        super().__init__(trade, strategy_params)
+        self.signals = {}
+        #self.last_portfolio_check = None  # 마지막 포트폴리오 체크 시간
 
     def run_daily_logic(self, current_date):
         """분봉 전략은 일봉 로직을 직접 수행하지 않으므로 이 메서드는 비워둡니다."""
@@ -427,3 +394,16 @@ class MinuteStrategy(BaseStrategy):
             self.signals[stock_code]['target_price'] = 0
             self.signals[stock_code]['signal'] = None
 
+
+    # def update_signals(self, new_signals):
+    #     """일봉 전략으로부터 받은 신호를 업데이트합니다."""
+    #     self.signals = new_signals
+    #     logging.debug(f"[BreakoutMinute] 신호 업데이트 완료. 총 {len(self.signals)}개 신호 수신.")
+    def update_signals(self, signals):
+        """
+        DailyStrategy에서 생성된 신호들을 업데이트합니다.
+        """
+        self.signals = {
+            stock_code: {**info, 'traded_today': False}
+            for stock_code, info in signals.items() #### info 에 set() 아이템 설정
+        }

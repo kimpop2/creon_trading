@@ -9,6 +9,7 @@ import numpy as np
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Any
 from strategies.strategy import DailyStrategy
+from trade.backtest import Backtest
 
 logger = logging.getLogger(__name__)
 
@@ -20,12 +21,16 @@ class BollingerRSIDaily(DailyStrategy):
     - 거래량: 신호의 신뢰도 검증
     """
     
-    def __init__(self, data_store: Dict, strategy_params: Dict[str, Any], broker):
-        super().__init__(data_store, strategy_params, broker)
-        self.strategy_name = "BollingerRSIDaily"
-        
-        # 파라미터 검증
+    def __init__(self, trade:Backtest, strategy_params: Dict[str, Any]):
+        super().__init__(trade, strategy_params)
+        self.broker = trade.broker
+        self.data_store = trade.data_store
+        # 전략 파라미터 검증
+        self.strategy_params = None
         self._validate_parameters()
+        # self.signals 초기화
+        self.signals = {}
+        self._initialize_signals_for_all_stocks()    
         
     def _validate_parameters(self):
         """전략 파라미터 검증"""

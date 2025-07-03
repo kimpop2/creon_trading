@@ -1513,10 +1513,22 @@ class DBManager:
         if not conn: return []
         
         sql = """
-        SELECT DISTINCT stock_code, stock_name
-        FROM daily_theme
-        WHERE date >= %s AND date <= %s
-        ORDER BY stock_code;
+            SELECT DISTINCT
+                stock_code,
+                stock_name
+            FROM (
+                SELECT 
+                    *,
+                    -- 선택된 날짜 내에서 각 테마(theme_id)별로 stock_score가 높은 순서대로 순위를 매깁니다.
+                    ROW_NUMBER() OVER (PARTITION BY theme_id ORDER BY stock_score DESC) as rn
+                FROM
+                    daily_universe
+                WHERE
+                    date BETWEEN %s AND %s
+            ) AS ranked_daily_universe
+            WHERE
+                -- 각 테마별로 상위 3개 종목만 선택합니다.
+                rn <= 3
         """
         params = (start_date, end_date)
         

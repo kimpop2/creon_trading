@@ -24,7 +24,6 @@ from api.creon_api import CreonAPIClient
 from manager.backtest_manager import BacktestManager
 from manager.db_manager import DBManager
 from trade.backtest_report import BacktestReport
-from selector.stock_selector import StockSelector
 
 # 로깅 설정 (콘솔 + 파일)
 logging.basicConfig(level=logging.INFO,
@@ -47,7 +46,9 @@ class OptimizationStrategy(ABC):
     def generate_parameter_combinations(self, 
                                       current_best_params: Dict[str, Any], 
                                       refinement_level: int,
-                                      total_levels: int) -> List[Dict[str, Any]]:
+                                      total_levels: int,
+                                      daily_strategy_name: str, # 추가
+                                      minute_strategy_name: str) -> List[Dict[str, Any]]: # 추가
         """
         현재 최적 파라미터를 기반으로 다음 단계의 파라미터 조합을 생성
         
@@ -55,6 +56,8 @@ class OptimizationStrategy(ABC):
             current_best_params: 현재까지의 최적 파라미터
             refinement_level: 현재 세밀화 단계 (0부터 시작)
             total_levels: 전체 세밀화 단계 수
+            daily_strategy_name: 일봉 전략 이름
+            minute_strategy_name: 분봉 전략 이름
             
         Returns:
             파라미터 조합 리스트
@@ -89,7 +92,7 @@ class GridSearchStrategy(OptimizationStrategy):
                         'short_sma_period': [1, 2, 3, 4, 5, 7, 10, 15],
                         'long_sma_period': [8, 10, 12, 15, 20, 25, 30, 45],
                         'volume_ma_period': [2, 3, 5, 10, 15],
-                        'num_top_stocks': [2, 3, 5, 7, 10],
+                        'num_top_stocks': [2, 3, 5, 7, 10], # 이 값은 이제 daily_universe에서 가져오는 종목 수와 무관하게 전략이 선택할 상위 종목 수
                         'safe_asset_code': ['A439870']
                     }
                 },
@@ -288,7 +291,7 @@ class GridSearchStrategy(OptimizationStrategy):
             ranges['safe_asset_code'] = full_ranges['safe_asset_code']
             
         elif strategy_name == 'macd_daily':
-            # MACD 전략 파라미터 축소
+            # MACD 일봉 전략 파라미터 축소
             best_fast = best_params['macd_params']['fast_period']
             ranges['fast_period'] = self._get_narrowed_range(
                 best_fast, full_ranges['fast_period'], reduction_ratio
@@ -317,7 +320,7 @@ class GridSearchStrategy(OptimizationStrategy):
             ranges['safe_asset_code'] = full_ranges['safe_asset_code']
             
         elif strategy_name == 'bollinger_daily':
-            # 볼린저밴드 전략 파라미터 축소
+            # 볼린저밴드 일봉 전략 파라미터 축소
             best_period = best_params['bollinger_params']['bb_period']
             ranges['bb_period'] = self._get_narrowed_range(
                 best_period, full_ranges['bb_period'], reduction_ratio
@@ -341,7 +344,7 @@ class GridSearchStrategy(OptimizationStrategy):
             ranges['safe_asset_code'] = full_ranges['safe_asset_code']
         
         elif strategy_name == 'dual_momentum_daily':
-            # 듀얼모멘텀 전략 파라미터 축소
+            # 듀얼모멘텀 일봉 전략 파라미터 축소
             best_momentum = best_params['dual_momentum_params']['momentum_period']
             ranges['momentum_period'] = self._get_narrowed_range(
                 best_momentum, full_ranges['momentum_period'], reduction_ratio
@@ -360,7 +363,7 @@ class GridSearchStrategy(OptimizationStrategy):
             ranges['safe_asset_code'] = full_ranges['safe_asset_code']
         
         elif strategy_name == 'triple_screen_daily':
-            # 삼중창 전략 파라미터 축소
+            # 삼중창 일봉 전략 파라미터 축소
             best_trend_ma = best_params['triple_screen_params']['trend_ma_period']
             ranges['trend_ma_period'] = self._get_narrowed_range(
                 best_trend_ma, full_ranges['trend_ma_period'], reduction_ratio
@@ -437,6 +440,7 @@ class GridSearchStrategy(OptimizationStrategy):
                 best_overbought, full_ranges['minute_rsi_overbought'], reduction_ratio
             )
         elif strategy_name == 'open_minute':
+            # OpenMinute도 RSI 파라미터를 사용할 수 있으므로 동일하게 처리
             best_rsi_period = best_params['rsi_params']['minute_rsi_period']
             ranges['minute_rsi_period'] = self._get_narrowed_range(
                 best_rsi_period, full_ranges['minute_rsi_period'], reduction_ratio
@@ -720,7 +724,7 @@ class ProgressiveRefinementOptimizer:
                  api_client: CreonAPIClient,
                  backtest_manager: BacktestManager,
                  report: BacktestReport,
-                 stock_selector: StockSelector,
+                 db_manager: DBManager, # db_manager 추가
                  initial_cash: float = 10_000_000):
         """
         ProgressiveRefinementOptimizer 초기화
@@ -730,14 +734,14 @@ class ProgressiveRefinementOptimizer:
             api_client: Creon API 클라이언트
             backtest_manager: 데이터 매니저
             report: 리포터
-            stock_selector: 종목 선택기
+            db_manager: DB 매니저 (daily_universe에서 종목 조회용)
             initial_cash: 초기 자본금
         """
         self.strategy = strategy
         self.api_client = api_client
         self.backtest_manager = backtest_manager
         self.report = report
-        self.stock_selector = stock_selector
+        self.db_manager = db_manager # db_manager 저장
         self.initial_cash = initial_cash
         
         # 최적화 결과 저장
@@ -752,7 +756,7 @@ class ProgressiveRefinementOptimizer:
     def run_progressive_optimization(self, 
                                    start_date: datetime.date, 
                                    end_date: datetime.date,
-                                   sector_stocks: Dict[str, List[Tuple[str, str]]],
+                                   # sector_stocks: Dict[str, List[Tuple[str, str]]], # 제거
                                    refinement_levels: int = 4,
                                    initial_combinations: int = None,
                                    daily_strategy_name: str = 'sma_daily',
@@ -763,7 +767,6 @@ class ProgressiveRefinementOptimizer:
         Args:
             start_date: 백테스트 시작일
             end_date: 백테스트 종료일
-            sector_stocks: 섹터별 종목 정보
             refinement_levels: 세밀화 단계 수
             initial_combinations: 초기 조합 수 (None이면 전략 기본값 사용)
             daily_strategy_name: 일봉 전략 이름
@@ -777,6 +780,10 @@ class ProgressiveRefinementOptimizer:
         
         current_best_params = None
         current_best_metrics = None
+
+        # 백테스트 시작 전에 전체 기간 동안 daily_universe에 등장할 수 있는 모든 고유 종목 데이터 로딩
+        # 이 부분에서 db_manager를 사용하여 종목을 가져옵니다.
+        self._load_all_unique_universe_data(start_date, end_date)
         
         for level in range(refinement_levels):
             logger.info(f"=== 세밀화 단계 {level + 1}/{refinement_levels} ===")
@@ -793,8 +800,9 @@ class ProgressiveRefinementOptimizer:
             logger.info(f"단계 {level + 1}: {len(combinations)}개 조합 테스트")
             
             # 현재 단계의 최적화 실행
+            # sector_stocks 인자 제거
             level_results = self._run_level_optimization(
-                combinations, start_date, end_date, sector_stocks,
+                combinations, start_date, end_date, # sector_stocks 제거
                 daily_strategy_name, minute_strategy_name
             )
             
@@ -840,7 +848,7 @@ class ProgressiveRefinementOptimizer:
                                combinations: List[Dict[str, Any]], 
                                start_date: datetime.date, 
                                end_date: datetime.date,
-                               sector_stocks: Dict[str, List[Tuple[str, str]]],
+                               # sector_stocks: Dict[str, List[Tuple[str, str]]], # 제거
                                daily_strategy_name: str,
                                minute_strategy_name: str) -> Dict[str, Any]:
         """
@@ -852,7 +860,8 @@ class ProgressiveRefinementOptimizer:
         for i, params in enumerate(combinations):
             logger.info(f"진행률: {i+1}/{len(combinations)} ({((i+1)/len(combinations)*100):.1f}%)")
             
-            result = self._run_single_backtest(params, start_date, end_date, sector_stocks,
+            # sector_stocks 인자 제거
+            result = self._run_single_backtest(params, start_date, end_date, # sector_stocks 제거
                                              daily_strategy_name, minute_strategy_name)
             
             if result['success']:
@@ -870,7 +879,7 @@ class ProgressiveRefinementOptimizer:
                            params: Dict[str, Any], 
                            start_date: datetime.date, 
                            end_date: datetime.date,
-                           sector_stocks: Dict[str, List[Tuple[str, str]]],
+                           # sector_stocks: Dict[str, List[Tuple[str, str]]], # 제거
                            daily_strategy_name: str,
                            minute_strategy_name: str) -> Dict[str, Any]:
         """
@@ -882,7 +891,7 @@ class ProgressiveRefinementOptimizer:
                 backtest_manager=self.backtest_manager,
                 api_client=self.api_client,
                 backtest_report=self.report,
-                stock_selector=self.stock_selector,
+                db_manager=self.db_manager, # db_manager 전달
                 initial_cash=self.initial_cash
             )
             
@@ -902,11 +911,12 @@ class ProgressiveRefinementOptimizer:
             if 'stop_loss_params' in params:
                 backtest.set_broker_stop_loss_params(params['stop_loss_params'])
             
-            # 데이터 로딩
-            self._load_backtest_data(backtest, start_date, end_date, sector_stocks)
+            # 데이터 로딩 (이제 이 함수는 이미 캐시된 데이터를 사용하거나, 필요시 추가 로딩)
+            # _load_backtest_data(backtest, start_date, end_date, sector_stocks) 호출 제거
+            # Backtest 클래스 내부에서 매일 daily_universe를 조회하여 종목을 선택하고 데이터를 사용하도록 변경되어야 함
             
             # 백테스트 실행
-            portfolio_values, metrics = backtest.run(start_date, end_date)
+            portfolio_values, metrics = backtest.run(start_date, end_date) # Backtest.run 내부에서 종목 선택 및 데이터 사용
             
             # 결과 정리
             result = {
@@ -995,13 +1005,9 @@ class ProgressiveRefinementOptimizer:
         else:
             return None
     
-    def _load_backtest_data(self, 
-                           backtest: Backtest, 
-                           start_date: datetime.date, 
-                           end_date: datetime.date,
-                           sector_stocks: Dict[str, List[Tuple[str, str]]]):
+    def _load_all_unique_universe_data(self, start_date: datetime.date, end_date: datetime.date):
         """
-        백테스트에 필요한 데이터를 로딩합니다.
+        백테스트 기간 동안 daily_universe에 등장할 수 있는 모든 고유 종목의 데이터를 로딩합니다.
         """
         # 데이터 가져오기 시작일 (백테스트 시작일 1개월 전)
         data_fetch_start = (start_date - timedelta(days=30)).replace(day=1)
@@ -1011,26 +1017,28 @@ class ProgressiveRefinementOptimizer:
         if safe_asset_code not in self.daily_ohlcv_cache:
             daily_df = self.backtest_manager.cache_daily_ohlcv(safe_asset_code, data_fetch_start, end_date)
             self.daily_ohlcv_cache[safe_asset_code] = daily_df
-        else:
-            daily_df = self.daily_ohlcv_cache[safe_asset_code]
-        backtest.add_daily_data(safe_asset_code, daily_df)
+        # else: 이미 캐시되어 있으므로 추가 로딩 불필요
+        # backtest.add_daily_data는 Backtest.run 내부에서 필요할 때 호출될 것임
+
+        # 백테스트 기간 동안 daily_universe에 등장하는 모든 고유 종목 코드 가져오기
+        # 이 함수는 DBManager에 구현되어야 합니다.
+        unique_stocks_in_universe = self.db_manager.fetch_daily_theme_stock(start_date, end_date)
         
-        # 모든 종목 데이터 로딩
-        stock_names = []
-        for sector, stocks in sector_stocks.items():
-            for stock_name, _ in stocks:
-                stock_names.append(stock_name)
-        
-        for name in stock_names:
-            code = self.api_client.get_stock_code(name)
-            if code:
-                if code not in self.daily_ohlcv_cache:
-                    daily_df = self.backtest_manager.cache_daily_ohlcv(code, data_fetch_start, end_date)
-                    self.daily_ohlcv_cache[code] = daily_df
-                else:
-                    daily_df = self.daily_ohlcv_cache[code]
-                if not daily_df.empty:
-                    backtest.add_daily_data(code, daily_df)
+        logger.info(f"백테스트 기간 ({start_date} ~ {end_date}) 동안 daily_universe에 등장하는 고유 종목 {len(unique_stocks_in_universe)}개 데이터 로딩 시작.")
+
+        for stock_code, stock_name in unique_stocks_in_universe:
+            # Creon API 클라이언트를 통해 종목 코드를 확인하는 과정이 필요할 수 있으나,
+            # daily_universe에 이미 stock_code가 있으므로 직접 사용
+            
+            if stock_code not in self.daily_ohlcv_cache:
+                daily_df = self.backtest_manager.cache_daily_ohlcv(stock_code, data_fetch_start, end_date)
+                self.daily_ohlcv_cache[stock_code] = daily_df
+            # else: 이미 캐시되어 있으므로 추가 로딩 불필요
+
+        logger.info(f"모든 고유 종목 데이터 로딩 완료.")
+
+    # _load_backtest_data 함수는 더 이상 직접 호출되지 않으며, 위의 _load_all_unique_universe_data로 대체
+    # Backtest 클래스의 run 메서드 내부에서 필요한 시점에 daily_universe 조회 및 캐시된 데이터 사용
     
     def save_results(self, results: Dict[str, Any], filename: str = None):
         """
@@ -1145,7 +1153,7 @@ class ProgressiveRefinementOptimizer:
                   f"({params['triple_screen_params']['momentum_rsi_oversold']}-{params['triple_screen_params']['momentum_rsi_overbought']})")
             print(f"  거래량MA: {params['triple_screen_params']['volume_ma_period']}일")
             print(f"  종목수: {params['triple_screen_params']['num_top_stocks']}개")
-            print(f"  최소추세강도: {params['triple_screen_params']['min_trend_strength']}")
+            print(f"  최소 추세강도: {params['triple_screen_params']['min_trend_strength']}")
         
         # 손절매 파라미터 출력
         if 'stop_loss_params' in params:
@@ -1165,11 +1173,7 @@ if __name__ == "__main__":
     backtest_manager = BacktestManager()
     db_manager = DBManager()
     report = BacktestReport(db_manager=db_manager)
-    
-    # 공통 설정 파일에서 sector_stocks 가져오기
-    from config.sector_config import sector_stocks
-    stock_selector = StockSelector(backtest_manager=backtest_manager, api_client=api_client, sector_stocks_config=sector_stocks)
-
+  
     # 백테스트 기간 설정
     start_date = datetime(2025, 3, 1).date()
     end_date = datetime(2025, 4, 1).date()
@@ -1181,7 +1185,7 @@ if __name__ == "__main__":
         api_client=api_client,
         backtest_manager=backtest_manager,
         report=report,
-        stock_selector=stock_selector,
+        db_manager=db_manager,
         initial_cash=10_000_000
     )
 
@@ -1189,7 +1193,7 @@ if __name__ == "__main__":
     results = optimizer.run_progressive_optimization(
         start_date=start_date,
         end_date=end_date,
-        sector_stocks=sector_stocks,
+        # sector_stocks=sector_stocks, # 제거
         refinement_levels=3,  # 3단계 세밀화
         initial_combinations=50,  # 초기 50개 조합
         daily_strategy_name='sma_daily',  # 일봉 전략: SMA
@@ -1197,4 +1201,4 @@ if __name__ == "__main__":
     )
 
     optimizer.save_results(results)
-    optimizer.print_summary(results) 
+    optimizer.print_summary(results)
