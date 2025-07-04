@@ -5,6 +5,7 @@ from trade.abstract_broker import AbstractBroker
 # --- 로거 설정 (스크립트 최상단에서 설정하여 항상 보이도록 함) ---
 logger = logging.getLogger(__name__)
 # logger.setLevel(logging.DEBUG) # 테스트 시 DEBUG로 설정하여 모든 로그 출력 - 제거
+
 class Broker(AbstractBroker):
     def __init__(self, initial_cash, commission_rate=0.0016, slippage_rate=0.0004):
         self.cash = initial_cash
@@ -25,6 +26,7 @@ class Broker(AbstractBroker):
 
     
     def execute_order(self, stock_code, order_type, price, quantity, current_dt):
+        print("주문:", stock_code, order_type, quantity, current_dt)
         """매매 주문을 실행합니다."""
         if quantity <= 0:
             logging.warning(f"[{current_dt.isoformat()}] {stock_code}: {order_type} 수량 0. 주문 실행하지 않음.")
@@ -141,7 +143,7 @@ class Broker(AbstractBroker):
         # 3. 보유 기간 기반 손절 (early_stop_loss)
         if self.stop_loss_params is not None and self.stop_loss_params['early_stop_loss'] is not None and pos_info['entry_date'] is not None:
             holding_days = (current_dt.date() - pos_info['entry_date']).days
-            if holding_days <= 5 and loss_ratio <= self.stop_loss_params['early_stop_loss']:
+            if holding_days <= 3 and loss_ratio <= self.stop_loss_params['early_stop_loss']:
                 logging.info(f"[조기 손절매 발생] {stock_code}: 매수 후 {holding_days}일 이내 손실률 {loss_ratio:.2f}%가 조기 손절 기준 {self.stop_loss_params['early_stop_loss']}% 초과. {current_dt.isoformat()}")
                 self.execute_order(stock_code, 'sell', current_price, pos_info['size'], current_dt)
                 return True
@@ -211,3 +213,5 @@ class Broker(AbstractBroker):
         # 일일 거래 관련 상태를 초기화하는 로직이 필요할 때 여기에 추가
         # 예: 일일 거래 횟수 제한, 일일 손실 한도 등
         pass
+
+

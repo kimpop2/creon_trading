@@ -355,7 +355,7 @@ class DailyStrategy(BaseStrategy):
         else:
             logging.debug(f'매도 신호 - {stock_code} (미보유): 목표가격 {current_price_daily:,.0f}원 (전일 종가)')
 
-    # 모멘텀 전략으로 보낼 것
+    # 모멘텀 전략으로 보낼 것 -> 관심종목 필터링으로 용도변경경
     def _select_buy_candidates(self, momentum_scores, safe_asset_momentum):
         """모멘텀 스코어를 기반으로 매수 대상 종목을 선정합니다."""
         sorted_stocks = sorted(momentum_scores.items(), key=lambda x: x[1], reverse=True)

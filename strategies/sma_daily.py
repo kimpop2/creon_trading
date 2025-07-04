@@ -56,21 +56,6 @@ class SMADaily(DailyStrategy):
         """
         logging.info(f"{current_date} - --- 일간 SMA 로직 실행 중 (전일 데이터 기준) ---")
         prev_trading_day = current_date
-        # # 0. 전 영업일 계산 (일봉 인덱스에서 today 바로 전 날짜)
-        # prev_trading_day = None
-        # for stock_code in self.data_store['daily']:
-        #     df = self.data_store['daily'][stock_code]
-        #     if not df.empty and current_date in df.index.date:
-        #         idx = list(df.index.date).index(current_date)
-        #         if idx > 0:
-        #             prev_trading_day = df.index.date[idx-1]
-        #             break
-        # self.prev_trading_day = prev_trading_day
-
-        # # 수정: 전일 데이터가 없으면 실행하지 않음
-        # if prev_trading_day is None:
-        #     logging.warning(f"{current_date}: 전일 데이터를 찾을 수 없어 SMA 전략을 건너뜁니다.")
-        #     return
 
         # 1. SMA 신호 점수 계산 (전일 데이터까지만 사용)
         buy_scores = {}  # 매수 점수
