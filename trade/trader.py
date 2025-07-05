@@ -647,8 +647,8 @@ if __name__ == "__main__":
 
         # 전략 인스턴스 생성
         daily_strategy = SMADaily(trade=trader, strategy_params=sma_daily_params)
-        #minute_strategy = OpenMinute(trade=trader, strategy_params=open_minute_params)
-        minute_strategy = RSIMinute(trade=trader, strategy_params=rsi_minute_params)
+        minute_strategy = OpenMinute(trade=trader, strategy_params=open_minute_params)
+        #minute_strategy = RSIMinute(trade=trader, strategy_params=rsi_minute_params)
         
         # 4. 손절매 파라미터 설정 (선택사항)
         stop_loss_params = {

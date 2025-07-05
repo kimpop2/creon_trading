@@ -278,7 +278,7 @@ class DailyStrategy(BaseStrategy):
                 'target_quantity': 0
             }
             
-        # 수정: 전일 종가를 현재가로 사용 (장전 판단을 위해)
+        # 종가를 현재가로 사용
         current_price_daily = self._get_historical_data_up_to('daily', stock_code, current_daily_date, lookback_period=1)['close'].iloc[-1]
         target_quantity = self._calculate_target_quantity(stock_code, current_price_daily)
 
@@ -394,6 +394,63 @@ class MinuteStrategy(BaseStrategy):
             self.signals[stock_code]['target_price'] = 0
             self.signals[stock_code]['signal'] = None
 
+    def execute_time_cut_buy(self, stock_code, current_dt, current_price, target_quantity, max_price_diff_ratio=0.02):
+        """
+        타임컷 강제매수를 실행합니다.
+        
+        Args:
+            stock_code (str): 종목 코드
+            current_dt (datetime): 현재 시각
+            current_price (float): 현재 가격
+            target_quantity (int): 매수 수량
+            max_price_diff_ratio (float): 최대 허용 괴리율 (기본값: 0.01 = 1%)
+            
+        Returns:
+            bool: 매수 실행 여부
+        """
+        if stock_code not in self.signals:
+            return False
+            
+        target_price = self.signals[stock_code].get('target_price', current_price)
+        price_diff_ratio = abs(target_price - current_price) / target_price
+        
+        if price_diff_ratio <= max_price_diff_ratio:
+            logging.info(f'[타임컷 강제매수] {current_dt.isoformat()} - {stock_code} 목표가: {target_price:.2f}, 매수가: {current_price:.2f}, 괴리율: {price_diff_ratio:.2%}')
+            self.broker.execute_order(stock_code, 'buy', current_price, target_quantity, current_dt)
+            self.reset_signal(stock_code)
+            return True
+        else:
+            logging.info(f'[타임컷 미체결] {current_dt.isoformat()} - {stock_code} 목표가: {target_price:.2f}, 매수가: {current_price:.2f}, 괴리율: {price_diff_ratio:.2%} ({max_price_diff_ratio:.1%} 초과)')
+            return False
+
+    def execute_time_cut_sell(self, stock_code, current_dt, current_price, current_position_size, max_price_diff_ratio=0.02):
+        """
+        타임컷 강제매도를 실행합니다.
+        
+        Args:
+            stock_code (str): 종목 코드
+            current_dt (datetime): 현재 시각
+            current_price (float): 현재 가격
+            current_position_size (int): 현재 보유 수량
+            max_price_diff_ratio (float): 최대 허용 괴리율 (기본값: 0.01 = 1%)
+            
+        Returns:
+            bool: 매도 실행 여부
+        """
+        if stock_code not in self.signals:
+            return False
+            
+        target_price = self.signals[stock_code].get('target_price', current_price)
+        price_diff_ratio = abs(target_price - current_price) / target_price
+        
+        if price_diff_ratio <= max_price_diff_ratio:
+            logging.info(f'[타임컷 강제매도] {current_dt.isoformat()} - {stock_code} 목표가: {target_price:.2f}, 매도가: {current_price:.2f}, 괴리율: {price_diff_ratio:.2%}')
+            self.broker.execute_order(stock_code, 'sell', current_price, current_position_size, current_dt)
+            self.reset_signal(stock_code)
+            return True
+        else:
+            logging.info(f'[타임컷 미체결] {current_dt.isoformat()} - {stock_code} 목표가: {target_price:.2f}, 매도가: {current_price:.2f}, 괴리율: {price_diff_ratio:.2%} ({max_price_diff_ratio:.1%} 초과)')
+            return False
 
     # def update_signals(self, new_signals):
     #     """일봉 전략으로부터 받은 신호를 업데이트합니다."""

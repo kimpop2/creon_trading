@@ -587,3 +587,61 @@ def calculate_macd(series, short_period=12, long_period=26, signal_period=9):
     })
     
     return macd_df
+
+def calculate_bollinger_bands(data, period=20, std_dev=2):
+    """
+    볼린저 밴드를 계산합니다.
+    
+    Args:
+        data (pd.DataFrame): OHLCV 데이터프레임
+        period (int): 이동평균 기간 (기본값: 20)
+        std_dev (int): 표준편차 배수 (기본값: 2)
+    
+    Returns:
+        tuple: (upper_band, middle_band, lower_band) - 각각 pd.Series
+    """
+    if 'close' not in data.columns:
+        raise ValueError("데이터프레임에 'close' 컬럼이 없습니다.")
+    
+    # 중간선 (이동평균)
+    middle_band = data['close'].rolling(window=period, min_periods=1).mean()
+    
+    # 표준편차
+    rolling_std = data['close'].rolling(window=period, min_periods=1).std()
+    
+    # 상단선과 하단선
+    upper_band = middle_band + (rolling_std * std_dev)
+    lower_band = middle_band - (rolling_std * std_dev)
+    
+    return upper_band, middle_band, lower_band
+
+def calculate_stochastic(data, period=14, k_period=3, d_period=3):
+    """
+    스토캐스틱을 계산합니다.
+    
+    Args:
+        data (pd.DataFrame): OHLCV 데이터프레임
+        period (int): %K 계산 기간 (기본값: 14)
+        k_period (int): %K 스무딩 기간 (기본값: 3)
+        d_period (int): %D 스무딩 기간 (기본값: 3)
+    
+    Returns:
+        tuple: (%K, %D) - 각각 pd.Series
+    """
+    if not all(col in data.columns for col in ['high', 'low', 'close']):
+        raise ValueError("데이터프레임에 'high', 'low', 'close' 컬럼이 필요합니다.")
+    
+    # 기간 내 최고가와 최저가
+    highest_high = data['high'].rolling(window=period, min_periods=1).max()
+    lowest_low = data['low'].rolling(window=period, min_periods=1).min()
+    
+    # %K 계산
+    k_raw = ((data['close'] - lowest_low) / (highest_high - lowest_low)) * 100
+    
+    # %K 스무딩
+    k_smoothed = k_raw.rolling(window=k_period, min_periods=1).mean()
+    
+    # %D 계산 (%K의 이동평균)
+    d_smoothed = k_smoothed.rolling(window=d_period, min_periods=1).mean()
+    
+    return k_smoothed, d_smoothed
