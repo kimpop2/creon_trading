@@ -853,41 +853,6 @@ class CreonAPIClient:
         logger.info(f"Creon API로부터 총 {len(trading_days)}개의 거래일 캘린더 데이터를 가져왔습니다.")
         return trading_days
     
-    def get_current_price(self, stock_code: str) -> Optional[float]:
-        """
-        실시간 현재가를 조회합니다 (CpSysDib.StockMst 사용).
-        """
-        logger.debug(f"Fetching current price for {stock_code}")
-        try:
-            # 종목코드 정규화
-            normalized_code = self._normalize_stock_code(stock_code)
-            
-            objStockMst = win32com.client.Dispatch("DsCbo1.StockMst")
-            objStockMst.SetInputValue(0, normalized_code)
-            
-            ret = objStockMst.BlockRequest()
-            if ret == 0:
-                # 필드 10: 현재가 (종가)
-                current_price = float(objStockMst.GetHeaderValue(11)) # 종가 (실시간은 보통 현재가와 동일)
-                logger.debug(f"Current price for {stock_code}: {current_price}")
-                return current_price
-            else:
-                logger.error(f"BlockRequest failed for current price {stock_code}: {ret}")
-                return None
-        except Exception as e:
-            logger.error(f"Error fetching current price for {stock_code}: {e}", exc_info=True)
-            return None
-
-    def _normalize_stock_code(self, stock_code: str) -> str:
-        """
-        종목코드를 Creon API 형식으로 정규화합니다.
-        """
-        # 이미 'A'로 시작하면 그대로 반환
-        if stock_code.startswith('A'):
-            return stock_code
-        
-        # 'A'로 시작하지 않으면 'A'를 앞에 추가
-        return f"A{stock_code}"
 
     def get_current_minute_data(self, stock_code: str, count: int = 1) -> Optional[pd.DataFrame]:
         """
@@ -1100,6 +1065,155 @@ class CreonAPIClient:
         logger.info(f"주문성공: {order_type.upper()} {stock_code}, Qty: {order_qty}, Price: {price}, OrderID: {order_id}")
         return order_id
 
+    # def send_order(self, order_type: int, code: str, quantity: int, price: int, order_price_type: int) -> Optional[Dict[str, Any]]:
+    #     """
+    #     주식 주문을 전송합니다.
+    #     :param order_type: 주문 종류 (1: 매도, 2: 매수, 3: 매수취소, 4: 매도취소, 5: 매수정정, 6: 매도정정)
+    #     :param code: 종목코드 (e.g., 'A005930')
+    #     :param quantity: 주문 수량
+    #     :param price: 주문 가격 (지정가, 시장가 등)
+    #     :param order_price_type: 주문호가 구분코드 (1: 시장가, 2: 지정가, 3: 조건부지정가, 4: 최유리, 5: 최우선)
+    #     :return: 주문 결과를 담은 딕셔너리 또는 None
+    #     """
+    #     logger.info(f"주문 전송 시작: 종목={code}, 수량={quantity}, 가격={price}, 주문종류={order_type}, 호가구분={order_price_type}")
+    #     if not self._check_creon_status():
+    #         return None
+
+    #     objTrade = win32com.client.Dispatch("CpTrade.CpTd0311")
+        
+    #     # 계좌 정보 설정
+    #     objTrade.SetInputValue(0, self.account_number)   # 계좌번호
+    #     objTrade.SetInputValue(1, self.account_flag)     # 상품구분 (주식: 1)
+    #     objTrade.SetInputValue(2, order_type)            # 주문 종류 (1: 신규매수, 2: 신규매도, ...)
+    #     objTrade.SetInputValue(3, code)                  # 종목코드
+    #     objTrade.SetInputValue(4, quantity)              # 주문 수량
+    #     objTrade.SetInputValue(5, price)                 # 주문 단가
+    #     objTrade.SetInputValue(7, self.get_order_type_str(str(order_type))) # 매매 구분 (1: 매도, 2: 매수)
+    #     objTrade.SetInputValue(8, str(order_price_type).zfill(2)) # 거래 형태 (01: 보통, 03: 시장가 등)
+
+    #     ret = objTrade.BlockRequest()
+    #     time.sleep(self.request_interval)
+
+    #     if ret != 0:
+    #         logger.error(f"주문 BlockRequest 오류: {ret}")
+    #         return None
+
+    #     rqStatus = objTrade.GetDibStatus()
+    #     rqMsg = objTrade.GetDibMsg1()
+    #     if rqStatus != 0:
+    #         logger.error(f"주문 통신 오류: 상태={rqStatus}, 메시지={rqMsg}")
+    #         return None
+
+    #     # 주문 결과 확인
+    #     order_num = objTrade.GetHeaderValue(5) # 주문번호
+        
+    #     result = {
+    #         'order_status': '성공',
+    #         'order_id': order_num, # 주문번호를 order_id로 사용
+    #         'message': rqMsg
+    #     }
+    #     logger.info(f"주문 전송 완료: 주문번호={order_num}, 메시지={rqMsg}")
+    #     return result
+    def cancel_order(self, order_id: str) -> bool:
+        """
+        주문 취소
+        """
+        logger.info(f"주문 취소 시작: {order_id}")
+        
+        try:
+            if not self._check_creon_status():
+                return False
+
+            # CpTrade.CpTd0314 객체 생성 (주문 취소용)
+            obj0314 = win32com.client.Dispatch("CpTrade.CpTd0314")
+            
+            # 주문 취소 정보 설정
+            obj0314.SetInputValue(1, order_id)        # 원주문번호
+            obj0314.SetInputValue(2, self.account_number)  # 계좌번호
+            obj0314.SetInputValue(3, self.account_flag)    # 상품구분
+            obj0314.SetInputValue(4, 0)               # 취소수량 (0: 전체취소)
+            obj0314.SetInputValue(8, "01")            # 주문호가구분 (01: 보통)
+
+            # 주문 취소 요청
+            obj0314.BlockRequest()
+            
+            # 통신 상태 확인
+            rqStatus = obj0314.GetDibStatus()
+            rqRet = obj0314.GetDibMsg1()
+            if rqStatus != 0:
+                logger.error(f"주문 취소 통신 오류: {rqStatus}, {rqRet}")
+                return False
+
+            # 취소 결과 확인
+            result = obj0314.GetDibMsg1()
+            if "정상처리" in result or "취소완료" in result:
+                logger.info(f"주문 취소 성공: {order_id}")
+                return True
+            else:
+                logger.error(f"주문 취소 실패: {result}")
+                return False
+
+        except Exception as e:
+            logger.error(f"주문 취소 오류: {e}")
+            return False
+
+
+
+    def amend_order(self, order_id: str, stock_code: str, new_price: Optional[float] = None, new_quantity: Optional[int] = None) -> Optional[str]:
+        """
+        진행 중인 주문을 정정합니다. Creon API를 통해 정정 요청을 보냅니다.
+        :param order_id: 정정할 주문의 주문번호
+        :param stock_code: 종목코드
+        :param new_price: 새로운 가격 (None이면 가격 정정 안 함)
+        :param new_quantity: 새로운 수량 (None이면 수량 정정 안 함)
+        :return: 정정된 주문의 새 주문번호 또는 None
+        """
+        logger.info(f"주문 정정 요청: 주문번호={order_id}, 종목={stock_code}, 새 가격={new_price}, 새 수량={new_quantity}")
+        if not self._check_creon_status():
+            return None
+
+        objAmendOrder = win32com.client.Dispatch("CpTrade.CpTd0311")
+        # 정정 주문은 기존 주문을 취소하고 새로운 주문을 내는 방식이므로,
+        # '5'(매수정정) 또는 '6'(매도정정) 주문 유형을 사용하고, 원주문번호를 지정해야 합니다.
+
+        # 기존 주문 정보 조회 (필요시)
+        # 미체결 내역에서 해당 주문의 매수/매도 구분, 기존 수량 등을 가져와야 함.
+        # 여기서는 편의상 order_id만으로 정정 요청을 보냄.
+
+        # 정정 주문 유형 결정 (매수/매도 구분 필요)
+        # 이 부분은 실제 미체결 주문의 매수/매도 구분을 알아야 정확히 설정 가능
+        # 현재는 임시로 '2' (매수) 또는 '1' (매도)로 가정
+        # 실제 구현에서는 get_unfilled_orders()를 통해 해당 order_id의 주문 타입을 확인해야 함.
+        order_type_for_amend = 5 # 매수정정 (예시)
+        # if order_is_sell: order_type_for_amend = 6 # 매도정정
+
+        objAmendOrder.SetInputValue(0, self.account_number)   # 계좌번호
+        objAmendOrder.SetInputValue(1, self.account_flag)     # 상품구분
+        objAmendOrder.SetInputValue(2, order_type_for_amend)  # 주문 종류 (5: 매수정정, 6: 매도정정)
+        objAmendOrder.SetInputValue(3, stock_code)            # 종목코드
+        objAmendOrder.SetInputValue(4, new_quantity if new_quantity is not None else 0) # 정정할 수량 (0이면 잔량 정정)
+        objAmendOrder.SetInputValue(5, new_price if new_price is not None else 0)     # 정정할 가격 (0이면 가격 정정 안함)
+        objAmendOrder.SetInputValue(6, order_id)              # 원주문번호
+        # objAmendOrder.SetInputValue(7, ...) # 매매 구분 (정정 시에는 보통 원주문과 동일)
+        # objAmendOrder.SetInputValue(8, ...) # 거래 형태 (정정 시에는 보통 원주문과 동일)
+
+        ret = objAmendOrder.BlockRequest()
+        time.sleep(self.request_interval)
+
+        if ret != 0:
+            logger.error(f"주문 정정 BlockRequest 오류: {ret}")
+            return None
+
+        rqStatus = objAmendOrder.GetDibStatus()
+        rqMsg = objAmendOrder.GetDibMsg1()
+        if rqStatus != 0:
+            logger.error(f"주문 정정 통신 오류: 상태={rqStatus}, 메시지={rqMsg}")
+            return None
+
+        amended_order_num = objAmendOrder.GetHeaderValue(5) # 정정 후 새로 발급된 주문번호
+        logger.info(f"주문 정정 완료: 원주문번호={order_id}, 새 주문번호={amended_order_num}, 메시지={rqMsg}")
+        return amended_order_num
+    
     def get_account_balance(self) -> Dict[str, float]:
         """
         계좌 잔고 (현금) 및 예수금 정보를 조회합니다.
@@ -1273,112 +1387,118 @@ class CreonAPIClient:
             for p in positions
         }
 
-    def cancel_order(self, order_id: str) -> bool:
+
+    def get_market_data(self, market_type: int, date_str: str) -> pd.DataFrame:
         """
-        주문 취소
+        시장 데이터를 조회합니다 (예: KOSPI, KOSDAQ).
+        :param market_type: 1: KOSPI, 2: KOSDAQ
+        :param date_str: YYYYMMDD 형식의 날짜 문자열
+        :return: pandas.DataFrame
         """
-        logger.info(f"주문 취소 시작: {order_id}")
-        
-        try:
-            if not self._check_creon_status():
-                return False
+        logger.info(f"시장 데이터 조회 시작: market_type={market_type}, date={date_str}")
+        if not self._check_creon_status():
+            return pd.DataFrame()
 
-            # CpTrade.CpTd0314 객체 생성 (주문 취소용)
-            obj0314 = win32com.client.Dispatch("CpTrade.CpTd0314")
-            
-            # 주문 취소 정보 설정
-            obj0314.SetInputValue(1, order_id)        # 원주문번호
-            obj0314.SetInputValue(2, self.account_number)  # 계좌번호
-            obj0314.SetInputValue(3, self.account_flag)    # 상품구분
-            obj0314.SetInputValue(4, 0)               # 취소수량 (0: 전체취소)
-            obj0314.SetInputValue(8, "01")            # 주문호가구분 (01: 보통)
+        objRq = win32com.client.Dispatch("CpSysDib.MarketEye")
+        # 요청 필드: 0:종목코드, 1:종목명, 4:현재가, 5:전일대비, 6:대비율, 10:거래량, 12:시가, 13:고가, 14:저가
+        # 16:거래대금, 20:상장주식수
+        objRq.SetInputValue(0, [0, 1, 4, 5, 6, 10, 12, 13, 14, 16, 20])
+        objRq.SetInputValue(1, market_type) # 1: KOSPI, 2: KOSDAQ
+        objRq.SetInputValue(2, date_str) # 날짜
 
-            # 주문 취소 요청
-            obj0314.BlockRequest()
-            
-            # 통신 상태 확인
-            rqStatus = obj0314.GetDibStatus()
-            rqRet = obj0314.GetDibMsg1()
-            if rqStatus != 0:
-                logger.error(f"주문 취소 통신 오류: {rqStatus}, {rqRet}")
-                return False
+        data_list = []
+        # MarketEye는 연속 조회가 없으므로 한 번만 BlockRequest
+        ret = objRq.BlockRequest()
+        time.sleep(self.request_interval)
 
-            # 취소 결과 확인
-            result = obj0314.GetDibMsg1()
-            if "정상처리" in result or "취소완료" in result:
-                logger.info(f"주문 취소 성공: {order_id}")
-                return True
-            else:
-                logger.error(f"주문 취소 실패: {result}")
-                return False
+        if ret != 0:
+            logger.error(f"MarketEye BlockRequest 오류: {ret}")
+            return pd.DataFrame()
 
-        except Exception as e:
-            logger.error(f"주문 취소 오류: {e}")
-            return False
+        rqStatus = objRq.GetDibStatus()
+        rqMsg = objRq.GetDibMsg1()
+        if rqStatus != 0:
+            logger.error(f"MarketEye 통신 오류: 상태={rqStatus}, 메시지={rqMsg}")
+            return pd.DataFrame()
 
-    def get_unfilled_orders(self) -> List[Dict[str, Any]]:
+        count = objRq.GetHeaderValue(2)
+        logger.info(f"시장 데이터 {count}개 수신 완료.")
+
+        for i in range(count):
+            try:
+                code = objRq.GetDataValue(0, i)
+                name = objRq.GetDataValue(1, i)
+                current_price = objRq.GetDataValue(2, i)
+                diff = objRq.GetDataValue(3, i)
+                diff_rate = objRq.GetDataValue(4, i)
+                volume = objRq.GetDataValue(5, i)
+                open_price = objRq.GetDataValue(6, i)
+                high_price = objRq.GetDataValue(7, i)
+                low_price = objRq.GetDataValue(8, i)
+                trading_value = objRq.GetDataValue(9, i)
+                listed_shares = objRq.GetDataValue(10, i)
+
+                data_list.append({
+                    'code': code,
+                    'name': name,
+                    'current_price': current_price,
+                    'diff': diff,
+                    'diff_rate': diff_rate,
+                    'volume': volume,
+                    'open_price': open_price,
+                    'high_price': high_price,
+                    'low_price': low_price,
+                    'trading_value': trading_value,
+                    'listed_shares': listed_shares
+                })
+            except Exception as e:
+                logger.error(f"시장 데이터 파싱 중 오류 발생 (인덱스 {i}): {e}", exc_info=True)
+                continue # 오류 발생 시 해당 레코드는 건너뛰고 계속 진행
+
+        df = pd.DataFrame(data_list)
+        return df
+    
+    def get_current_price(self, code: str) -> Optional[Dict[str, Any]]:
         """
-        미체결 주문 목록 조회
+        종목의 현재가 정보를 조회합니다.
+        :param code: 종목코드 (e.g., 'A005930')
+        :return: 현재가 정보를 담은 딕셔너리 또는 None
         """
-        logger.info("미체결 주문 목록 조회 시작")
-        
-        try:
-            if not self._check_creon_status():
-                return []
+        logger.info(f"종목 [{code}] 현재가 조회 시작")
+        if not self._check_creon_status():
+            return None
 
-            # CpTrade.CpTd5339 객체 생성
-            obj5339 = win32com.client.Dispatch("CpTrade.CpTd5339")
-            obj5339.SetInputValue(0, self.account_number)  # 계좌번호
-            obj5339.SetInputValue(1, self.account_flag)    # 상품구분
-            obj5339.SetInputValue(2, 50)                   # 요청건수
+        objStockMst = win32com.client.Dispatch("CpSysDib.StockMst")
+        objStockMst.SetInputValue(0, code)
+        ret = objStockMst.BlockRequest()
+        time.sleep(self.request_interval)
 
-            unfilled_orders = []
-            
-            # 연속 조회로 모든 미체결 주문 조회
-            while True:
-                obj5339.BlockRequest()
-                
-                # 통신 상태 확인
-                rqStatus = obj5339.GetDibStatus()
-                rqRet = obj5339.GetDibMsg1()
-                if rqStatus != 0:
-                    logger.error(f"미체결 주문 조회 통신 오류: {rqStatus}, {rqRet}")
-                    break
+        if ret != 0:
+            logger.error(f"StockMst BlockRequest 오류: {ret}")
+            return None
 
-                cnt = obj5339.GetHeaderValue(7)
-                if cnt == 0:
-                    break
+        rqStatus = objStockMst.GetDibStatus()
+        rqMsg = objStockMst.GetDibMsg1()
+        if rqStatus != 0:
+            logger.error(f"StockMst 통신 오류: 상태={rqStatus}, 메시지={rqMsg}")
+            return None
 
-                for i in range(cnt):
-                    # 미체결 주문만 필터링 (미체결수량 > 0)
-                    mod_avali = obj5339.GetDataValue(9, i)  # 정정/취소 가능 수량
-                    if mod_avali > 0:
-                        order_data = {
-                            'order_id': obj5339.GetDataValue(5, i),      # 주문번호
-                            'stock_code': obj5339.GetDataValue(12, i),   # 종목코드
-                            'stock_name': obj5339.GetDataValue(0, i),    # 종목명
-                            'side': 'sell' if obj5339.GetDataValue(13, i) == '1' else 'buy',  # 매수/매도 구분
-                            'quantity': obj5339.GetDataValue(7, i),      # 주문수량
-                            'price': obj5339.GetDataValue(6, i),         # 주문단가
-                            'filled_quantity': obj5339.GetDataValue(8, i),  # 체결수량
-                            'unfilled_quantity': mod_avali,              # 미체결수량
-                            'order_time': obj5339.GetDataValue(3, i),    # 주문시간
-                            'credit_type': obj5339.GetDataValue(1, i),   # 신용구분
-                            'order_flag': obj5339.GetDataValue(14, i),   # 주문호가구분
-                            'timestamp': datetime.now()
-                        }
-                        unfilled_orders.append(order_data)
-
-                if not obj5339.Continue:  # 연속 데이터가 없으면
-                    break
-
-            logger.info(f"미체결 주문 {len(unfilled_orders)}건 조회 완료")
-            return unfilled_orders
-
-        except Exception as e:
-            logger.error(f"미체결 주문 조회 오류: {e}")
-            return []
-
+        data = {
+            'code': code,
+            'name': objStockMst.GetHeaderValue(1),  # 종목명
+            'time': objStockMst.GetHeaderValue(4),  # 시간 (HHMM)
+            'current_price': objStockMst.GetHeaderValue(11),  # 현재가
+            'open_price': objStockMst.GetHeaderValue(13),  # 시가
+            'high_price': objStockMst.GetHeaderValue(14),  # 고가
+            'low_price': objStockMst.GetHeaderValue(15),  # 저가
+            'volume': objStockMst.GetHeaderValue(18),  # 거래량
+            'diff': objStockMst.GetHeaderValue(2),  # 전일대비
+            'diff_rate': objStockMst.GetHeaderValue(3),  # 전일대비율
+            'ask_price': objStockMst.GetHeaderValue(16), # 매도호가
+            'bid_price': objStockMst.GetHeaderValue(17), # 매수호가
+        }
+        logger.info(f"종목 [{code}] 현재가 조회 완료: {data['current_price']}")
+        return data
  
     def get_current_prices(self, stock_codes: List[str]) -> Dict[str, float]:
         """
@@ -1537,6 +1657,165 @@ class CreonAPIClient:
         except Exception as e:
             logger.error(f"복수 종목 당일 일봉 OHLCV 생성 오류: {e}")
             return {}
+        
+    def get_current_account_balance(self) -> Optional[Dict[str, Any]]:
+        """
+        계좌의 현재 예수금 정보를 조회합니다.
+        :return: 예수금 정보를 담은 딕셔너리 또는 None
+        """
+        logger.info("계좌 예수금 조회 시작")
+        if not self._check_creon_status():
+            return None
+
+        objRq = win32com.client.Dispatch("CpTrade.CpTd0301") # CpTd0301: 예수금/증거금 조회
+        objRq.SetInputValue(0, self.account_number)
+        objRq.SetInputValue(1, self.account_flag)
+
+        ret = objRq.BlockRequest()
+        time.sleep(self.request_interval)
+
+        if ret != 0:
+            logger.error(f"예수금 조회 BlockRequest 오류: {ret}")
+            return None
+
+        rqStatus = objRq.GetDibStatus()
+        rqMsg = objRq.GetDibMsg1()
+        if rqStatus != 0:
+            logger.error(f"예수금 조회 통신 오류: 상태={rqStatus}, 메시지={rqMsg}")
+            return None
+
+        # 예수금 관련 정보 추출
+        balance_data = {
+            'cash_balance': objRq.GetHeaderValue(9),  # 주문가능현금
+            'deposit': objRq.GetHeaderValue(10),     # 예수금
+            'withdrawal_possible': objRq.GetHeaderValue(11), # 인출가능금액
+            'loan_amount': objRq.GetHeaderValue(12), # 대출금액
+        }
+        self.initial_deposit = balance_data['deposit'] # 초기 예수금 설정
+        logger.info(f"계좌 예수금 조회 완료: 예수금 {balance_data['deposit']:,.0f}원")
+        return balance_data
+        
+    def get_current_positions(self) -> List[Dict[str, Any]]:
+        """
+        계좌의 현재 보유 종목을 조회합니다.
+        :return: 보유 종목 리스트 (딕셔너리 형태)
+        """
+        logger.info("주식 잔고 조회 시작")
+        if not self._check_creon_status():
+            return []
+
+        objRq = win32com.client.Dispatch("CpTrade.CpTd6033") # CpTd6033: 잔고 조회
+        objRq.SetInputValue(0, self.account_number)
+        objRq.SetInputValue(1, self.account_flag)
+        objRq.SetInputValue(2, 50)  # 요청 건수 (최대 50)
+
+        balances = []
+        while True:
+            ret = objRq.BlockRequest()
+            time.sleep(self.request_interval)
+
+            if ret != 0:
+                logger.error(f"주식 잔고 BlockRequest 오류: {ret}")
+                break
+
+            rqStatus = objRq.GetDibStatus()
+            rqMsg = objRq.GetDibMsg1()
+            if rqStatus != 0:
+                logger.error(f"주식 잔고 통신 오류: 상태={rqStatus}, 메시지={rqMsg}")
+                break
+
+            count = objRq.GetHeaderValue(7)  # 수신 개수
+            if count == 0:
+                break
+
+            for i in range(count):
+                balance_data = {
+                    'stock_code': objRq.GetDataValue(9, i),     # 종목코드
+                    'stock_name': objRq.GetDataValue(0, i),     # 종목명
+                    'quantity': objRq.GetDataValue(1, i), # 현재잔고수량
+                    'average_buy_price': objRq.GetDataValue(2, i), # 매입단가
+                    'current_price': objRq.GetDataValue(7, i), # 현재가
+                    'evaluation_amount': objRq.GetDataValue(11, i), # 평가금액
+                    'profit_loss': objRq.GetDataValue(3, i), # 평가손익
+                    'profit_loss_rate': objRq.GetDataValue(4, i), # 손익률
+                    'yesterday_quantity': objRq.GetDataValue(5, i), # 전일매수수량
+                    'today_quantity': objRq.GetDataValue(6, i), # 금일매수수량
+                    'trade_quantity': objRq.GetDataValue(13, i), # 체결잔고수량
+                    'credit_type': objRq.GetDataValue(18, i), # 신용구분
+                    'loan_date': objRq.GetDataValue(19, i), # 대출일
+                    'entry_date': datetime.now().date() # API에서 진입일자 제공하지 않으면 현재 날짜로 임시 설정
+                }
+                balances.append(balance_data)
+
+            if not objRq.Continue:
+                break
+
+        logger.info(f"주식 잔고 {len(balances)}건 조회 완료")
+        return balances
+
+
+    def get_unfilled_orders(self) -> List[Dict[str, Any]]:
+        """
+        미체결 주문 목록 조회
+        """
+        logger.info("미체결 주문 목록 조회 시작")
+        
+        try:
+            if not self._check_creon_status():
+                return []
+
+            # CpTrade.CpTd5339 객체 생성
+            obj5339 = win32com.client.Dispatch("CpTrade.CpTd5339")
+            obj5339.SetInputValue(0, self.account_number)  # 계좌번호
+            obj5339.SetInputValue(1, self.account_flag)    # 상품구분
+            obj5339.SetInputValue(2, 50)                   # 요청건수
+
+            unfilled_orders = []
+            
+            # 연속 조회로 모든 미체결 주문 조회
+            while True:
+                obj5339.BlockRequest()
+                
+                # 통신 상태 확인
+                rqStatus = obj5339.GetDibStatus()
+                rqRet = obj5339.GetDibMsg1()
+                if rqStatus != 0:
+                    logger.error(f"미체결 주문 조회 통신 오류: {rqStatus}, {rqRet}")
+                    break
+
+                cnt = obj5339.GetHeaderValue(7)
+                if cnt == 0:
+                    break
+
+                for i in range(cnt):
+                    # 미체결 주문만 필터링 (미체결수량 > 0)
+                    mod_avali = obj5339.GetDataValue(9, i)  # 정정/취소 가능 수량
+                    if mod_avali > 0:
+                        order_data = {
+                            'order_id': obj5339.GetDataValue(5, i),      # 주문번호
+                            'stock_code': obj5339.GetDataValue(12, i),   # 종목코드
+                            'stock_name': obj5339.GetDataValue(0, i),    # 종목명
+                            'side': 'sell' if obj5339.GetDataValue(13, i) == '1' else 'buy',  # 매수/매도 구분
+                            'quantity': obj5339.GetDataValue(7, i),      # 주문수량
+                            'price': obj5339.GetDataValue(6, i),         # 주문단가
+                            'filled_quantity': obj5339.GetDataValue(8, i),  # 체결수량
+                            'unfilled_quantity': mod_avali,              # 미체결수량
+                            'order_time': obj5339.GetDataValue(3, i),    # 주문시간
+                            'credit_type': obj5339.GetDataValue(1, i),   # 신용구분
+                            'order_flag': obj5339.GetDataValue(14, i),   # 주문호가구분
+                            'timestamp': datetime.now()
+                        }
+                        unfilled_orders.append(order_data)
+
+                if not obj5339.Continue:  # 연속 데이터가 없으면
+                    break
+
+            logger.info(f"미체결 주문 {len(unfilled_orders)}건 조회 완료")
+            return unfilled_orders
+
+        except Exception as e:
+            logger.error(f"미체결 주문 조회 오류: {e}")
+            return []
 
     def get_filled_orders(self) -> List[Dict[str, Any]]:
         """
@@ -1598,7 +1877,67 @@ class CreonAPIClient:
             logger.error(f"체결된 주문 조회 오류: {e}")
             return []
 
+    def get_latest_minute_bar(self, stock_code: str) -> Optional[Dict[str, Any]]:
+        """
+        특정 종목의 최신 1분봉 데이터를 조회합니다.
+        (TradingManager.cache_minute_price에서 사용)
+        """
+        logger.debug(f"종목 [{stock_code}] 최신 1분봉 조회 시작")
+        if not self._check_creon_status():
+            return None
 
+        objChart = win32com.client.Dispatch('CpSysDib.StockChart')
+        objChart.SetInputValue(0, stock_code)
+        objChart.SetInputValue(1, ord('2'))  # 요청구분 2:개수
+        objChart.SetInputValue(4, 1)         # 1개만 요청 (최신)
+        objChart.SetInputValue(6, ord('m'))  # 주기: 분봉
+        objChart.SetInputValue(7, 1)         # 1분봉
+        objChart.SetInputValue(9, ord('1'))  # 수정주가 사용
+
+        # 요청 항목: 날짜(0), 시간(1), 시가(2), 고가(3), 저가(4), 종가(5), 거래량(8)
+        objChart.SetInputValue(5, [0, 1, 2, 3, 4, 5, 8])
+
+        ret = objChart.BlockRequest()
+        time.sleep(self.request_interval)
+
+        if ret != 0:
+            logger.error(f"종목 [{stock_code}] 최신 1분봉 BlockRequest 오류: {ret}")
+            return None
+
+        rqStatus = objChart.GetDibStatus()
+        rqMsg = objChart.GetDibMsg1()
+        if rqStatus != 0:
+            logger.error(f"종목 [{stock_code}] 최신 1분봉 통신 오류: 상태={rqStatus}, 메시지={rqMsg}")
+            return None
+
+        data_count = objChart.GetHeaderValue(3)
+        if data_count == 0:
+            logger.warning(f"종목 [{stock_code}]의 최신 1분봉 데이터가 없습니다.")
+            return None
+
+        date_val = str(objChart.GetDataValue(0, 0)) # 날짜
+        time_val = str(objChart.GetDataValue(1, 0)).zfill(6) # 시간 (HHMMSS)
+        
+        try:
+            dt_obj = datetime.strptime(f"{date_val}{time_val}", '%Y%m%d%H%M%S')
+        except ValueError:
+            try: # HHMM 포맷일 경우
+                dt_obj = datetime.strptime(f"{date_val}{time_val[:4]}", '%Y%m%d%H%M')
+            except ValueError:
+                logger.error(f"최신 1분봉 시간 파싱 실패: {date_val}{time_val}")
+                return None
+
+        data = {
+            'time': dt_obj,
+            'open': objChart.GetDataValue(2, 0),
+            'high': objChart.GetDataValue(3, 0),
+            'low': objChart.GetDataValue(4, 0),
+            'close': objChart.GetDataValue(5, 0),
+            'volume': objChart.GetDataValue(6, 0) # GetDataValue(6,0)은 요청 필드의 8번째 (거래량)
+        }
+        logger.debug(f"종목 [{stock_code}] 최신 1분봉 조회 완료: {data['time']} 종가 {data['close']}")
+        return data
+    
     def cleanup(self) -> None:
         """리소스 정리"""
         try:
@@ -1606,15 +1945,30 @@ class CreonAPIClient:
             if hasattr(self, 'conclusion_subscriber') and self.conclusion_subscriber:
                 self.conclusion_subscriber.Unsubscribe()
             
-            # 콜백 함수 정리
-            if hasattr(self, 'callbacks'):
-                self.callbacks.clear()
+            # 콜백 함수 정리 (필요시)
+            self.conclusion_callback = None
+            self.order_reply_callback = None
             
-            logger.info("Creon API 리소스 정리 완료")
-            
+            logger.info("CreonAPIClient 리소스 정리 완료.")
         except Exception as e:
-            logger.error(f"리소스 정리 오류: {e}")
+            logger.error(f"CreonAPIClient 리소스 정리 중 오류 발생: {e}", exc_info=True)
+
 
     def __del__(self):
         """소멸자"""
         self.cleanup()
+
+
+    def set_conclusion_callback(self, callback: Callable[[Dict[str, Any]], None]):
+        """
+        실시간 체결/주문 응답 (conclusion) 이벤트를 수신할 콜백 함수를 등록합니다.
+        """
+        self.conclusion_callback = callback
+        logger.info("실시간 체결/주문 응답 콜백 함수가 등록되었습니다.")
+
+    def set_order_reply_callback(self, callback: Callable[[Dict[str, Any]], None]):
+        """
+        주문 요청 응답 (td0314) 이벤트를 수신할 콜백 함수를 등록합니다.
+        """
+        self.order_reply_callback = callback
+        logger.info("주문 요청 응답 콜백 함수가 등록되었습니다.")

@@ -717,11 +717,10 @@ if __name__ == "__main__":
         }
 
         # 전략 인스턴스 생성
-        #daily_strategy = SMADaily(trade=backtest, strategy_params=sma_daily_params)
-        daily_strategy = ContrarianDaily(trade=backtest, strategy_params=contrarian_daily_params)
-        minute_strategy = OpenMinute(trade=backtest, strategy_params=open_minute_params)
-        #minute_strategy = RSIMinute(trade=backtest, strategy_params=rsi_minute_params)
-        
+        daily_strategy = SMADaily(backtest.broker, backtest.data_store, strategy_params=sma_daily_params)
+        #daily_strategy = ContrarianDaily(backtest.broker, backtest.data_store, strategy_params=contrarian_daily_params)
+        #minute_strategy = OpenMinute(backtest.broker, backtest.data_store, strategy_params=open_minute_params)
+        minute_strategy = RSIMinute(backtest.broker, backtest.data_store, strategy_params=rsi_minute_params)
         # 4. 손절매 파라미터 설정 (선택사항)
         stop_loss_params = {
             'take_profit_ratio': 20,       # 매수 후 익절

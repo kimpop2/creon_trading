@@ -1,11 +1,9 @@
 # strategies/sma_daily.py
-
 import logging
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Any
-from trade.trader import Trader
 from strategies.strategy import DailyStrategy
 from util.strategies_util import *
 
@@ -16,9 +14,9 @@ class SMADaily(DailyStrategy):
     SMA(Simple Moving Average) 기반 일봉 전략입니다.
     골든 크로스/데드 크로스와 거래량 조건을 활용하여 매매 신호를 생성합니다.
     """
-    def __init__(self, trade:Trader, strategy_params: Dict[str, Any]):
+    def __init__(self, broker, data_store, strategy_params: Dict[str, Any]):
         # DailyStrategy 에서 trade의 broker, data_store 연결, signal 초기화 진행
-        super().__init__(trade, strategy_params)
+        super().__init__(broker, data_store, strategy_params)
         #self.strategy_params = strategy_params
         self._validate_strategy_params() # 전략 파라미터 검증
 

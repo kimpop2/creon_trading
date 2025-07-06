@@ -13,15 +13,12 @@ from strategies.strategy import DailyStrategy
 logger = logging.getLogger(__name__)
 
 class DualMomentumDaily(DailyStrategy): # DailyStrategy 상속 
-    def __init__(self, data_store, strategy_params, broker): 
-        super().__init__(data_store, strategy_params, broker) # BaseStrategy의 __init__ 호출
-        self.signals = {} # {stock_code: {'signal', 'signal_date', 'traded_today', 'target_quantity'}} 
-        #self.last_rebalance_date = None 
-        self._initialize_signals_for_all_stocks() 
-        self.strategy_name = "DualMomentumDaily"
+    def __init__(self, broker, data_store, strategy_params): 
+        super().__init__(broker, data_store, strategy_params) # BaseStrategy의 __init__ 호출
         
         # 파라미터 검증
         self._validate_parameters()
+        self.strategy_name = "DualMomentumDaily"
 
     def _validate_parameters(self):
         """전략 파라미터 검증"""

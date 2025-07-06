@@ -17,9 +17,9 @@ class ContrarianDaily(DailyStrategy):
     과매수/과매도 상황에서 반대 매매를 통해 수익을 추구합니다.
     RSI, 볼린저 밴드, 스토캐스틱 등을 활용하여 역추세 신호를 생성합니다.
     """
-    def __init__(self, trade:Trader, strategy_params: Dict[str, Any]):
+    def __init__(self, broker, data_store, strategy_params: Dict[str, Any]):
         # DailyStrategy 에서 trade의 broker, data_store 연결, signal 초기화 진행
-        super().__init__(trade, strategy_params)
+        super().__init__(broker, data_store, strategy_params)
         self._validate_strategy_params() # 전략 파라미터 검증
 
         # 역추세 지표 계산을 위한 캐시 추가

@@ -4,7 +4,6 @@ import pandas as pd
 import numpy as np 
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Any
-from trade.trader import Trader
 from strategies.strategy import MinuteStrategy 
 from util.strategies_util import *
 logger = logging.getLogger(__name__)
@@ -18,8 +17,8 @@ class OpenMinute(MinuteStrategy):
     - 최적화 시 분봉 데이터 로딩을 피하여 성능 향상
     - 일봉 데이터로부터 9:00~9:01의 1분봉을 생성하여 분봉 로직 활용
     """
-    def __init__(self, trade:Trader, strategy_params: Dict[str, Any]):
-        super().__init__(trade, strategy_params)
+    def __init__(self, broker, data_store, strategy_params: Dict[str, Any]):
+        super().__init__(broker, data_store, strategy_params)
         
         self._validate_strategy_params() # 전략 파라미터 검증
 
