@@ -7,7 +7,7 @@ import time
 import sys
 import os
 import json
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Tuple, Any
 
 # --- 로거 설정 (스크립트 최상단에서 설정하여 항상 보이도록 함) ---
 logger = logging.getLogger(__name__)
@@ -27,17 +27,63 @@ class BacktestManager:
     데이터 관련 모든 비즈니스 로직을 담당하는 클래스.
     DB, Creon API와의 통신을 관리하고, 가공된 데이터를 제공합니다.
     """
-    def __init__(self):
-        self.db_manager = DBManager()
-        self.api_client = CreonAPIClient()
-        logger.info("BacktestManager 초기화 완료: DBManager 및 CreonAPIClient 연결")
+    def __init__(self, 
+                 api_client: CreonAPIClient, 
+                 db_manager: DBManager):
+        
+        self.api_client = api_client
+        self.db_manager = db_manager
+        # DB 데이터로 종목정보 구성        
+        self.stock_names: Dict[str, str] = {} # 종목 코드: 종목명 매핑 캐시
+        self._load_stock_names() # 종목명 캐시 초기화
+
+        logger.info(f"BacktestManager 초기화 완료: {len(self.stock_names)} 종목, CreonAPIClient 및 DBManager 연결")
 
     def close(self):
         """DBManager의 연결을 종료합니다."""
         if self.db_manager:
             self.db_manager.close()
             logger.info("BacktestManager를 통해 DB 연결을 종료했습니다.")
+    def _load_stock_names(self):
+        """DB에서 모든 종목 코드와 이름을 로드하여 캐시합니다."""
+        self.stock_names = self.get_stock_info_map()
+        logger.info(f"종목명 {len(self.stock_names)}건 캐시 완료.")
+    
+    def get_stock_info_map(self) -> dict:
+        """
+        DB의 stock_info 테이블에서 모든 종목의 코드와 이름을 가져와
+        {'종목코드': '종목명'} 형태의 딕셔너리로 반환합니다.
+        """
+        logger.debug("종목 정보 맵(딕셔너리) 로딩 시작")
+        try:
+            # fetch_stock_info()를 인자 없이 호출하여 모든 종목 정보를 가져옵니다.
+            stock_info_df = self.db_manager.fetch_stock_info() 
+            if not stock_info_df.empty:
+                # 'stock_code'를 인덱스로, 'stock_name'을 값으로 하는 딕셔너리 생성
+                stock_map = pd.Series(stock_info_df.stock_name.values, index=stock_info_df.stock_code).to_dict()
+                logger.debug(f"{len(stock_map)}개의 종목 정보 로딩 완료")
+                return stock_map
+            else:
+                logger.warning("DB에서 종목 정보를 가져오지 못했습니다. stock_info 테이블이 비어있을 수 있습니다.")
+                return {}
+        except Exception as e:
+            logger.error(f"종목 정보 로딩 중 오류 발생: {e}")
+            return {}
+        
+    def get_stock_name(self, stock_code: str) -> str:
+        """종목 코드로 종목명을 조회합니다. 캐시에 없으면 DB에서 조회 후 캐시합니다."""
+        if stock_code not in self.stock_names:
+            stock_info = self.db_manager.fetch_stock_info(stock_code)
+            if stock_info:
+                self.stock_names[stock_code] = stock_info['stock_name']
+            else:
+                self.stock_names[stock_code] = "알 수 없음" # 또는 에러 처리
+        return self.stock_names.get(stock_code, "알 수 없음")
 
+    def get_all_stock_list(self) -> List[Tuple[str, str]]:
+        """캐시된 모든 종목의 코드와 이름을 반환합니다."""
+        return [(code, name) for code, name in self.stock_names.items()]
+    
     def fetch_market_calendar_initial_data(self, years: int = 3):
         """
         Creon API를 통해 과거 특정 기간의 거래일 데이터를 가져와 market_calendar 테이블에 초기 데이터를 삽입합니다.

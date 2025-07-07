@@ -32,9 +32,12 @@ optimization_results/
 *.docx
 *.doc
 logs/
+temp/
+_trade/
 test_data/
 examples/
 setup/datas/
+config/
 # 최적화 결과 파일들 (일부는 버전 관리에 포함)
 optimizer/results/*.json
 optimizer/results/*.csv

@@ -26,8 +26,7 @@ from api.creon_api import CreonAPIClient
 from manager.db_manager import DBManager
 from util.notifier import Notifier
 from trading.trading import Trading
-from strategy.sma_daily import SMADaily
-from strategy.rsi_minute import RSIMinute
+from strategies.sma_strategy import SMAStrategy
 
 # --- 로거 설정 ---
 def setup_logging():
@@ -56,12 +55,12 @@ def main():
     logger.info("========================================")
 
     # 1. Creon API 클라이언트 초기화 및 연결
-    creon_api_client = CreonAPIClient()
+    api_client = CreonAPIClient()
     
     # Creon HTS 및 API 연결 확인 (반복 시도)
     max_retries = 5
     for i in range(max_retries):
-        if creon_api_client.connect():
+        if api_client._check_creon_status():
             logger.info("Creon API 연결 성공.")
             break
         else:
@@ -69,17 +68,17 @@ def main():
             if i == max_retries - 1:
                 logger.critical("Creon API 연결에 최종 실패했습니다. 시스템을 종료합니다.")
                 sys.exit(1)
-            creon_api_client.cleanup() # 이전 COM 객체 정리
+            api_client.cleanup() # 이전 COM 객체 정리
             import time
             time.sleep(5)
-            creon_api_client = CreonAPIClient() # 새로운 CreonAPIClient 인스턴스 생성 (COM 객체 초기화를 위해)
+            api_client = CreonAPIClient() # 새로운 CreonAPIClient 인스턴스 생성 (COM 객체 초기화를 위해)
 
 
     # 2. DBManager 초기화
     db_manager = DBManager()
     if not db_manager.get_db_connection():
         logger.critical("데이터베이스 연결 실패. 시스템을 종료합니다.")
-        creon_api_client.cleanup()
+        api_client.cleanup()
         sys.exit(1)
     logger.info("DBManager 초기화 완료.")
 
@@ -90,10 +89,10 @@ def main():
 
     # 4. Trading 시스템 초기화
     trading_system = Trading(
-        creon_api_client=creon_api_client,
+        api_client=api_client,
         db_manager=db_manager,
         notifier=notifier,
-        initial_deposit=INITIAL_DEPOSIT
+        initial_cash=INITIAL_DEPOSIT
     )
     logger.info("Trading 시스템 초기화 완료.")
 
@@ -108,26 +107,15 @@ def main():
     logger.info(f"일봉 전략 실행 시간: {trading_system.daily_strategy_run_time}")
     logger.info(f"포트폴리오 업데이트 시간: {trading_system.portfolio_update_time}")
 
-
     # 6. 매매 전략 설정
     # SMADaily 전략 인스턴스 생성
-    daily_strategy_instance = SMADaily(
+    strategy_instance = SMAStrategy(
         brokerage=trading_system.brokerage,
         trading_manager=trading_system.trading_manager,
         strategy_params=SMADAILY_PARAMS
     )
-    
-    # RSIMinute 전략 인스턴스 생성
-    minute_strategy_instance = RSIMinute(
-        brokerage=trading_system.brokerage,
-        trading_manager=trading_system.trading_manager,
-        strategy_params=RSIMINUTE_PARAMS
-    )
 
-    trading_system.set_strategies(
-        daily_strategy=daily_strategy_instance,
-        minute_strategy=minute_strategy_instance
-    )
+    trading_system.set_strategies(strategy=strategy_instance)
     logger.info("매매 전략 설정 완료.")
 
     logger.info("========================================")

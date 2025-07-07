@@ -18,15 +18,18 @@ class Brokerage(AbstractBroker):
     실제 증권사 API (Creon)를 통해 매매를 실행하는 브로커 구현체입니다.
     AbstractBroker를 상속받아 실제 주문, 잔고 조회, 포지션 관리를 수행합니다.
     """
-    def __init__(self, api_client: CreonAPIClient, trading_manager: TradingManager, notifier: Notifier):
+    def __init__(self, 
+                 api_client: CreonAPIClient, 
+                 manager: TradingManager, 
+                 notifier: Notifier, 
+                 initial_cash:float=10_000_000):
+        
         super().__init__()
         self.api_client = api_client
-        self.trading_manager = trading_manager
+        self.manager = manager
         self.notifier = notifier # 알림 객체 주입
-
-        self.commission_rate = 0.00165 # 매수/매도 수수료 (예: 0.015% + 제비용 = 0.0165%)
-        self.tax_rate_sell = 0.0023   # 매도 시 거래세 (현재 0.23%)
-
+        self.initial_cash=initial_cash
+        self.commission_rate = 0.00165 # 매도시에만 부과
         # 현재 포지션 및 잔고는 API를 통해 실시간으로 조회하고 DB에 동기화.
         # 내부적으로 캐시할 수도 있으나, 항상 최신 정보는 API에서 가져오는 것을 우선.
         self._current_cash_balance: float = 0.0
@@ -49,7 +52,7 @@ class Brokerage(AbstractBroker):
         """
         logger.info("계좌 상태 동기화 시작...")
         # 1. 현금 잔고 업데이트
-        balance_info = self.trading_manager.get_account_balance()
+        balance_info = self.manager.get_account_balance()
         if balance_info:
             self._current_cash_balance = balance_info.get('cash_balance', 0.0)
             # CreonAPIClient에 초기 예수금 설정 (TradingManager에서 가져온 값으로)
@@ -62,12 +65,12 @@ class Brokerage(AbstractBroker):
 
         # 2. 보유 종목 업데이트 (DB 동기화는 TradingManager 내부에서 처리)
         # self._current_positions는 딕셔너리 형태로 저장
-        api_positions_list = self.trading_manager.get_open_positions() # TradingManager가 DB 동기화 후 반환
+        api_positions_list = self.manager.get_open_positions() # TradingManager가 DB 동기화 후 반환
         self._current_positions = {pos['stock_code']: pos for pos in api_positions_list}
         logger.info(f"보유 종목 {len(self._current_positions)}건 업데이트 및 DB 동기화 완료.")
 
         # 3. 미체결 주문 업데이트
-        self._unfilled_orders = self.trading_manager.get_unfilled_orders()
+        self._unfilled_orders = self.manager.get_unfilled_orders()
         logger.info(f"미체결 주문 {len(self._unfilled_orders)}건 업데이트 완료.")
         logger.info("계좌 상태 동기화 완료.")
 
@@ -82,7 +85,7 @@ class Brokerage(AbstractBroker):
         """
         실제 주문을 Creon API를 통해 실행하고, 주문 로그를 DB에 저장합니다.
         """
-        stock_name = self.trading_manager.get_stock_name(stock_code)
+        stock_name = self.manager.get_stock_name(stock_code)
         
         # Creon API의 order_price_type (호가구분) 설정
         # 1: 시장가, 2: 지정가, 3: 조건부지정가, 4: 최유리, 5: 최우선
@@ -129,7 +132,7 @@ class Brokerage(AbstractBroker):
                 'net_amount': 0, # 체결 시 계산
                 'credit_type': '현금' # TODO: 신용/현금 구분 필요
             }
-            self.trading_manager.save_trading_log(log_data)
+            self.manager.save_trading_log(log_data)
             self.notifier.send_message(f"✅ 주문 접수: {stock_name}({stock_code}) {order_type.upper()} {quantity}주 (가격: {price:,.0f}원, 주문ID: {order_id_from_creon})")
             logger.info(f"주문 성공: {stock_code}, 주문번호: {order_id_from_creon}")
             return order_id_from_creon
@@ -224,7 +227,7 @@ class Brokerage(AbstractBroker):
         total_capital = cash_balance + total_asset_value
 
         # 3. 일일 손익 및 수익률 계산 (누적 손익과 연동)
-        latest_portfolio = self.trading_manager.load_latest_daily_portfolio()
+        latest_portfolio = self.manager.load_latest_daily_portfolio()
         
         # 초기 자본금은 CreonAPIClient에서 가져온 실제 예수금 사용
         # 만약 DB에 초기 포트폴리오 기록이 없다면, CreonAPIClient의 initial_deposit을 사용
@@ -257,7 +260,7 @@ class Brokerage(AbstractBroker):
             'cumulative_return_rate': cumulative_return_rate,
             'max_drawdown': max_drawdown
         }
-        success = self.trading_manager.save_daily_portfolio(portfolio_data)
+        success = self.manager.save_daily_portfolio(portfolio_data)
         if success:
             self.notifier.send_message(
                 f"📊 일일 포트폴리오 업데이트 ({current_dt.date()}):\n"
@@ -333,7 +336,7 @@ class Brokerage(AbstractBroker):
             if current_price > highest_price: # 현재가가 최고가보다 높으면 갱신
                 pos_info['highest_price'] = current_price
                 # DB에도 이 정보가 업데이트되어야 함. (trading_manager.update_current_positions)
-                self.trading_manager.update_current_positions(pos_info)
+                self.manager.update_current_positions(pos_info)
             elif current_price < highest_price * (1 + stop_loss_params['trailing_stop_ratio']): # 트레일링 손절 조건
                 logger.info(f"[트레일링 스탑] {stock_code} - 최고가 대비 하락, 매도.")
                 self.execute_order(stock_code, 'sell', current_price, quantity, current_dt)
@@ -411,7 +414,7 @@ class Brokerage(AbstractBroker):
         # 여기서는 임시로 0으로 설정하거나, 필요한 경우 추가 로직 구현
         unfilled_quantity = 0 # TODO: 정확한 미체결 수량 계산 로직 필요
 
-        stock_name = self.trading_manager.get_stock_name(stock_code)
+        stock_name = self.manager.get_stock_name(stock_code)
         trade_date = datetime.now().date()
         trade_time = datetime.now().time()
 
@@ -455,7 +458,7 @@ class Brokerage(AbstractBroker):
             'credit_type': '현금' # TODO: 신용/현금 구분 필요
         }
         # 이미 존재하는 order_id의 로그는 업데이트, 새로운 로그는 삽입 (TradingManager 내부 로직에 따름)
-        self.trading_manager.save_trading_log(log_data)
+        self.manager.save_trading_log(log_data)
         
         # 계좌 상태 동기화 (주문 및 체결에 따라 현금, 보유 종목 변동)
         self.sync_account_status()
@@ -480,7 +483,7 @@ class Brokerage(AbstractBroker):
     #         'order_id': order_id,
     #         'original_order_id': original_order_id,
     #         'stock_code': stock_code,
-    #         'stock_name': self.trading_manager.get_stock_name(stock_code),
+    #         'stock_name': self.manager.get_stock_name(stock_code),
     #         'trade_date': datetime.now().date(),
     #         'trade_time': datetime.now().time(),
     #         'order_type': 'unknown', # 주문 유형은 응답 데이터에서 더 정확히 파싱해야 함
@@ -495,7 +498,7 @@ class Brokerage(AbstractBroker):
     #         'net_amount': 0,
     #         'credit_type': '현금'
     #     }
-    #     self.trading_manager.save_trading_log(log_data)
+    #     self.manager.save_trading_log(log_data)
     #     self.sync_account_status() # 계좌 상태 동기화
 
     def cleanup(self) -> None:

@@ -34,7 +34,7 @@ CREON_CERT_PWD = "hana#uncle1" # 크레온 공동인증서 비밀번호
 
 # --- 자동매매 기본 설정 ---
 # 초기 투자 자본 (백테스트 및 실전 거래의 초기 예수금으로 사용됩니다.)
-INITIAL_DEPOSIT = 50_000_000 # 5천만원 예시
+INITIAL_DEPOSIT = 10_000_000 # 1천만원 예시
 
 # 시장 개장 시간 (KST 기준)
 MARKET_OPEN_TIME = "09:00:00"

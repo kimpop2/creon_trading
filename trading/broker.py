@@ -1,18 +1,18 @@
 import datetime
 import logging
 from typing import Dict
-from trade.abstract_broker import AbstractBroker
+from trading.abstract_broker import AbstractBroker
 # --- 로거 설정 (스크립트 최상단에서 설정하여 항상 보이도록 함) ---
 logger = logging.getLogger(__name__)
 # logger.setLevel(logging.DEBUG) # 테스트 시 DEBUG로 설정하여 모든 로그 출력 - 제거
 
-class Brokerage(AbstractBroker):
-    def __init__(self, initial_cash, commission_rate=0.0016, slippage_rate=0.0004):
+class Broker(AbstractBroker):
+    def __init__(self, initial_cash:float=10_000_000):
+        super().__init__()
         self.cash = initial_cash
         self.positions = {}  # {stock_code: {'size': int, 'avg_price': float, 'entry_date': datetime.date, 'highest_price': float}}
         self.transaction_log = [] # (date, stock_code, type, price, quantity, commission, net_amount)
-        self.commission_rate = commission_rate
-        self.slippage_rate = slippage_rate
+        self.commission_rate = 0.00165 # 매도시에만 부과
         self.stop_loss_params = None
         self.initial_portfolio_value = initial_cash # 포트폴리오 손절을 위한 초기값
         logging.info(f"브로커 초기화: 초기 현금 {self.cash:,.0f}원, 수수료율 {self.commission_rate*100:.2f}%")
@@ -110,6 +110,10 @@ class Brokerage(AbstractBroker):
         """손실률을 계산합니다. 퍼센트 단위로 반환합니다."""
         return (current_price - avg_price) / avg_price * 100
 
+    def _calculate_change_price_ratio(self, current_price: float, avg_price: float) -> float:
+        """손실률을 계산합니다. 퍼센트 단위로 반환합니다."""
+        return (current_price - avg_price) / avg_price * 100
+
     def check_and_execute_stop_loss(self, stock_code, current_price, current_dt):
         """
         개별 종목에 대한 손절 조건을 체크하고, 조건 충족 시 매도 주문을 실행합니다.
@@ -125,13 +129,14 @@ class Brokerage(AbstractBroker):
         highest_price = pos_info['highest_price']
 
         loss_ratio = self._calculate_loss_ratio(current_price, avg_price)
+        change_price_ratio = self._calculate_change_price_ratio(current_price, avg_price)
         
         # 1. 단순 손절 (stop_loss_ratio)
         if self.stop_loss_params is not None and self.stop_loss_params['stop_loss_ratio'] is not None and loss_ratio <= self.stop_loss_params['stop_loss_ratio']:
             logging.info(f"[개별 손절매 발생] {stock_code}: 현재 손실률 {loss_ratio:.2f}%가 기준치 {self.stop_loss_params['stop_loss_ratio']}%를 초과. {current_dt.isoformat()}")
             self.execute_order(stock_code, 'sell', current_price, pos_info['size'], current_dt)
             return True
-        
+
         # 2. 트레일링 스탑 (trailing_stop_ratio)
         if self.stop_loss_params is not None and self.stop_loss_params['trailing_stop_ratio'] is not None and highest_price > 0:
             trailing_loss_ratio = self._calculate_loss_ratio(current_price, highest_price)
@@ -148,8 +153,14 @@ class Brokerage(AbstractBroker):
                 self.execute_order(stock_code, 'sell', current_price, pos_info['size'], current_dt)
                 return True
         
+        # 4. 익절 (take_profit_ratio)
+        if self.stop_loss_params is not None and self.stop_loss_params['take_profit_ratio'] is not None and change_price_ratio >= self.stop_loss_params['take_profit_ratio']:
+            logging.info(f"[익절 발생] {stock_code}: 현재 수익률 {change_price_ratio:.2f}%가 기준치 {self.stop_loss_params['take_profit_ratio']}%를 초과. {current_dt.isoformat()}")
+            # 분할매도 처리
+            self.execute_order(stock_code, 'sell', current_price, pos_info['size'], current_dt)
+            return True        
         return False
-
+    
     def check_and_execute_portfolio_stop_loss(self, current_prices: Dict[str, float], current_dt: datetime) -> bool:
         """
         포트폴리오 전체의 손실률을 체크하고 손절 조건에 도달하면 모든 포지션을 청산합니다.

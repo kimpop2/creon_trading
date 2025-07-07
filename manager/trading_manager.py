@@ -28,23 +28,27 @@ class TradingManager:
     DB, Creon API와의 통신을 관리하고, 가공된 데이터를 제공하며,
     실시간 데이터를 처리하고 시스템 상태를 영속화합니다.
     """
-    def __init__(self, api_client: CreonAPIClient, db_manager: DBManager): # db_manager와 api_client 순서 변경
-        self.db_manager = db_manager
+    def __init__(self, 
+                 api_client: CreonAPIClient, 
+                 db_manager: DBManager):
+        
         self.api_client = api_client
-        logger.info("TradingManager 초기화 완료: DBManager 및 CreonAPIClient 연결")
+        self.db_manager = db_manager
 
         # 실시간 데이터를 위한 캐시 (필요에 따라 확장)
         self.realtime_ohlcv_cache: Dict[str, pd.DataFrame] = {} # 종목별 실시간 분봉 데이터를 저장
+
+        # DB 데이터로 종목정보 구성        
         self.stock_names: Dict[str, str] = {} # 종목 코드: 종목명 매핑 캐시
+        self._load_stock_names() # 종목명 캐시 초기화
+        logger.info(f"TradingManager 초기화 완료: {len(self.stock_names)} 종목, CreonAPIClient 및 DBManager 연결")
 
-        # API 연결 상태 확인 (Trading 클래스에서 connect()를 호출하므로 여기서는 제거)
-        # if not self.api_client.is_creon_connected():
-        #     logger.error("Creon API 연결에 실패했습니다. 자동매매를 시작할 수 없습니다.")
-        #     raise ConnectionError("Creon API connection failed.")
-
-        # 종목명 캐시 초기화
-        self._load_stock_names()
-
+    def close(self):
+        """DBManager의 연결을 종료합니다."""
+        if self.db_manager:
+            self.db_manager.close()
+            logger.info("BacktestManager를 통해 DB 연결을 종료했습니다.")
+    
     def _load_stock_names(self):
         """DB에서 모든 종목 코드와 이름을 로드하여 캐시합니다."""
         self.stock_names = self.get_stock_info_map()
