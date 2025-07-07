@@ -1,0 +1,49 @@
+1. 전략에서 매수/매도 신호를 결정한 가격, 예를 들어 SMA 크로스가 발생한 가격으로 target_price를 설정해야 하는 이유는 다음과 같습니다:
+전략의 정확한 반영: 전략의 핵심은 특정 조건(예: 이동평균선 교차)이 충족될 때 매매하는 것입니다. 이때 그 조건이 충족된 가격이 바로 전략이 의도하는 **'진입/청산 가격'**이 됩니다.
+다양한 주문 유형 적용 가능성: 만약 target_price를 전략 결정 가격으로 설정한다면, 이후 **지정가 주문(limit order)**을 내보내는 등 더 정교한 주문 전략을 구현할 수 있는 기반이 됩니다. "나는 SMA가 크로스된 그 가격(혹은 그 근처)에 매수하고 싶다"는 명확한 목표를 가질 수 있습니다.
+target_price를 전략 결정 가격으로 변경하는 방법
+이를 구현하기 위해서는 _generate_signals나 _handle_buy_candidate, _handle_sell_candidate를 호출하는 상위 로직, 즉 신호를 실제로 생성하는 전략 부분에서 해당 가격 정보를 함께 전달해주어야 합니다.
+
+2. signal의 target_price를 **'신호 발생 시점의 가격'**으로 1.에서 정했고, 
+분봉 로직에서 이 target_price와 **현재가(분봉 종가)**의 괴리율을 업데이트
+괴리율 계산 방식은 다음과 같습니다:
+매수 신호 시:
+spread_score=(Target_Price−Current_Price)/Target_Price
+Current_Price가 Target_Price보다 낮을수록(매수하기 유리할수록) spread_score는 양수 값으로 커집니다.
+Current_Price가 Target_Price보다 높을수록(매수하기 불리할수록) spread_score는 음수 값으로 작아집니다.
+매도 신호 시:
+spread_score=-((Current_Price−Target_Price)/Target_Price)
+Current_Price가 Target_Price보다 높을수록(매도하기 유리할수록) spread_score는 양수값 으로 커집니다.
+Current_Price가 Target_Price보다 낮을수록(매도하기 불리할수록) spread_score는 음수 값으로 작아집니다.
+
+signal 에 'spread_score' 키를 추가
+예:
+self.signals[stock_code] = {
+    'signal': 'buy',
+    'signal_date': '2025-07-04',
+    'traded_today': False,
+    'target_quantity': 10,
+    'target_price': 75000, # 일봉 전략에서 넘어온 신호 발생 시점 가격
+    'spread_score': 0.0   # 분봉마다 업데이트될 괴리율 기반 스코어
+}
+trader.py 에 def _update_spread_score(self, stock_code, current_minute_price): 메서드 추가
+실제 주문을 실행하는 broker 의 excute_order 메소드에서 
+spread_score가 특정 범위 이내에서만 spread_score > 0.01에서만 주문을 내보냄
+
+
+3. 기존 키(signal, target_quantity) 활용한 분할 매도 구현
+핵심 아이디어는 다음과 같습니다.
+signal: 'sell'로 동일하게 사용합니다.
+target_quantity:
+1차 매도 신호: 현재 보유 수량의 50%를 나타냅니다.
+2차 매도 신호: 남은 잔량 전체를 나타냅니다.
+이를 위해서는 해당 종목이 현재 어떤 상태(1차 매도가 이루어졌는지, 아닌지)인지 판단하는 로직이 중요해집니다. 
+self.broker.positions에 있는 실제 보유 수량 정보를 적극적으로 활용해야 합니다.
+_handle_sell_candidate 내부 로직 변경:
+**현재 보유 수량 (current_holding_size)**을 가져와서 매도 판단의 기준으로 삼습니다.
+1차 50%매도 판단: signal_info['signal'] != 'sell' (아직 매도 신호가 없거나) 또는 signal_info['target_quantity'] == 0 (이전 매도 사이클이 완료되어 초기화된 경우)일 때, 1차 매도(50%)를 시도합니다. 
+이때 target_quantity에 50% 수량을 저장합니다. 매도시 현재가로 target_price 업데이트 (2차 매도가를 올리는 효과)
+2차 잔량 매도 판단: signal_info['signal'] == 'sell'이면서 현재 보유 수량(current_holding_size)이 signal_info['target_quantity'] (1차 매도 목표 수량)보다 적을 때를 2차 매도 시점으로 판단합니다. 이는 1차 매도가 완료되었거나 상당 부분 진행되어 잔여 수량만 남았다는 의미로 해석합니다. 이때 target_quantity에 남은 잔량 전체를 저장합니다.
+
+이상 1, 2, 3 요구사항을 반영해서, 위 화면에 출력된 코드 중 변경할 부분에 대해
+순차적으로 작업할 내용을 알려줘

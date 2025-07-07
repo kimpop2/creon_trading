@@ -28,53 +28,53 @@ class AbstractBroker(abc.ABC):
         """
         pass
 
-    @abc.abstractmethod
-    def cancel_order(self, order_id: str) -> bool:
-        """
-        진행 중인 주문을 취소합니다.
-        """
-        pass
+    # @abc.abstractmethod
+    # def cancel_order(self, order_id: str) -> bool:
+    #     """
+    #     진행 중인 주문을 취소합니다.
+    #     """
+    #     pass
 
-    @abc.abstractmethod
-    def amend_order(self,
-                    order_id: str,
-                    new_price: Optional[float] = None,
-                    new_quantity: Optional[int] = None
-                   ) -> Optional[str]:
-        """
-        진행 중인 주문을 정정합니다.
-        """
-        pass
+    # @abc.abstractmethod
+    # def amend_order(self,
+    #                 order_id: str,
+    #                 new_price: Optional[float] = None,
+    #                 new_quantity: Optional[int] = None
+    #                ) -> Optional[str]:
+    #     """
+    #     진행 중인 주문을 정정합니다.
+    #     """
+    #     pass
 
-    @abc.abstractmethod
-    def get_current_cash_balance(self) -> float:
-        """
-        현재 현금 잔고를 조회합니다.
-        """
-        pass
+    # @abc.abstractmethod
+    # def get_current_cash_balance(self) -> float:
+    #     """
+    #     현재 현금 잔고를 조회합니다.
+    #     """
+    #     pass
 
-    @abc.abstractmethod
-    def get_current_positions(self) -> Dict[str, Any]:
-        """
-        현재 보유 종목 정보를 조회합니다.
-        반환 형식: {stock_code: {'quantity': int, 'average_buy_price': float, 'current_price': float, 'entry_date': date, ...}}
-        """
-        pass
+    # @abc.abstractmethod
+    # def get_current_positions(self) -> Dict[str, Any]:
+    #     """
+    #     현재 보유 종목 정보를 조회합니다.
+    #     반환 형식: {stock_code: {'quantity': int, 'average_buy_price': float, 'current_price': float, 'entry_date': date, ...}}
+    #     """
+    #     pass
 
-    @abc.abstractmethod
-    def get_unfilled_orders(self) -> List[Dict[str, Any]]:
-        """
-        현재 미체결 주문 내역을 조회합니다.
-        반환 형식: [{'order_id': '...', 'stock_code': '...', 'order_type': 'buy/sell', 'order_price': ..., 'order_quantity': ..., 'unfilled_quantity': ..., ...}]
-        """
-        pass
+    # @abc.abstractmethod
+    # def get_unfilled_orders(self) -> List[Dict[str, Any]]:
+    #     """
+    #     현재 미체결 주문 내역을 조회합니다.
+    #     반환 형식: [{'order_id': '...', 'stock_code': '...', 'order_type': 'buy/sell', 'order_price': ..., 'order_quantity': ..., 'unfilled_quantity': ..., ...}]
+    #     """
+    #     pass
     
-    @abc.abstractmethod
-    def update_portfolio_status(self, current_dt: datetime) -> None:
-        """
-        매일 또는 특정 시점에 포트폴리오 상태를 업데이트하고 DB에 저장합니다.
-        """
-        pass
+    # @abc.abstractmethod
+    # def update_portfolio_status(self, current_dt: datetime) -> None:
+    #     """
+    #     매일 또는 특정 시점에 포트폴리오 상태를 업데이트하고 DB에 저장합니다.
+    #     """
+    #     pass
 
     @abc.abstractmethod
     def check_and_execute_stop_loss(self, current_prices: Dict[str, float], current_dt: datetime) -> bool:

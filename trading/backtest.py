@@ -1,4 +1,4 @@
-# backtest/backtester.py
+# trading/backtester.py
 import pandas as pd
 import numpy as np
 from typing import Dict, Any, List, Optional
@@ -37,7 +37,7 @@ class Backtest:
         self.save_to_db = save_to_db  # DB 저장 여부
 
         self.manager = BacktestManager(self.api_client, self.db_manager)
-        self.brokere = Broker(self.initial_cash)
+        self.broker = Broker(self.initial_cash)
         self.report = BacktestReport(self.db_manager)
         self.strategy = None
 
@@ -616,10 +616,6 @@ if __name__ == "__main__":
         api_client = CreonAPIClient()
         # DB 매니저
         db_manager = DBManager()
-        # Backtest 매니저
-        manager = BacktestManager()
-        # 리포트 생성기
-        report = BacktestReport(db_manager)
         
         # 2. Backtest 인스턴스 생성
         initial_cash = 10_000_000  # 1천만원
@@ -647,7 +643,7 @@ if __name__ == "__main__":
         }
         # 전략 인스턴스 생성
         from strategies.sma_strategy import SMAStrategy
-        strategy_instance = SMAStrategy(backtest_system.broker, backtest_system.backtest_manager, sma_strategy_params)
+        strategy_instance = SMAStrategy(backtest_system.broker, backtest_system.data_store, sma_strategy_params)
         
         # 4. 손절매 파라미터 설정 (선택사항)
         stop_loss_params = {
@@ -671,11 +667,10 @@ if __name__ == "__main__":
         backtest_system.run(start_date, end_date)
         
         # logger.info("=== Backtest 테스트 완료 ===")
-        
-    except Exception as e:
-        logger.error(f"Backtest 테스트 중 오류 발생: {e}", exc_info=True)
-    finally:
-        # 리소스 정리
         backtest_system.cleanup()
         logger.info("시스템 종료 완료.")
+    except Exception as e:
+        logger.error(f"Backtest 테스트 중 오류 발생: {e}", exc_info=True)
+
+       
 
