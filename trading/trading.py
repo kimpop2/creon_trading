@@ -93,7 +93,7 @@ class Trading:
             # 1. 전략 실행 (매일 장 시작 전)
             if current_time >= self.daily_strategy_run_time and \
                current_time < self.market_open_time and \
-               not getattr(self, '_daily_strategy_run_today', False): # 오늘 실행 여부 플래그
+               not getattr(self, '_strategy_run_today', False): # 오늘 실행 여부 플래그
                 logger.info(f"[{now.strftime('%H:%M:%S')}] 전략 로직 실행...")
                 if self.strategy:
                     try:
@@ -113,7 +113,7 @@ class Trading:
                 time.sleep(10) # 10초마다 체크 (실시간 데이터 처리량에 따라 조정)
             elif current_time >= self.market_close_time and \
                  current_time < self.portfolio_update_time and \
-                 getattr(self, '_daily_strategy_run_today', False) and \
+                 getattr(self, '_strategy_run_today', False) and \
                  not getattr(self, '_portfolio_updated_today', False):
                 # 3. 장 마감 후 포트폴리오 업데이트 및 일일 결산
                 logger.info(f"[{now.strftime('%H:%M:%S')}] 장 마감 후 포트폴리오 업데이트 및 결산...")
@@ -175,11 +175,11 @@ class Trading:
         self.notifier.send_message(f"--- {current_date} 새로운 거래일 준비 시작 ---")
         
         # 매매 시스템 상태 플래그 초기화
-        setattr(self, '_daily_strategy_run_today', False)
+        setattr(self, '_strategy_run_today', False)
         setattr(self, '_portfolio_updated_today', False)
 
         # Creon API 연결 상태 확인 및 재연결 시도
-        if not self.creon_api.is_creon_connected():
+        if not self.creon_api._check_creon_status():
             logger.warning("Creon API 연결이 끊어졌습니다. 재연결을 시도합니다...")
             if not self.creon_api._check_creon_status():
                 self.notifier.send_message("❌ Creon API 연결 실패. 시스템 종료 또는 수동 확인 필요.")
@@ -253,7 +253,7 @@ class Trading:
         if self.creon_api:
             self.creon_api.cleanup()
         if self.db_manager:
-            self.db_manager.close_connection()
+            self.db_manager.close()
         logger.info("Trading 시스템 cleanup 완료.")
 
 

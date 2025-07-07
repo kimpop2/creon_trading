@@ -7,8 +7,8 @@ CREATE TABLE IF NOT EXISTS trading_log (
     original_order_id VARCHAR(50) COMMENT '원주문번호 (정정/취소 시 원주문 식별)',
     stock_code VARCHAR(10) NOT NULL COMMENT '종목 코드',
     stock_name VARCHAR(100) NOT NULL COMMENT '종목명',
-    trade_date DATE NOT NULL COMMENT '매매 일자',
-    trade_time TIME NOT NULL COMMENT '매매 시각',
+    trading_date DATE NOT NULL COMMENT '매매 일자',
+    trading_time TIME NOT NULL COMMENT '매매 시각',
     order_type ENUM('buy', 'sell') NOT NULL COMMENT '주문 유형 (매수/매도)',
     order_price DECIMAL(18, 2) COMMENT '주문 가격 (지정가/시장가)',
     order_quantity INT NOT NULL COMMENT '주문 수량',
@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS trading_log (
 
 -- trading_log 인덱스
 CREATE INDEX idx_trading_log_stock_code ON trading_log (stock_code);
-CREATE INDEX idx_trading_log_trade_date ON trading_log (trade_date);
+CREATE INDEX idx_trading_log_trading_date ON trading_log (trading_date);
 CREATE INDEX idx_trading_log_order_id ON trading_log (order_id);
 CREATE INDEX idx_trading_log_original_order_id ON trading_log (original_order_id);
 
@@ -56,10 +56,10 @@ CREATE TABLE IF NOT EXISTS current_positions (
     stock_code VARCHAR(10) PRIMARY KEY COMMENT '종목 코드',
     stock_name VARCHAR(100) NOT NULL COMMENT '종목명',
     quantity INT NOT NULL COMMENT '보유 수량',
+    sell_avail_qty INT NOT NULL COMMENT '매도가능수량',
     average_buy_price DECIMAL(18, 2) NOT NULL COMMENT '평균 매입 단가',
-    current_price DECIMAL(18, 2) COMMENT '현재가 (크레온 API를 통해 실시간으로 갱신될 수 있음)',
-    evaluation_profit_loss DECIMAL(18, 2) COMMENT '평가 손익',
-    evaluation_return_rate DECIMAL(10, 4) COMMENT '평가 수익률',
+    eval_profit_loss DECIMAL(18, 2) COMMENT '평가 손익',
+    eval_return_rate DECIMAL(10, 4) COMMENT '평가 수익률',
     entry_date DATE COMMENT '최초 매수 일자',
     last_update TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '마지막 업데이트 시각'
 ) COMMENT='현재 보유 종목 현황';

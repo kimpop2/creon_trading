@@ -1,0 +1,124 @@
+MariaDB 서버의 기본 문자셋을 변경하려면 MariaDB 설정 파일인 my.cnf 또는 my.ini 파일을 수정해야 합니다. 서버의 문자셋을 변경하는 방법은 다음과 같습니다: 
+1. 설정 파일 찾기:
+MariaDB 설정 파일 위치는 운영체제 및 설치 방식에 따라 다릅니다. 
+일반적으로 리눅스에서는 /etc/my.cnf.d/server.cnf 또는 /etc/my.cnf 파일에 설정이 저장됩니다. 
+윈도우에서는 C:\Program Files\MariaDB\ [버전]\data\my.ini와 같은 경로에 위치할 수 있습니다.
+2. 설정 파일 수정:
+설정 파일을 텍스트 편집기(예: vi, notepad)로 열어 [mysqld] 섹션에서 character-set-server 와 collation-server 설정을 변경합니다.
+예를 들어, 기본 문자셋을 utf8mb4로 설정하려면 다음과 같이 수정합니다:
+
+코드
+
+    [mysqld]
+    character-set-server=utf8mb4
+    collation-server=utf8mb4_unicode_ci
+
+만약 특정 테이블이나 데이터베이스에 대한 문자셋 설정을 변경하려면 해당 테이블이나 데이터베이스를 생성할 때 설정해야 합니다. 
+1. MariaDB 재시작:
+설정 파일 변경 후 MariaDB 서버를 재시작해야 변경 사항이 적용됩니다. 서버 재시작 명령어는 운영체제에 따라 다릅니다. 리눅스에서는 sudo systemctl restart mariadb 와 같은 명령어를 사용할 수 있습니다. 
+MariaDB에서 문자셋(Character Set) 문제가 발생하여 SQL 에러가 나는군요. 한글 처리를 위해서는 utf8mb4 문자셋을 사용하는 것이 현재 가장 표준적이고 권장되는 방법입니다.
+Bash
+sudo systemctl restart mariadb
+# 또는
+sudo service mysql restart
+
+기존 utf8 (또는 utf8mb3)은 3바이트까지만 지원하여 이모지(Emoji)와 같은 4바이트 문자를 제대로 저장하지 못하는 문제가 있습니다. utf8mb4는 4바이트 유니코드를 완벽하게 지원하므로, 미래의 확장성 및 호환성 측면에서 가장 적합합니다.
+MariaDB 문자셋을 utf8mb4로 통일하는 방법
+MariaDB의 문자셋은 서버, 데이터베이스, 테이블, 컬럼, 그리고 클라이언트 연결 수준에서 각각 설정될 수 있습니다. 이들이 일치하지 않을 때 문제가 발생하죠. 한 번에 통일하기 위해서는 다음 단계를 따르는 것이 가장 일반적이고 안전합니다.
+
+2. 문자셋 확인:
+MariaDB 서버에 접속하여 SHOW VARIABLES LIKE 'character_set_%'; 명령어를 실행하여 변경된 문자셋을 확인할 수 있습니다. 
+또한, SHOW CHARACTER SET; 명령어를 사용하여 서버에서 지원하는 문자셋을 확인할 수 있습니다. 
+주의사항:
+문자셋 변경 시 기존 데이터의 인코딩 문제 발생 가능성이 있으므로 주의해야 합니다. 
+특히 utf8 대신 utf8mb4를 사용하는 것을 권장합니다. utf8mb4는 utf8보다 더 넓은 범위를 지원하며 이모지 등을 포함한 모든 유니코드 문자를 저장할 수 있습니다. 
+클라이언트 측에서 사용하는 문자셋 설정도 서버 측과 일치시켜야 합니다. 
+skip-character-set-client-handshake 옵션을 사용하면 클라이언트가 설정한 문자셋을 무시하고 서버의 기본 문자셋으로 설정할 수 있습니다
+
+MariaDB에서 문자셋(Character Set) 문제가 발생하여 SQL 에러가 나는군요. 한글 처리를 위해서는 utf8mb4 문자셋을 사용하는 것이 현재 가장 표준적이고 권장되는 방법입니다.
+
+기존 utf8 (또는 utf8mb3)은 3바이트까지만 지원하여 이모지(Emoji)와 같은 4바이트 문자를 제대로 저장하지 못하는 문제가 있습니다. utf8mb4는 4바이트 유니코드를 완벽하게 지원하므로, 미래의 확장성 및 호환성 측면에서 가장 적합합니다.
+
+MariaDB 문자셋을 utf8mb4로 통일하는 방법
+MariaDB의 문자셋은 서버, 데이터베이스, 테이블, 컬럼, 그리고 클라이언트 연결 수준에서 각각 설정될 수 있습니다. 이들이 일치하지 않을 때 문제가 발생하죠. 한 번에 통일하기 위해서는 다음 단계를 따르는 것이 가장 일반적이고 안전합니다.
+
+1. MariaDB 서버 설정 파일 변경 (가장 중요하고 선행되어야 할 작업)
+MariaDB 서버의 기본 문자셋을 변경하면, 이후에 생성되는 모든 새로운 데이터베이스와 테이블에 해당 문자셋이 기본으로 적용됩니다.
+
+설정 파일 위치:
+일반적으로 /etc/my.cnf 또는 /etc/mysql/my.cnf 에 위치하거나, /etc/my.cnf.d/ 디렉토리 내의 .cnf 파일에 포함될 수 있습니다. (운영체제 및 MariaDB 설치 방식에 따라 다를 수 있습니다.)
+
+수정 내용:
+[mysqld] 섹션과 [client], [mysql] 섹션에 다음 설정을 추가하거나 수정합니다.
+
+Ini, TOML
+
+[client]
+default-character-set = utf8mb4
+
+[mysql]
+default-character-set = utf8mb4
+
+[mysqld]
+character-set-server = utf8mb4
+collation-server = utf8mb4_unicode_ci
+# 아래 옵션은 클라이언트가 보내는 문자셋 정보를 무시하고 서버 문자셋을 사용하게 함
+# 일반적으로 권장되지만, 특정 클라이언트에서 문제가 발생하면 제거할 수도 있습니다.
+# init_connect='SET NAMES utf8mb4' # 이 옵션은 잘 사용하지 않음 (대신 skip-character-set-client-handshake)
+skip-character-set-client-handshake
+설정 후:
+변경사항을 적용하려면 MariaDB 서비스를 반드시 재시작해야 합니다.
+
+Bash
+
+sudo systemctl restart mariadb
+# 또는
+sudo service mysql restart
+2. 기존 데이터베이스 및 테이블 문자셋 변경
+서버 설정을 변경했다고 해서 기존에 생성된 데이터베이스나 테이블의 문자셋이 자동으로 바뀌지는 않습니다. 기존 데이터를 utf8mb4로 변환해야 합니다.
+
+주의: 이 작업 전에 반드시 데이터베이스 백업을 수행하세요. 문자셋 변환 중 데이터 손상 가능성이 있습니다.
+
+데이터베이스 문자셋 변경:
+SQL
+
+ALTER DATABASE your_database_name
+CHARACTER SET = utf8mb4
+COLLATE = utf8mb4_unicode_ci;
+모든 테이블 문자셋 변경:
+데이터베이스의 모든 테이블에 대해 문자셋을 변경합니다.
+
+SQL
+ALTER TABLE your_table_name
+CONVERT TO CHARACTER SET utf8mb4
+COLLATE utf8mb4_unicode_ci;
+
+이 쿼리는 테이블 내의 모든 CHAR, VARCHAR, TEXT 계열 컬럼의 문자셋을 변경합니다.
+
+Tip: 데이터베이스 내의 모든 테이블을 한 번에 변경하는 스크립트를 만들 수도 있습니다.
+
+SQL
+SELECT CONCAT("ALTER TABLE ", TABLE_SCHEMA, ".", TABLE_NAME, " CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;")
+FROM information_schema.TABLES
+WHERE TABLE_SCHEMA = "your_database_name"
+AND TABLE_TYPE = "BASE TABLE";
+이 쿼리 결과를 복사하여 실행하면 됩니다.
+
+3. 클라이언트 연결 문자셋 확인
+Python pymysql 라이브러리를 사용하는 경우, charset='utf8mb4' 옵션을 명시적으로 지정하여 클라이언트 연결 문자셋을 서버와 일치시키는 것이 좋습니다. 예시 코드에서는 이미 charset='utf8mb4'가 설정되어 있으므로 이 부분은 잘 되어 있습니다.
+
+Python
+self.conn = pymysql.connect(
+    # ...
+    charset='utf8mb4', # 이미 설정되어 있음
+    cursorclass=pymysql.cursors.DictCursor
+)
+한글 사용 시 권장 문자셋: utf8mb4와 utf8mb4_unicode_ci
+
+문자셋 (Character Set): utf8mb4
+현재 유니코드의 모든 문자를 4바이트까지 지원합니다. 한글은 물론, 이모지, 특수 문자 등 거의 모든 문자를 문제없이 저장하고 처리할 수 있습니다.
+
+콜레이션 (Collation): utf8mb4_unicode_c
+ci는 Case-Insensitive (대소문자 구분 안 함)를 의미합니다.
+unicode_ci는 유니코드 표준에 따른 정렬 규칙을 사용합니다. 한글을 포함한 다국어 문자의 정렬 및 비교에 적합하며, 보통 가장 일반적인 선택입니다.
+만약 대소문자를 엄격하게 구분하거나 이진(binary) 비교가 필요하다면 utf8mb4_bin을 사용할 수도 있지만, 일반적인 한글 데이터 처리에는 utf8mb4_unicode_ci가 더 적합합니다.

@@ -1214,7 +1214,7 @@ class CreonAPIClient:
         logger.info(f"주문 정정 완료: 원주문번호={order_id}, 새 주문번호={amended_order_num}, 메시지={rqMsg}")
         return amended_order_num
     
-    def get_account_balance(self) -> Dict[str, float]:
+    def get_deposit(self) -> Dict[str, float]:
         """
         계좌 잔고 (현금) 및 예수금 정보를 조회합니다.
         """
@@ -1365,7 +1365,7 @@ class CreonAPIClient:
         """
         계좌의 주문 가능 현금(잔고)만 반환합니다.
         """
-        balance = self.get_account_balance()
+        balance = self.get_deposit()
         return balance.get('cash', 0.0)
 
     def is_connected(self):
@@ -1468,7 +1468,7 @@ class CreonAPIClient:
         if not self._check_creon_status():
             return None
 
-        objStockMst = win32com.client.Dispatch("CpSysDib.StockMst")
+        objStockMst = win32com.client.Dispatch("Dscbo1.StockMst")
         objStockMst.SetInputValue(0, code)
         ret = objStockMst.BlockRequest()
         time.sleep(self.request_interval)
@@ -1667,7 +1667,7 @@ class CreonAPIClient:
         if not self._check_creon_status():
             return None
 
-        objRq = win32com.client.Dispatch("CpTrade.CpTd0301") # CpTd0301: 예수금/증거금 조회
+        objRq = win32com.client.Dispatch("CpTrade.CpTdNew5331A") # CpTd0301: 예수금/증거금 조회
         objRq.SetInputValue(0, self.account_number)
         objRq.SetInputValue(1, self.account_flag)
 
@@ -1730,19 +1730,21 @@ class CreonAPIClient:
 
             for i in range(count):
                 balance_data = {
-                    'stock_code': objRq.GetDataValue(9, i),     # 종목코드
-                    'stock_name': objRq.GetDataValue(0, i),     # 종목명
-                    'quantity': objRq.GetDataValue(1, i), # 현재잔고수량
-                    'average_buy_price': objRq.GetDataValue(2, i), # 매입단가
-                    'current_price': objRq.GetDataValue(7, i), # 현재가
-                    'evaluation_amount': objRq.GetDataValue(11, i), # 평가금액
-                    'profit_loss': objRq.GetDataValue(3, i), # 평가손익
-                    'profit_loss_rate': objRq.GetDataValue(4, i), # 손익률
-                    'yesterday_quantity': objRq.GetDataValue(5, i), # 전일매수수량
-                    'today_quantity': objRq.GetDataValue(6, i), # 금일매수수량
-                    'trade_quantity': objRq.GetDataValue(13, i), # 체결잔고수량
-                    'credit_type': objRq.GetDataValue(18, i), # 신용구분
-                    'loan_date': objRq.GetDataValue(19, i), # 대출일
+                    'stock_code': objRq.GetDataValue(12, i),    # 종목코드
+                    'stock_name': objRq.GetDataValue(0, i),    # 종목명
+                    'set_bal_qty': objRq.GetDataValue(3, i),    # 결제잔고수량
+                    'average_buy_price': objRq.GetDataValue(17, i),  # 체결장부단가
+                    'prev_exec_qty': objRq.GetDataValue(5, i), # 전일체결수량
+                    'today_exec_qty': objRq.GetDataValue(6, i),# 금일체결수량
+                    'quantity': objRq.GetDataValue(7, i),  # 체결잔고수량
+                    'eval_amt': objRq.GetDataValue(9, i),      # 평가금액
+                    'eval_profit_loss': objRq.GetDataValue(10, i),      # 평가손익
+                    'eval_return_rate': objRq.GetDataValue(11, i),  # 수익률
+                    'order_type': objRq.GetDataValue(13, i),   # 주문구분
+                    'sell_avail_qty': objRq.GetDataValue(15, i),# 매도가능수량
+                    'maturity_date': objRq.GetDataValue(16, i),# 만기일
+                    'exec_book_price': objRq.GetDataValue(4, i),# 결제장부단가
+                    'pl_price': objRq.GetDataValue(18, i),     # 손익단가
                     'entry_date': datetime.now().date() # API에서 진입일자 제공하지 않으면 현재 날짜로 임시 설정
                 }
                 balances.append(balance_data)

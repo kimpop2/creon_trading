@@ -2,7 +2,7 @@
 import logging
 import sys
 import os
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import win32com.client
 from pywinauto import application
 import time
@@ -136,7 +136,7 @@ def run_startup_tasks():
 
         # 3. 일봉 데이터 수집 (예시: 모든 종목에 대해 1년치 데이터 업데이트)
         logger.info("최신 일봉 데이터 수집 시작 (모든 종목)...")
-        all_stock_codes = trading_manager.get_stock_list() # (code, name) 튜플 리스트
+        all_stock_codes = trading_manager.get_all_stock_list() # (code, name) 튜플 리스트
         today = datetime.now().date()
         one_year_ago = today - timedelta(days=365)
 
