@@ -481,11 +481,8 @@ class Backtest:
 
 
         # 전략 이름과 파라미터 추출
-        daily_strategy_name = self.daily_strategy.__class__.__name__ if self.daily_strategy else "N/A"
-        minute_strategy_name = self.minute_strategy.__class__.__name__ if self.minute_strategy else "N/A"
-        daily_strategy_params = self.daily_strategy.strategy_params if self.daily_strategy else {}
-        minute_strategy_params = self.minute_strategy.strategy_params if self.minute_strategy else {}
-
+        strategy_name = self.strategy.__class__.__name__ if self.strategy else "N/A"
+        
         # 모든 저장 로직을 self.report에게 위임
         self.report.generate_and_save_report(
             start_date=start_date,
@@ -493,101 +490,111 @@ class Backtest:
             initial_cash=self.initial_cash,
             portfolio_value_series=portfolio_value_series,
             transaction_log=self.broker.transaction_log,
-            daily_strategy_name=daily_strategy_name,
-            minute_strategy_name=minute_strategy_name,
-            daily_strategy_params=daily_strategy_params,
-            minute_strategy_params=minute_strategy_params
+            strategy_name=strategy_name,
         )
         final_metrics = calculate_performance_metrics(portfolio_value_series)
         return portfolio_value_series, final_metrics
     
-def load_stocks(trade, manager, db_manager, start_date, end_date):
-    # 섹터별 대표 종목 리스트 (간소화) - 기존과 동일
-    sector_stocks = {
-        '반도체': [
-            ('삼성전자', 'IT'), ('SK하이닉스', 'IT'), ('DB하이텍', 'IT'),
-            ('네패스아크', 'IT'), ('와이아이케이', 'IT')
-        ],
-        '2차전지': [
-            ('LG에너지솔루션', '2차전지'), ('삼성SDI', '2차전지'), ('SK이노베이션', '2차전지'),
-            ('에코프로비엠', '2차전지'), ('포스코퓨처엠', '2차전지'), ('LG화학', '2차전지'),
-            ('일진머티리얼즈', '2차전지'), ('엘앤에프', '2차전지')
-        ],
-        '바이오': [
-            ('삼성바이오로직스', '바이오'), ('셀트리온', '바이오'), ('SK바이오사이언스', '바이오'),
-            ('유한양행', '바이오'), ('한미약품', '바이오')
-        ],
-        '플랫폼/인터넷': [
-            ('NAVER', 'IT'), ('카카오', 'IT'), ('크래프톤', 'IT'),
-            ('엔씨소프트', 'IT'), ('넷마블', 'IT')
-        ],
-        '자동차': [
-            ('현대차', '자동차'), ('기아', '자동차'), ('현대모비스', '자동차'),
-            ('만도', '자동차'), ('한온시스템', '자동차')
-        ],
-        '철강/화학': [
-            ('POSCO홀딩스', '철강'), ('고려아연', '철강'), ('롯데케미칼', '화학'),
-            ('금호석유', '화학'), ('효성첨단소재', '화학')
-        ],
-        '금융': [
-            ('KB금융', '금융'), ('신한지주', '금융'), ('하나금융지주', '금융'),
-            ('우리금융지주', '금융'), ('메리츠금융지주', '금융')
-        ],
-        '통신': [
-            ('SK텔레콤', '통신'), ('KT', '통신'), ('LG유플러스', '통신'),
-            ('SK스퀘어', '통신')
-        ],
-        '유통/소비재': [
-            ('CJ제일제당', '소비재'), ('오리온', '소비재'), ('롯데쇼핑', '유통'),
-            ('이마트', '유통'), ('BGF리테일', '유통')
-        ],
-        '건설/기계': [
-            ('현대건설', '건설'), ('대우건설', '건설'), ('GS건설', '건설'),
-            ('두산에너빌리티', '기계'), ('두산밥캣', '기계')
-        ],
-        '조선/항공': [
-            ('한국조선해양', '조선'), ('삼성중공업', '조선'), ('대한항공', '항공'),
-            ('현대미포조선', '조선')
-        ],
-        '에너지': [
-            ('한국전력', '에너지'), ('한국가스공사', '에너지'), ('두산퓨얼셀', '에너지'),
-            ('에스디바이오센서', '에너지')
-        ],
-        '반도체장비': [
-            ('원익IPS', 'IT'), ('피에스케이', 'IT'), ('주성엔지니어링', 'IT'),
-            ('테스', 'IT'), ('에이피티씨', 'IT')
-        ],
-        '디스플레이': [
-            ('LG디스플레이', 'IT'), ('덕산네오룩스', 'IT'), ('동운아나텍', 'IT'),
-            ('매크로젠', 'IT')
-        ],
-        '방산': [
-            ('한화에어로스페이스', '방산'), ('LIG넥스원', '방산'), ('한화시스템', '방산'),
-            ('현대로템', '방산')
-        ]
-    }
-    # 모든 종목 데이터 로딩
-    # 모든 종목을 하나의 리스트로 변환
-    fetch_start = start_date - timedelta(days=30)
-    stock_names = []
-    for sector, stocks in sector_stocks.items():
-        for stock_name, _ in stocks:
-            stock_names.append(stock_name)
+    def cleanup(self) -> None:
+        """
+        시스템 종료 시 필요한 리소스 정리 작업을 수행합니다.
+        """
+        logger.info("Backtest 시스템 cleanup 시작.")
+        if self.broker:
+            self.broker.cleanup()
+        if self.api_client:
+            self.api_client.cleanup()
+        if self.db_manager:
+            self.db_manager.close()
+        logger.info("Backtest 시스템 cleanup 완료.")    
 
-    all_target_stock_names = stock_names
-    for name in all_target_stock_names:
-        code = api_client.get_stock_code(name)
-        if code:
-            logging.info(f"'{name}' (코드: {code}) 종목 일봉 데이터 로딩 중... (기간: {fetch_start.strftime('%Y%m%d')} ~ {end_date.strftime('%Y%m%d')})")
-            daily_df = manager.cache_daily_ohlcv(code, fetch_start, end_date)
-            
-            if daily_df.empty:
-                logging.warning(f"{name} ({code}) 종목의 일봉 데이터를 가져올 수 없습니다. 해당 종목을 건너뜁니다.")
-                continue
-            logging.debug(f"{name} ({code}) 종목의 일봉 데이터 로드 완료. 데이터 수: {len(daily_df)}행")
-            backtest.add_daily_data(code, daily_df)
-        else:
-            logging.warning(f"'{name}' 종목의 코드를 찾을 수 없습니다. 해당 종목을 건너뜁니다.")
+    def load_stocks(self, start_date, end_date):
+        # 섹터별 대표 종목 리스트 (간소화) - 기존과 동일
+        sector_stocks = {
+            '반도체': [
+                ('삼성전자', 'IT'), ('SK하이닉스', 'IT'), ('DB하이텍', 'IT'),
+                ('네패스아크', 'IT'), ('와이아이케이', 'IT')
+            ],
+            '2차전지': [
+                ('LG에너지솔루션', '2차전지'), ('삼성SDI', '2차전지'), ('SK이노베이션', '2차전지'),
+                ('에코프로비엠', '2차전지'), ('포스코퓨처엠', '2차전지'), ('LG화학', '2차전지'),
+                ('일진머티리얼즈', '2차전지'), ('엘앤에프', '2차전지')
+            ],
+            '바이오': [
+                ('삼성바이오로직스', '바이오'), ('셀트리온', '바이오'), ('SK바이오사이언스', '바이오'),
+                ('유한양행', '바이오'), ('한미약품', '바이오')
+            ],
+            '플랫폼/인터넷': [
+                ('NAVER', 'IT'), ('카카오', 'IT'), ('크래프톤', 'IT'),
+                ('엔씨소프트', 'IT'), ('넷마블', 'IT')
+            ],
+            '자동차': [
+                ('현대차', '자동차'), ('기아', '자동차'), ('현대모비스', '자동차'),
+                ('만도', '자동차'), ('한온시스템', '자동차')
+            ],
+            '철강/화학': [
+                ('POSCO홀딩스', '철강'), ('고려아연', '철강'), ('롯데케미칼', '화학'),
+                ('금호석유', '화학'), ('효성첨단소재', '화학')
+            ],
+            '금융': [
+                ('KB금융', '금융'), ('신한지주', '금융'), ('하나금융지주', '금융'),
+                ('우리금융지주', '금융'), ('메리츠금융지주', '금융')
+            ],
+            '통신': [
+                ('SK텔레콤', '통신'), ('KT', '통신'), ('LG유플러스', '통신'),
+                ('SK스퀘어', '통신')
+            ],
+            '유통/소비재': [
+                ('CJ제일제당', '소비재'), ('오리온', '소비재'), ('롯데쇼핑', '유통'),
+                ('이마트', '유통'), ('BGF리테일', '유통')
+            ],
+            '건설/기계': [
+                ('현대건설', '건설'), ('대우건설', '건설'), ('GS건설', '건설'),
+                ('두산에너빌리티', '기계'), ('두산밥캣', '기계')
+            ],
+            '조선/항공': [
+                ('한국조선해양', '조선'), ('삼성중공업', '조선'), ('대한항공', '항공'),
+                ('현대미포조선', '조선')
+            ],
+            '에너지': [
+                ('한국전력', '에너지'), ('한국가스공사', '에너지'), ('두산퓨얼셀', '에너지'),
+                ('에스디바이오센서', '에너지')
+            ],
+            '반도체장비': [
+                ('원익IPS', 'IT'), ('피에스케이', 'IT'), ('주성엔지니어링', 'IT'),
+                ('테스', 'IT'), ('에이피티씨', 'IT')
+            ],
+            '디스플레이': [
+                ('LG디스플레이', 'IT'), ('덕산네오룩스', 'IT'), ('동운아나텍', 'IT'),
+                ('매크로젠', 'IT')
+            ],
+            '방산': [
+                ('한화에어로스페이스', '방산'), ('LIG넥스원', '방산'), ('한화시스템', '방산'),
+                ('현대로템', '방산')
+            ]
+        }
+        # 모든 종목 데이터 로딩
+        # 모든 종목을 하나의 리스트로 변환
+        fetch_start = start_date - timedelta(days=30)
+        stock_names = []
+        for sector, stocks in sector_stocks.items():
+            for stock_name, _ in stocks:
+                stock_names.append(stock_name)
+
+        all_target_stock_names = stock_names
+        for name in all_target_stock_names:
+            code = self.api_client.get_stock_code(name)
+            if code:
+                logging.info(f"'{name}' (코드: {code}) 종목 일봉 데이터 로딩 중... (기간: {fetch_start.strftime('%Y%m%d')} ~ {end_date.strftime('%Y%m%d')})")
+                daily_df = self.manager.cache_daily_ohlcv(code, fetch_start, end_date)
+                
+                if daily_df.empty:
+                    logging.warning(f"{name} ({code}) 종목의 일봉 데이터를 가져올 수 없습니다. 해당 종목을 건너뜁니다.")
+                    continue
+                logging.debug(f"{name} ({code}) 종목의 일봉 데이터 로드 완료. 데이터 수: {len(daily_df)}행")
+                self.add_daily_data(code, daily_df)
+            else:
+                logging.warning(f"'{name}' 종목의 코드를 찾을 수 없습니다. 해당 종목을 건너뜁니다.")
 
 if __name__ == "__main__":
     """
@@ -617,31 +624,31 @@ if __name__ == "__main__":
         # 2. Backtest 인스턴스 생성
         initial_cash = 10_000_000  # 1천만원
         
-        backtest = Backtest(
+        backtest_system = Backtest(
             api_client=api_client,
-            initial_cash=initial_cash,
-            manager=manager,
-            report=report,
             db_manager=db_manager,
+            initial_cash=initial_cash,
             save_to_db=True
         )
         
         # 3. 전략 설정
-        # 일봉 전략 파라미터 ------------------------------
-        
-        # SMA 일봉 전략 설정 (최적화 결과 반영)
+        # SMA 전략 설정 (최적화 결과 반영)
         sma_strategy_params={
             'short_sma_period': 5,          #  4 → 5일 (더 안정적인 단기 이동평균)
             'long_sma_period': 20,          #  10 → 20일 (더 안정적인 장기 이동평균)
             'volume_ma_period': 10,         #  6 → 10일 (거래량 이동평균 기간 확장)
             'num_top_stocks': 5,            #  5 → 3 (집중 투자)
         }
-
+        strategy_params = {
+            'short_sma_period': 5, 
+            'long_sma_period': 20, 
+            'volume_ma_period': 20, 
+            'num_top_stocks': 10
+        }
         # 전략 인스턴스 생성
-        daily_strategy = SMADaily(backtest.broker, backtest.data_store, strategy_params=sma_daily_params)
-        #daily_strategy = ContrarianDaily(backtest.broker, backtest.data_store, strategy_params=contrarian_daily_params)
-        #minute_strategy = OpenMinute(backtest.broker, backtest.data_store, strategy_params=open_minute_params)
-        minute_strategy = RSIMinute(backtest.broker, backtest.data_store, strategy_params=rsi_minute_params)
+        from strategies.sma_strategy import SMAStrategy
+        strategy_instance = SMAStrategy(backtest_system.broker, backtest_system.backtest_manager, sma_strategy_params)
+        
         # 4. 손절매 파라미터 설정 (선택사항)
         stop_loss_params = {
             'take_profit_ratio': 20,       # 매수 후 익절
@@ -655,23 +662,13 @@ if __name__ == "__main__":
         start_date = date(2025, 6, 1)
         end_date = date(2025, 7, 7)
 
-        # 종목 일봉 설정 ===========================
-        load_stocks(backtest, manager, db_manager, start_date, end_date)
+        backtest_system.load_stocks(start_date, end_date)
 
-        backtest.set_strategies(
-            daily_strategy=daily_strategy,
-            minute_strategy=minute_strategy
-        )
-        #손절 설정 None면 손절기능 사용 않음        
-        #backtest.set_broker_stop_loss_params(stop_loss_params)
-        backtest.set_broker_stop_loss_params() # 손절 않음
+        backtest_system.set_strategies(strategy=strategy_instance)
+        backtest_system.set_broker_stop_loss_params(stop_loss_params)
         
         # 5. 백테스트 실행
-
-        # 끝 전략 설정 =========================
-        
-        # 백테스트 실행
-        backtest.run(start_date, end_date)
+        backtest_system.run(start_date, end_date)
         
         # logger.info("=== Backtest 테스트 완료 ===")
         
@@ -679,6 +676,6 @@ if __name__ == "__main__":
         logger.error(f"Backtest 테스트 중 오류 발생: {e}", exc_info=True)
     finally:
         # 리소스 정리
-        if 'db_manager' in locals():
-            db_manager.close()
+        backtest_system.cleanup()
+        logger.info("시스템 종료 완료.")
 

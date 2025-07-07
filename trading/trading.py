@@ -382,14 +382,20 @@ if __name__ == "__main__":
 
     # 전략 설정 (예시) - 실제로는 config 등에서 로드하여 인스턴스 생성
     
-    # SMA 일봉 전략 설정 (최적화 결과 반영)
+    # SMA 전략 설정 (최적화 결과 반영)
     sma_strategy_params={
         'short_sma_period': 5,          #  4 → 5일 (더 안정적인 단기 이동평균)
         'long_sma_period': 20,          #  10 → 20일 (더 안정적인 장기 이동평균)
         'volume_ma_period': 10,         #  6 → 10일 (거래량 이동평균 기간 확장)
         'num_top_stocks': 5,            #  5 → 3 (집중 투자)
     }
-    strategy_params = {'short_sma_period': 5, 'long_sma_period': 20, 'volume_ma_period': 20, 'num_top_stocks': 10}
+    strategy_params = {
+        'short_sma_period': 5, 
+        'long_sma_period': 20, 
+        'volume_ma_period': 20, 
+        'num_top_stocks': 10
+    }
+    # 전략 인스턴스 생성
     from strategies.sma_strategy import SMAStrategy
     strategy_instance = SMAStrategy(trading_system.brokerage, trading_system.trading_manager, sma_strategy_params)
 
