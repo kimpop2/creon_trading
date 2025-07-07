@@ -3,8 +3,7 @@
 import pymysql
 import logging
 import pandas as pd
-from datetime import datetime, date, timedelta
-from time import time
+from datetime import datetime, date, timedelta, time
 import os
 import sys
 import json # JSON 직렬화를 위해 추가
@@ -151,7 +150,8 @@ class DBManager:
     def execute_sql_file(self, file_name):
         """특정 SQL 파일을 읽어 SQL 쿼리를 실행합니다."""
         # 이 스크립트 파일의 디렉토리를 기준으로 'sql' 하위 디렉토리를 찾습니다.
-        script_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+        script_dir = os.path.join(project_root, 'setup')
         sql_dir = os.path.join(script_dir, 'sql') 
         schema_path = os.path.join(sql_dir, file_name + '.sql')
 
@@ -1069,7 +1069,7 @@ class DBManager:
         except Exception as e:
             logger.error(f"백테스트 성능 지표 조회 오류 (run_id: {run_id}): {e}", exc_info=True)
             return pd.DataFrame()
-# ----------------------------------------------------------------------------
+    # ----------------------------------------------------------------------------
     # 유니버스 관리 테이블
     # ----------------------------------------------------------------------------
     def save_daily_universe(self, daily_universe_data_list: list, target_date: date):
@@ -1216,7 +1216,12 @@ class DBManager:
     # ----------------------------------------------------------------------------
     # 자동매매 관리 테이블
     # ----------------------------------------------------------------------------
+    def create_trading_tables(self):
+        return self.execute_sql_file('create_trading_tables')
 
+    def drop_trading_tables(self):
+        return self.execute_sql_file('drop_trading_tables')
+    
     def save_trading_log(self, log_data: Dict[str, Any]) -> bool:
         """
         하나의 매매 로그를 trading_log 테이블에 저장합니다.
@@ -1224,7 +1229,7 @@ class DBManager:
         """
         sql = """
             INSERT INTO trading_log (
-                order_id, original_order_id, stock_code, stock_name, trade_date, trade_time,
+                order_id, original_order_id, stock_code, stock_name, trading_date, trading_time,
                 order_type, order_price, order_quantity, filled_price, filled_quantity,
                 unfilled_quantity, order_status, commission, tax, net_amount, credit_type
             ) VALUES (
@@ -1236,8 +1241,8 @@ class DBManager:
             log_data.get('original_order_id'),
             log_data.get('stock_code'),
             log_data.get('stock_name'),
-            log_data.get('trade_date'),
-            log_data.get('trade_time'),
+            log_data.get('trading_date'),
+            log_data.get('trading_time'),
             log_data.get('order_type'),
             log_data.get('order_price'),
             log_data.get('order_quantity'),
@@ -1257,32 +1262,35 @@ class DBManager:
             return True
         return False
 
-    def fetch_trading_logs(self, start_date: date, end_date: date, stock_code: Optional[str] = None) -> pd.DataFrame:
+    def fetch_trading_logs(self, start_date: date, end_date: date, stock_code: str = None) -> pd.DataFrame:
         """
         특정 기간의 매매 로그를 조회합니다.
         """
+        conn = self.get_db_connection()
+        if not conn: return pd.DataFrame()
+        
         sql = """
             SELECT * FROM trading_log
-            WHERE trade_date BETWEEN %s AND %s
+            WHERE trading_date BETWEEN %s AND %s
         """
-        params = [start_date, end_date]
+        params = (start_date, end_date)
         if stock_code:
             sql += " AND stock_code = %s"
-            params.append(stock_code)
-        sql += " ORDER BY trade_date, trade_time"
+            params = (start_date, end_date, stock_code)
+        sql += " ORDER BY trading_date, trading_time"
 
-        cursor = self.execute_sql(sql, tuple(params), commit=False)
+        cursor = self.execute_sql(sql, params)
         if cursor:
             df = pd.DataFrame(cursor.fetchall())
             cursor.close()
             if not df.empty:
-                df['trade_date'] = pd.to_datetime(df['trade_date'])
-                # trade_time이 datetime.time 객체인 경우 datetime으로 조합
-                df['trade_datetime'] = df.apply(
-                    lambda row: datetime.combine(row['trade_date'].date(), row['trade_time']) if isinstance(row['trade_time'], time) else row['trade_date'],
+                df['trading_date'] = pd.to_datetime(df['trading_date'])
+                # trading_time이 datetime.time 객체인 경우 datetime으로 조합
+                df['trading_datetime'] = df.apply(
+                    lambda row: datetime.combine(row['trading_date'].date(), row['trading_time']) if isinstance(row['trading_time'], time) else row['trading_date'],
                     axis=1
                 )
-                df.set_index('trade_datetime', inplace=True)
+                df.set_index('trading_datetime', inplace=True)
                 logger.debug(f"거래 로그 {len(df)}건 조회 완료 (기간: {start_date} ~ {end_date}, 종목: {stock_code or '전체'})")
             else:
                 logger.debug(f"조회된 거래 로그가 없습니다 (기간: {start_date} ~ {end_date}, 종목: {stock_code or '전체'})")
@@ -1340,12 +1348,12 @@ class DBManager:
             ORDER BY record_date
         """
         params = (start_date, end_date)
-        cursor = self.execute_sql(sql, params, commit=False)
+        cursor = self.execute_sql(sql, params)
         if cursor:
             df = pd.DataFrame(cursor.fetchall())
             cursor.close()
             if not df.empty:
-                df['record_date'] = pd.to_datetime(df['record_date'])
+                df['record_date'] = pd.to_datetime(df['record_date']).dt.normalize()
                 df.set_index('record_date', inplace=True)
                 logger.debug(f"일별 포트폴리오 {len(df)}건 조회 완료 (기간: {start_date} ~ {end_date})")
             else:
@@ -1360,7 +1368,7 @@ class DBManager:
             ORDER BY record_date DESC
             LIMIT 1
         """
-        cursor = self.execute_sql(sql, commit=False)
+        cursor = self.execute_sql(sql)
         if cursor:
             result = cursor.fetchone()
             cursor.close()
@@ -1378,18 +1386,18 @@ class DBManager:
         """
         sql = """
             INSERT INTO current_positions (
-                stock_code, stock_name, quantity, average_buy_price,
-                current_price, evaluation_profit_loss, evaluation_return_rate, entry_date
+                stock_code, stock_name, quantity, sell_avail_qty, average_buy_price,
+                eval_profit_loss, eval_return_rate, entry_date
             ) VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s
+                %s, %s, %s, %s, %s, %s, %s, %s 
             )
             ON DUPLICATE KEY UPDATE
                 stock_name = VALUES(stock_name),
                 quantity = VALUES(quantity),
+                sell_avail_qty = VALUES(sell_avail_qty),
                 average_buy_price = VALUES(average_buy_price),
-                current_price = VALUES(current_price),
-                evaluation_profit_loss = VALUES(evaluation_profit_loss),
-                evaluation_return_rate = VALUES(evaluation_return_rate),
+                eval_profit_loss = VALUES(eval_profit_loss),
+                eval_return_rate = VALUES(eval_return_rate),
                 entry_date = VALUES(entry_date),
                 last_update = CURRENT_TIMESTAMP
         """
@@ -1397,10 +1405,10 @@ class DBManager:
             position_data.get('stock_code'),
             position_data.get('stock_name'),
             position_data.get('quantity'),
+            position_data.get('sell_avail_qty'),
             position_data.get('average_buy_price'),
-            position_data.get('current_price'),
-            position_data.get('evaluation_profit_loss'),
-            position_data.get('evaluation_return_rate'),
+            position_data.get('eval_profit_loss'),
+            position_data.get('eval_return_rate'),
             position_data.get('entry_date')
         )
         cursor = self.execute_sql(sql, params)
@@ -1431,12 +1439,13 @@ class DBManager:
         현재 보유 중인 모든 종목 정보를 current_positions 테이블에서 조회합니다.
         """
         sql = "SELECT * FROM current_positions"
-        cursor = self.execute_sql(sql, commit=False)
+        cursor = self.execute_sql(sql)
         if cursor:
             results = cursor.fetchall()
             cursor.close()
             if results:
                 logger.debug(f"현재 보유 종목 {len(results)}건 조회 완료.")
+                return list(results)
             else:
                 logger.debug("현재 보유 중인 종목이 없습니다.")
             return results
@@ -1493,7 +1502,7 @@ class DBManager:
             params.append(1 if is_executed else 0)
         sql += " ORDER BY stock_code, signal_type"
 
-        cursor = self.execute_sql(sql, tuple(params), commit=False)
+        cursor = self.execute_sql(sql, tuple(params))
         if cursor:
             results = cursor.fetchall()
             cursor.close()
@@ -1524,7 +1533,7 @@ class DBManager:
             cursor.close()
         return False
 
-    def clear_daily_signals_for_date(self, signal_date: date) -> bool:
+    def clear_daily_signals(self, signal_date: date) -> bool:
         """
         특정 날짜의 모든 매매 신호를 삭제합니다.
         """
