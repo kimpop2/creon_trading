@@ -37,7 +37,10 @@ _trade/
 test_data/
 examples/
 setup/datas/
+<<<<<<< HEAD
 config/
+=======
+>>>>>>> f81702e21992b9dc940c4a6b26d301cdc725a370
 # 최적화 결과 파일들 (일부는 버전 관리에 포함)
 optimizer/results/*.json
 optimizer/results/*.csv

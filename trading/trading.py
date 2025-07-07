@@ -285,7 +285,11 @@ class Trading:
         setattr(self, '_portfolio_updated_today', False)
 
         # Creon API 연결 상태 확인 및 재연결 시도
+<<<<<<< HEAD
         if not self.api_client._check_creon_status():
+=======
+        if not self.creon_api._check_creon_status():
+>>>>>>> f81702e21992b9dc940c4a6b26d301cdc725a370
             logger.warning("Creon API 연결이 끊어졌습니다. 재연결을 시도합니다...")
             if not self.api_client._check_creon_status():
                 self.notifier.send_message("❌ Creon API 연결 실패. 시스템 종료 또는 수동 확인 필요.")
