@@ -135,6 +135,96 @@ class BacktestManager:
         else:
             logger.info("삽입할 새로운 거래일 데이터가 없습니다.")
 
+    # --- 데이터 수집 및 캐싱 관련 메소드 ---
+    def fetch_daily_ohlcv(self, stock_code: str, from_date: date, to_date: date) -> pd.DataFrame:
+        """
+        DB에서 일봉 OHLCV 데이터를 조회합니다.
+        필요시 Creon API를 통해 데이터를 업데이트할 수 있습니다.
+        """
+        df = self.db_manager.fetch_daily_price(stock_code, from_date, to_date)
+        if df.empty:
+            logger.warning(f"DB에 {stock_code}의 일봉 데이터가 없습니다. Creon API를 통해 조회 시도합니다.")
+            # Creon API를 통해 데이터 조회 및 저장 로직 추가
+            # get_price_data는 count 기반이므로, 기간 기반으로 가져오려면 여러 번 호출해야 할 수 있음.
+            # 여기서는 단순화를 위해 마지막 365개 일봉을 가져오는 것으로 가정.
+            df_from_api = self.api_client.get_price_data(stock_code, 'D', (to_date - from_date).days + 1)
+            if not df_from_api.empty:
+                # DB에 저장
+                df_from_api['stock_code'] = stock_code
+                df_from_api['stock_name'] = self.get_stock_name(stock_code)
+                df_from_api.rename(columns={'datetime': 'date'}, inplace=True) # 컬럼명 일치
+                df_from_api['date'] = df_from_api['date'].dt.date # datetime을 date로 변환
+                # DBManager의 insert_df_to_db는 if_exists='append'만 지원하므로, 중복 방지를 위해 직접 SQL 사용
+                conn = self.db_manager.get_db_connection()
+                if conn:
+                    try:
+                        with conn.cursor() as cursor:
+                            for index, row in df_from_api.iterrows():
+                                sql = """
+                                    INSERT INTO daily_price (stock_code, stock_name, date, open, high, low, close, volume)
+                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                                    ON DUPLICATE KEY UPDATE
+                                        open = VALUES(open), high = VALUES(high), low = VALUES(low), close = VALUES(close), volume = VALUES(volume),
+                                        updated_at = CURRENT_TIMESTAMP
+                                """
+                                params = (
+                                    row['stock_code'], row['stock_name'], row['date'],
+                                    row['open'], row['high'], row['low'], row['close'], row['volume']
+                                )
+                                cursor.execute(sql, params)
+                            conn.commit()
+                            logger.info(f"종목 {stock_code}의 일봉 데이터 {len(df_from_api)}건 API 조회 및 DB 업데이트 완료.")
+                            df = self.db_manager.fetch_daily_price(stock_code, from_date, to_date) # 새로 저장된 데이터 다시 로드
+                    except Exception as e:
+                        logger.error(f"일봉 데이터 API 조회 및 DB 저장 중 오류: {e}")
+                        conn.rollback()
+            else:
+                logger.warning(f"Creon API에서도 {stock_code}의 일봉 데이터를 가져올 수 없습니다.")
+        return df
+
+    def fetch_minute_ohlcv(self, stock_code: str, from_datetime: datetime, to_datetime: datetime) -> pd.DataFrame:
+        """
+        DB에서 분봉 OHLCV 데이터를 조회합니다.
+        필요시 Creon API를 통해 데이터를 업데이트할 수 있습니다.
+        """
+        df = self.db_manager.fetch_minute_price(stock_code, from_datetime, to_datetime)
+        if df.empty:
+            logger.warning(f"DB에 {stock_code}의 분봉 데이터가 없습니다. Creon API를 통해 조회 시도합니다.")
+            # Creon API를 통해 데이터 조회 및 저장 로직 추가
+            # get_price_data는 count 기반이므로, 기간 기반으로 가져오려면 여러 번 호출해야 할 수 있음.
+            # 여기서는 편의상 최근 200개 분봉을 가져오는 것으로 가정.
+            df_from_api = self.api_client.get_price_data(stock_code, 'm', 200) # 200분봉
+            if not df_from_api.empty:
+                # DB에 저장
+                df_from_api['stock_code'] = stock_code
+                df_from_api['stock_name'] = self.get_stock_name(stock_code)
+                # DBManager의 insert_df_to_db는 if_exists='append'만 지원하므로, 중복 방지를 위해 직접 SQL 사용
+                conn = self.db_manager.get_db_connection()
+                if conn:
+                    try:
+                        with conn.cursor() as cursor:
+                            for index, row in df_from_api.iterrows():
+                                sql = """
+                                    INSERT INTO minute_price (stock_code, stock_name, datetime, open, high, low, close, volume)
+                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                                    ON DUPLICATE KEY UPDATE
+                                        open = VALUES(open), high = VALUES(high), low = VALUES(low), close = VALUES(close), volume = VALUES(volume),
+                                        updated_at = CURRENT_TIMESTAMP
+                                """
+                                params = (
+                                    row['stock_code'], row['stock_name'], row['datetime'],
+                                    row['open'], row['high'], row['low'], row['close'], row['volume']
+                                )
+                                cursor.execute(sql, params)
+                            conn.commit()
+                            logger.info(f"종목 {stock_code}의 분봉 데이터 {len(df_from_api)}건 API 조회 및 DB 업데이트 완료.")
+                            df = self.db_manager.fetch_minute_price(stock_code, from_datetime, to_datetime) # 새로 저장된 데이터 다시 로드
+                    except Exception as e:
+                        logger.error(f"분봉 데이터 API 조회 및 DB 저장 중 오류: {e}")
+                        conn.rollback()
+            else:
+                logger.warning(f"Creon API에서도 {stock_code}의 분봉 데이터를 가져올 수 없습니다.")
+        return df
 
     def cache_daily_ohlcv(self, stock_code: str, from_date: date, to_date: date) -> pd.DataFrame:
         """

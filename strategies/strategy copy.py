@@ -1,5 +1,3 @@
-# strategy/trading_strategy.py
-
 import abc # Abstract Base Class
 import pandas as pd
 from datetime import datetime, timedelta, date
@@ -14,10 +12,11 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from trading.abstract_broker import AbstractBroker
+from manager.backtest_manager import BacktestManager 
 from manager.trading_manager import TradingManager 
-from util.strategies_util import calculate_sma, calculate_rsi, calculate_ema, calculate_macd
+from util.strategies_util import *
 
-# --- 로거 설정 ---
+# --- 로거 설정 (스크립트 최상단에서 설정하여 항상 보이도록 함) ---
 logger = logging.getLogger(__name__)
 # logger.setLevel(logging.DEBUG) # 테스트 시 DEBUG로 설정하여 모든 로그 출력 - 제거
 
@@ -47,7 +46,7 @@ class BaseStrategy(abc.ABC):
 
 class Strategy(BaseStrategy):
     """통합 전략을 위한 추상 클래스."""
-    def __init__(self, broker: AbstractBroker, data_store, strategy_params: Dict[str, Any]):
+    def __init__(self, broker:AbstractBroker, data_store, strategy_params: Dict[str, Any]):
         super().__init__()
         self.broker = broker
         self.data_store = data_store
@@ -84,38 +83,27 @@ class Strategy(BaseStrategy):
 
     def _reset_all_signals(self):
         """모든 신호를 완전히 초기화합니다. (다음날을 위해)"""
-        self.signals = {}  # 모든 신호를 완전히 삭제
+        self.signals = {}   # 모든 신호를 완전히 삭제
         logging.debug("일봉 전략의 모든 신호를 완전히 초기화했습니다.")
 
-    def reset_signal(self, stock_code: str) -> None:
-        """
-        특정 종목의 신호를 초기화(삭제)하고 DB에서도 해당 신호를 제거합니다.
-        (예: 주문이 완전히 체결되거나 취소되어 더 이상 유효하지 않은 경우)
-        """
+    def reset_signal(self, stock_code):
+        """매매 체결 후 신호 dict를 안전하게 초기화한다."""
         if stock_code in self.signals:
-            signal_id = self.signals[stock_code].get('signal_id')
-            if signal_id:
-                success = self.trading_manager.update_daily_signal_status(signal_id, is_executed=True) # 실행 완료로 표시
-                if success:
-                    del self.signals[stock_code]
-                    logger.info(f"신호 초기화 (실행 완료): {stock_code}")
-                else:
-                    logger.error(f"신호 상태 DB 업데이트 실패: {stock_code}")
-            else: # signal_id가 없는 경우 (예: 임시 신호)
-                del self.signals[stock_code]
-                logger.info(f"신호 초기화 (메모리만): {stock_code}")
-        else:
-            logger.warning(f"초기화할 신호가 없습니다: {stock_code}")
+            self.signals[stock_code]['traded_today'] = True
+            self.signals[stock_code]['target_quantity'] = 0
+            self.signals[stock_code]['target_price'] = 0
+            self.signals[stock_code]['signal'] = None
 
 
     def update_signals(self, signals):
         """
-        전략에서 생성된 신호들을 업데이트합니다.
+        DailyStrategy에서 생성된 신호들을 업데이트합니다.
         """
         self.signals = {
             stock_code: {**info, 'traded_today': False}
             for stock_code, info in signals.items() #### info 에 set() 아이템 설정
         }
+
 
 
     def _generate_signals(self, current_daily_date, buy_candidates, sorted_stocks, sell_candidates=None):
@@ -205,7 +193,9 @@ class Strategy(BaseStrategy):
             
         # 종가를 현재가로 사용
         current_price_daily = self._get_historical_data_up_to('daily', stock_code, current_daily_date, lookback_period=1)['close'].iloc[-1]
-        target_quantity = self._calculate_target_quantity(stock_code, current_price_daily)
+        
+        # _calculate_target_quantity에 current_daily_date 인자 추가
+        target_quantity = self._calculate_target_quantity(stock_code, current_price_daily, current_daily_date)
 
         if target_quantity > 0:
             if stock_code in self.broker.positions:
@@ -215,10 +205,9 @@ class Strategy(BaseStrategy):
                 self.signals[stock_code].update({
                     'signal': 'buy',
                     'target_quantity': target_quantity,
-                    'target_price': current_price_daily  # 목표가격 추가 (전일 종가)
+                    'target_price': current_price_daily   # 목표가격 추가 (전일 종가)
                 })
                 logging.info(f'매수 신호 - {stock_code}: 목표수량 {target_quantity}주, 목표가격 {current_price_daily:,.0f}원 (전일 종가)')
-
 
     def _handle_hold_candidate(self, stock_code, current_daily_date):
         """홀딩 대상 종목에 대한 신호를 처리합니다."""
@@ -273,14 +262,13 @@ class Strategy(BaseStrategy):
             
         self.signals[stock_code].update({
             'signal': 'sell',
-            'target_price': current_price_daily  # 목표가격 추가 (전일 종가)
+            'target_price': current_price_daily   # 목표가격 추가 (전일 종가)
         })
         
         if stock_code in current_positions:
             logging.info(f'매도 신호 - {stock_code} (보유중): 목표가격 {current_price_daily:,.0f}원 (전일 종가)')
         else:
             logging.debug(f'매도 신호 - {stock_code} (미보유): 목표가격 {current_price_daily:,.0f}원 (전일 종가)')
-
 
     # 모멘텀 전략으로 보낼 것 -> 관심종목 필터링으로 용도변경경
     def _select_buy_candidates(self, momentum_scores, safe_asset_momentum):
@@ -293,37 +281,31 @@ class Strategy(BaseStrategy):
                 buy_candidates.add(stock_code)
 
         return buy_candidates, sorted_stocks
-    
 
-    def _get_bar_at_time(self, data_type: str, stock_code: str, target_dt: datetime) -> Optional[Dict[str, Any]]:
-        """
-        주어진 시간(target_dt)에 해당하는 정확한 OHLCV 바를 TradingManager에서 가져와 반환합니다.
-        """
+
+    def _get_bar_at_time(self, data_type, stock_code, target_dt):
+        """주어진 시간(target_dt)에 해당하는 정확한 OHLCV 바를 반환합니다."""
         if data_type == 'daily':
-            # 일봉 데이터는 TradingManager에서 특정 날짜의 데이터를 요청
-            df = self.trading_manager.fetch_daily_ohlcv(stock_code, target_dt.date(), target_dt.date())
-            if not df.empty:
-                # 인덱스를 datetime으로 변경하여 정확한 날짜 매칭
-                df.index = pd.to_datetime(df['date'])
-                if target_dt.date() in df.index.date:
-                    # 해당 날짜의 데이터 (첫 번째 행만 가져옴)
-                    row = df[df['date'] == target_dt.date()].iloc[0]
-                    return row.to_dict()
-            return None
-
+            df = self.data_store['daily'].get(stock_code)
+            if df is None or df.empty:
+                return None
+            try:
+                target_dt_normalized = pd.Timestamp(target_dt).normalize()
+                return df.loc[target_dt_normalized]
+            except KeyError:
+                return None
         elif data_type == 'minute':
-            # 분봉 데이터는 TradingManager에서 특정 시간의 데이터를 요청
-            # 보통은 target_dt.date()와 target_dt.time()으로 정확한 분봉을 찾음
-            df = self.trading_manager.fetch_minute_ohlcv(stock_code, target_dt, target_dt)
-            if not df.empty:
-                # 정확히 해당 datetime과 일치하는 행을 찾음
-                row = df[df['datetime'] == target_dt].iloc[0]
-                return row.to_dict()
-            return None
-
-        else:
-            logger.error(f"알 수 없는 데이터 타입: {data_type}")
-            return None
+            target_date = target_dt.date()
+            if stock_code not in self.data_store['minute'] or target_date not in self.data_store['minute'][stock_code]:
+                return None
+            df = self.data_store['minute'][stock_code][target_date]
+            if df is None or df.empty:
+                return None
+            try:
+                return df.loc[target_dt]
+            except KeyError:
+                return None
+        return None
 
 
     def _get_historical_data_up_to(self, data_type, stock_code, current_dt, lookback_period=None):
@@ -356,13 +338,14 @@ class Strategy(BaseStrategy):
         return pd.DataFrame()
 
 
-    def _calculate_target_quantity(self, stock_code, current_price, num_stocks=None):
+    def _calculate_target_quantity(self, stock_code, current_price, current_daily_date, num_stocks=None):
         """
         주어진 가격에서 동일비중 투자에 필요한 수량을 계산합니다.
         
         Args:
             stock_code (str): 종목 코드
             current_price (float): 현재 가격
+            current_daily_date (datetime): 백테스트/시뮬레이션 중인 현재 일봉 날짜
             num_stocks (int, optional): 분배할 종목 수. None인 경우 strategy_params['num_top_stocks'] 사용
             
         Returns:
@@ -375,14 +358,14 @@ class Strategy(BaseStrategy):
         # 현재가 정보 수집 (일봉 데이터 기준)
         current_prices_for_summary = {}
         for code in self.data_store['daily']:
-            daily_data = self._get_historical_data_up_to('daily', code, pd.Timestamp.today(), lookback_period=1)
+            # pd.Timestamp.today() 대신 백테스트 날짜를 사용하도록 수정
+            daily_data = self._get_historical_data_up_to('daily', code, current_daily_date, lookback_period=1)
             if not daily_data.empty:
                 current_prices_for_summary[code] = daily_data['close'].iloc[-1]
-
-        portfolio_value = self.brokerage.get_portfolio_value(current_prices_for_summary)
+        portfolio_value = self.broker.get_portfolio_value(current_prices_for_summary)
         per_stock_investment = portfolio_value / num_stocks
-        available_cash = self.brokerage.cash
-        commission_rate = self.brokerage.commission_rate
+        available_cash = self.broker.initial_cash
+        commission_rate = self.broker.commission_rate
         max_buyable_amount = available_cash / (1 + commission_rate)
         actual_investment_amount = min(per_stock_investment, max_buyable_amount)
         quantity = int(actual_investment_amount / current_price)
@@ -401,7 +384,6 @@ class Strategy(BaseStrategy):
         """리밸런싱 요약을 로깅합니다."""
         if sell_candidates is None:
             sell_candidates = set()
-            
         logging.info(f'[{current_daily_date}] === 리밸런싱 요약 ===')
         logging.info(f'매수 후보: {len(buy_candidates)}개 - {sorted(buy_candidates)}')
         logging.info(f'매도 후보: {len(sell_candidates)}개 - {sorted(sell_candidates)}')

@@ -7,14 +7,19 @@ logger = logging.getLogger(__name__)
 # logger.setLevel(logging.DEBUG) # 테스트 시 DEBUG로 설정하여 모든 로그 출력 - 제거
 
 class Broker(AbstractBroker):
-    def __init__(self, initial_cash:float=10_000_000):
+    """
+    실제 증권사 API (Creon)를 통해 매매를 실행하는 브로커 구현체입니다.
+    AbstractBroker를 상속받아 실제 주문, 잔고 조회, 포지션 관리를 수행합니다.
+    """
+    def __init__(self, manager, initial_cash:float=10_000_000):
         super().__init__()
         self.initial_cash = initial_cash
-        self.positions = {}  # {stock_code: {'size': int, 'avg_price': float, 'entry_date': datetime.date, 'highest_price': float}}
-        self.transaction_log = [] # (date, stock_code, type, price, quantity, commission, net_amount)
         self.commission_rate = 0.00165 # 매도시에만 부과
         self.stop_loss_params = None
         self.initial_portfolio_value = initial_cash # 포트폴리오 손절을 위한 초기값
+        self.positions = {}  # {stock_code: {'size': int, 'avg_price': float, 'entry_date': datetime.date, 'highest_price': float}}
+        self.transaction_log = [] # (date, stock_code, type, price, quantity, commission, net_amount)
+
         logging.info(f"브로커 초기화: 초기 현금 {self.initial_cash:,.0f}원, 수수료율 {self.commission_rate*100:.2f}%")
 
     def set_stop_loss_params(self, stop_loss_params):
@@ -83,36 +88,6 @@ class Broker(AbstractBroker):
                 return False
         return False
 
-    def get_position_size(self, stock_code):
-        """특정 종목의 보유 수량을 반환합니다."""
-        return self.positions.get(stock_code, {}).get('size', 0)
-
-    def get_portfolio_value(self, current_prices):
-        """현재 포트폴리오의 총 가치를 계산하여 반환합니다."""
-        holdings_value = 0
-        for stock_code, pos_info in self.positions.items():
-            if stock_code in current_prices:
-                holdings_value += pos_info['size'] * current_prices[stock_code]
-            else:
-                # 데이터가 없는 경우, 마지막 유효 가격 또는 평균 단가 사용
-                logging.warning(f"경고: {stock_code}의 현재 가격 데이터가 없습니다. 보유 포지션 가치 계산에 문제 발생 가능.")
-                holdings_value += pos_info['size'] * pos_info['avg_price'] # 대안으로 평균 단가 사용
-
-        return self.initial_cash + holdings_value
-
-    def _update_highest_price(self, stock_code, current_price):
-        """포지션의 최고가를 업데이트합니다 (트레일링 스탑을 위해)."""
-        if stock_code in self.positions: # Broker의 positions를 직접 사용
-            if current_price > self.positions[stock_code]['highest_price']:
-                self.positions[stock_code]['highest_price'] = current_price
-
-    def _calculate_loss_ratio(self, current_price: float, avg_price: float) -> float:
-        """손실률을 계산합니다. 퍼센트 단위로 반환합니다."""
-        return (current_price - avg_price) / avg_price * 100
-
-    def _calculate_change_price_ratio(self, current_price: float, avg_price: float) -> float:
-        """손실률을 계산합니다. 퍼센트 단위로 반환합니다."""
-        return (current_price - avg_price) / avg_price * 100
 
     def check_and_execute_stop_loss(self, stock_code, current_price, current_dt):
         """
@@ -218,6 +193,40 @@ class Broker(AbstractBroker):
             #     else:
             #         logging.warning(f"[포트폴리오 청산] {stock_code}의 현재가 정보가 없어 매도 실행을 건너뜁니다.")
             #         return False
+
+
+
+    def get_position_size(self, stock_code):
+        """특정 종목의 보유 수량을 반환합니다."""
+        return self.positions.get(stock_code, {}).get('size', 0)
+
+    def get_portfolio_value(self, current_prices):
+        """현재 포트폴리오의 총 가치를 계산하여 반환합니다."""
+        holdings_value = 0
+        for stock_code, pos_info in self.positions.items():
+            if stock_code in current_prices:
+                holdings_value += pos_info['size'] * current_prices[stock_code]
+            else:
+                # 데이터가 없는 경우, 마지막 유효 가격 또는 평균 단가 사용
+                logging.warning(f"경고: {stock_code}의 현재 가격 데이터가 없습니다. 보유 포지션 가치 계산에 문제 발생 가능.")
+                holdings_value += pos_info['size'] * pos_info['avg_price'] # 대안으로 평균 단가 사용
+
+        return self.initial_cash + holdings_value
+
+    def _update_highest_price(self, stock_code, current_price):
+        """포지션의 최고가를 업데이트합니다 (트레일링 스탑을 위해)."""
+        if stock_code in self.positions: # Broker의 positions를 직접 사용
+            if current_price > self.positions[stock_code]['highest_price']:
+                self.positions[stock_code]['highest_price'] = current_price
+
+    def _calculate_loss_ratio(self, current_price: float, avg_price: float) -> float:
+        """손실률을 계산합니다. 퍼센트 단위로 반환합니다."""
+        return (current_price - avg_price) / avg_price * 100
+
+    def _calculate_change_price_ratio(self, current_price: float, avg_price: float) -> float:
+        """손실률을 계산합니다. 퍼센트 단위로 반환합니다."""
+        return (current_price - avg_price) / avg_price * 100
+
                 
     def reset_daily_transactions(self):
         """일일 거래 초기화를 수행합니다. 현재는 빈 메서드로 두어 향후 확장 가능하도록 합니다."""

@@ -551,7 +551,8 @@ class CreonAPIClient:
 
     def get_stock_code(self, find_name: str) -> Optional[str]:
         """종목명으로 종목목코드를 반환 합니다."""
-        return self.stock_name_dic.get(find_name, None)
+        # 종목명에 대한 종목코드가 없다면 종목코드를 넣은 것으로 판단, 종목명==종목코드 그대로 리턴
+        return self.stock_name_dic.get(find_name, find_name) 
     
     def get_price_data(self, code: str, period: str, count: int) -> pd.DataFrame:
         """

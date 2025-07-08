@@ -19,7 +19,7 @@ from trading.trading_report import TradingReport # Reporter 타입 힌트를 위
 from api.creon_api import CreonAPIClient
 from manager.db_manager import DBManager
 from manager.trading_manager import TradingManager
-from strategies.trading_strategy import Strategy
+from strategies.strategy import Strategy
 from util.notifier import Notifier
 # --- 로거 설정 ---
 logger = logging.getLogger(__name__)
@@ -521,6 +521,7 @@ if __name__ == "__main__":
     # 전략 인스턴스 생성
     from strategies.sma_strategy import SMAStrategy
     strategy_instance = SMAStrategy(broker=trading_system.broker, 
+                                    manager=trading_system.manager, 
                                     data_store=trading_system.data_store, 
                                     strategy_params=SMA_PARAMS)
     trading_system.set_strategies(strategy=strategy_instance) # 임시로 전략 없음

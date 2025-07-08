@@ -51,28 +51,34 @@ PORTFOLIO_UPDATE_TIME = "16:00:00"
 # --- 전략 파라미터 ---
 # 각 전략에 대한 파라미터를 딕셔너리 형태로 정의합니다.
 
-# SMADaily 전략 파라미터
+# SMA 전략 파라미터 설정 예시
 SMA_PARAMS = {
-    'short_sma_period': 5,          # 단기 이동평균 기간
-    'long_sma_period': 20,          # 장기 이동평균 기간
-    'volume_ma_period': 20,         # 거래량 이동평균 기간
-    'num_top_stocks': 10,           # 매수 후보 상위 종목 수
-    'minute_rsi_period': 35,        #  5 → 52분 (더 안정적인 RSI)
-    'minute_rsi_oversold': 34,      # 30 → 34 (매수 조건 보수적)
-    'minute_rsi_overbought': 70,    # 60 → 70 (매도 조건 보수적)
-    # 미적용
-    'min_holding_days': 3,          # 매도 후보 선정 시 최소 홀딩 일수
-    'buy_capital_ratio': 0.1        # 매수 시 총 현금 자산의 비율 (10%) 예: 남은 현금 5천만원의 10% (5백만원)을 매수에 사용
+    'short_sma_period': 5,          # 단기 이동평균선 기간 (일봉)
+    'long_sma_period': 20,          # 장기 이동평균선 기간 (일봉)
+    'volume_ma_period': 20,         # 거래량 이동평균선 기간 (일봉)
+    'minute_rsi_period': 14,        # 분봉 RSI 기간
+    'minute_rsi_oversold': 30,      # 분봉 RSI 과매도 기준
+    'minute_rsi_overbought': 70,    # 분봉 RSI 과매수 기준
+    'num_top_stocks': 5,            # 매매 대상 상위 종목 수
+    'min_trade_minute': 570,        # 하루 중 매매를 시작할 최소 시간 (분 단위, 예: 9시 30분 = 9*60 + 30 = 570)
+    'max_deviation_ratio': 2.0,     # 전일 종가 대비 최대 허용 진입 가격 괴리율 (%)
+
+    # 시장 장세 필터 관련 파라미터 추가
+    'market_index_code': 'A000660',  # 시장 대표 지수 종목 코드 (예: 삼성전자, 코스피 200 ETF 등 실제 데이터가 있는 종목)
+                                    # 실제 백테스트 환경에 맞는 시장 지수 종목 코드를 사용해야 합니다.
+    'market_trend_sma_period': 50, # 시장 추세를 판단할 장기 이동평균선 기간 (예: 120일 또는 200일)
+    'restrict_buy_in_bear_market': True # 약세장에서 매수 신호를 제한할지 여부 (True/False)
 }
-# 손절매 파라미터 설정 (선택사항)
+
+# 손절매 파라미터 설정 예시 (선택 사항)
 STOP_LOSS_PARAMS = {
-    'take_profit_ratio': 20,       # 매수 후 익절
-    'early_stop_loss': -5,        # 매수 후 초기 손실 제한: -3.5% (매수 후 3일 이내)
-    'stop_loss_ratio': -10,        # 매수가 기준 손절율: -6.0%
-    'trailing_stop_ratio': -7,    # 최고가 기준 트레일링 손절률: -4.0%
-    'portfolio_stop_loss': -4,    # 전체 자본금 손실률 (전량매도 조건): -4.0%
-    'max_losing_positions': 4       # 최대 손절 종목 수 (전량매도 조건): 3개
-}  
+    'stop_loss_ratio': -5.0,        # 단순 손절매 비율 (예: -5% 손실 시 손절)
+    'trailing_stop_ratio': -2.0,    # 트레일링 스탑 비율 (최고가 대비 -2% 하락 시 손절)
+    'early_stop_loss': -3.0,        # 조기 손절매 (매수 후 3일 이내 -3% 손실 시 손절)
+    'take_profit_ratio': 10.0,      # 익절 비율 (예: 10% 수익 시 익절)
+    'portfolio_stop_loss': -10.0,   # 포트폴리오 전체 손실률 기준 (예: -10% 손실 시 전체 청산)
+    'max_losing_positions': 3       # 손실 중인 종목 수 기준 (예: 3개 이상 손실 종목 발생 시 전체 청산)
+}
 # RSIMinute 전략 파라미터
 # RSIMINUTE_PARAMS = {
 #     'minute_rsi_period': 14,                # 분봉 RSI 계산 기간

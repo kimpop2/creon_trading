@@ -30,6 +30,8 @@ class Brokerage(AbstractBroker):
         self.notifier = notifier # 알림 객체 주입
         self.initial_cash=initial_cash
         self.commission_rate = 0.00165 # 매도시에만 부과
+        self.stop_loss_params = None
+        self.initial_portfolio_value = initial_cash # 포트폴리오 손절을 위한 초기값
         # 현재 포지션 및 잔고는 API를 통해 실시간으로 조회하고 DB에 동기화.
         # 내부적으로 캐시할 수도 있으나, 항상 최신 정보는 API에서 가져오는 것을 우선.
         self.positions = {}  # {stock_code: {'size': int, 'avg_price': float, 'entry_date': datetime.date, 'highest_price': float}}
@@ -44,7 +46,7 @@ class Brokerage(AbstractBroker):
         # 주문 요청 응답 콜백도 등록 (필요시)
         # self.api_client.set_order_reply_callback(self.handle_order_reply)
 
-        logger.info("Brokerage 초기화 완료: CreonAPIClient, TradingManager 연결")
+        logging.info(f"브로커 초기화: 초기 현금 {self.initial_cash:,.0f}원, 수수료율 {self.commission_rate*100:.2f}%")
         self.sync_account_status() # 초기 계좌 상태 동기화
     
     def set_stop_loss_params(self, stop_loss_params):
@@ -54,36 +56,7 @@ class Brokerage(AbstractBroker):
         self.stop_loss_params = stop_loss_params
         logging.info(f"브로커 손절매 파라미터 설정 완료: {stop_loss_params}")
 
-    def sync_account_status(self):
-        """
-        Creon API로부터 최신 계좌 잔고, 보유 종목, 미체결 주문 정보를 가져와
-        내부 캐시를 업데이트하고 DB에 동기화합니다.
-        TradingManager의 메소드를 활용하여 DB 동기화를 수행합니다.
-        """
-        logger.info("계좌 상태 동기화 시작...")
-        # 1. 현금 잔고 업데이트
-        balance_info = self.manager.get_account_balance()
-        if balance_info:
-            self._current_cash_balance = balance_info.get('cash_balance', 0.0)
-            # CreonAPIClient에 초기 예수금 설정 (TradingManager에서 가져온 값으로)
-            self.api_client.initial_deposit = balance_info.get('deposit', 0.0) # 예수금으로 설정
-            logger.info(f"현금 잔고 업데이트: {self._current_cash_balance:,.0f}원, 예수금: {self.api_client.initial_deposit:,.0f}원")
-        else:
-            logger.warning("현금 잔고 조회 실패. 0으로 초기화합니다.")
-            self._current_cash_balance = 0.0
-            self.api_client.initial_deposit = 0.0
-
-        # 2. 보유 종목 업데이트 (DB 동기화는 TradingManager 내부에서 처리)
-        # self._current_positions는 딕셔너리 형태로 저장
-        api_positions_list = self.manager.get_open_positions() # TradingManager가 DB 동기화 후 반환
-        self._current_positions = {pos['stock_code']: pos for pos in api_positions_list}
-        logger.info(f"보유 종목 {len(self._current_positions)}건 업데이트 및 DB 동기화 완료.")
-
-        # 3. 미체결 주문 업데이트
-        self._unfilled_orders = self.manager.get_unfilled_orders()
-        logger.info(f"미체결 주문 {len(self._unfilled_orders)}건 업데이트 완료.")
-        logger.info("계좌 상태 동기화 완료.")
-
+        
     def execute_order(self,
                       stock_code: str,
                       order_type: str, # 'buy', 'sell'
@@ -150,6 +123,129 @@ class Brokerage(AbstractBroker):
             self.notifier.send_message(f"❌ 주문 실패: {stock_name}({stock_code}) {order_type.upper()} {quantity}주")
             logger.error(f"주문 실패: {stock_code}")
             return None
+
+
+
+    def check_and_execute_stop_loss(self, current_prices: Dict[str, float], current_dt: datetime) -> bool:
+        """
+        설정된 손절매/익절매 조건을 확인하고 해당되는 경우 매도 주문을 실행합니다.
+        (backtest.Broker의 로직을 Real Brokerage에 맞게 수정)
+        """
+        # stop_loss_params는 TradingStrategy에서 설정되므로, TradingStrategy에서 전달받거나
+        # TradingManager를 통해 관리하는 것이 더 적합할 수 있습니다.
+        # 여기서는 임시로 매번 최신 포지션 정보를 가져와서 계산합니다.
+        positions = self.get_current_positions()
+        executed_any_stop_loss = False
+
+        for stock_code, pos_info in positions.items():
+            quantity = pos_info.get('quantity', 0)
+            avg_price = pos_info.get('average_buy_price', 0)
+            entry_date = pos_info.get('entry_date', date.today())
+            current_price = current_prices.get(stock_code)
+
+            if quantity <= 0 or current_price is None or current_price == 0:
+                continue
+
+            # TODO: 손절매 파라미터는 TradingStrategy (또는 Trading 클래스)에서 관리하고,
+            # 이곳으로 전달되어야 합니다. 현재는 하드코딩된 예시.
+            # 실제 파라미터는 `strategy_params`나 전역 설정에서 로드될 것입니다.
+            stop_loss_params = {
+                'take_profit_ratio': 0.20,       # 20% 익절
+                'early_stop_loss': -0.05,        # 매수 후 초기 손실 제한: -5% (예: 매수 후 3일 이내)
+                'stop_loss_ratio': -0.10,        # 매수가 기준 손절율: -10%
+                'trailing_stop_ratio': -0.07,    # 최고가 기준 트레일링 손절률: -7%
+            }
+
+            profit_loss_ratio = (current_price - avg_price) / avg_price if avg_price != 0 else 0
+
+            # 익절 조건 (take_profit_ratio)
+            if profit_loss_ratio >= stop_loss_params['take_profit_ratio']:
+                logger.info(f"[익절] {stock_code} - {profit_loss_ratio:.2%} 수익, 매도.")
+                self.execute_order(stock_code, 'sell', current_price, quantity, current_dt)
+                executed_any_stop_loss = True
+                self.notifier.send_message(f"💰 익절: {stock_code} {quantity}주 ({profit_loss_ratio:.2%})")
+                continue
+
+            # 초기 손실 제한 (early_stop_loss) - 예: 매수 후 3일 이내
+            holding_days = (current_dt.date() - entry_date).days
+            if holding_days <= 3 and profit_loss_ratio <= stop_loss_params['early_stop_loss']:
+                logger.info(f"[초기 손절] {stock_code} - {profit_loss_ratio:.2%} 손실, 매도.")
+                self.execute_order(stock_code, 'sell', current_price, quantity, current_dt)
+                executed_any_stop_loss = True
+                self.notifier.send_message(f"📉 초기 손절: {stock_code} {quantity}주 ({profit_loss_ratio:.2%})")
+                continue
+
+            # 일반 손절 조건 (stop_loss_ratio)
+            if profit_loss_ratio <= stop_loss_params['stop_loss_ratio']:
+                logger.info(f"[손절] {stock_code} - {profit_loss_ratio:.2%} 손실, 매도.")
+                self.execute_order(stock_code, 'sell', current_price, quantity, current_dt)
+                executed_any_stop_loss = True
+                self.notifier.send_message(f"🚨 손절: {stock_code} {quantity}주 ({profit_loss_ratio:.2%})")
+                continue
+
+            # 트레일링 스탑 (trailing_stop_ratio)
+            # 최고가 정보는 `current_positions`에 `highest_price`로 저장되어야 함.
+            highest_price = pos_info.get('highest_price', avg_price) # 최고가 없으면 평단가로 시작
+            if current_price > highest_price: # 현재가가 최고가보다 높으면 갱신
+                pos_info['highest_price'] = current_price
+                # DB에도 이 정보가 업데이트되어야 함. (trading_manager.update_current_positions)
+                self.manager.update_current_positions(pos_info)
+            elif current_price < highest_price * (1 + stop_loss_params['trailing_stop_ratio']): # 트레일링 손절 조건
+                logger.info(f"[트레일링 스탑] {stock_code} - 최고가 대비 하락, 매도.")
+                self.execute_order(stock_code, 'sell', current_price, quantity, current_dt)
+                executed_any_stop_loss = True
+                self.notifier.send_message(f"🛑 트레일링 스탑: {stock_code} {quantity}주")
+                continue
+
+
+        # TODO: 포트폴리오 전체 손절매 로직 추가
+        # (check_and_execute_stop_loss 내부에서 _check_portfolio_stop_loss_conditions 호출)
+        # 이 부분은 Backtest Broker의 로직을 참고하여 구현.
+        # 이 함수는 Brokerage 내부에서 전체 포트폴리오를 평가하여 청산 결정을 내릴 수 있습니다.
+        # 예시:
+        # if self._check_portfolio_stop_loss_conditions(current_prices, current_dt):
+        #     self._execute_portfolio_sellout(current_prices, current_dt)
+        #     executed_any_stop_loss = True
+
+        return executed_any_stop_loss
+    
+    def execute_time_cut_sell(self,
+                              stock_code: str,
+                              current_price: float,
+                              current_position_size: int,
+                              current_dt: datetime,
+                              max_price_diff_ratio: float = 0.01
+                              ) -> bool:
+        """
+        타임컷 강제 매도 로직을 실행합니다.
+        이 함수는 `RSIMinute` 등의 분봉 전략에서 사용될 수 있습니다.
+        """
+        # 현재 보유하고 있는 해당 종목에 대한 매수 신호가 있는지 확인 (아직 체결되지 않은 신호)
+        if stock_code not in self.signals or self.signals[stock_code]['signal_type'] != 'BUY':
+            logger.debug(f"[타임컷] {stock_code}: 매수 신호가 없거나 다른 신호임. 타임컷 건너뜀.")
+            return False
+
+        # 해당 매수 신호의 목표가
+        target_price = self.signals[stock_code].get('target_price')
+
+        if target_price is None or target_price <= 0:
+            logger.warning(f"[타임컷] {stock_code}: 유효한 목표 가격이 없습니다. 타임컷 매도 건너뜀.")
+            return False
+
+        # 목표가와 현재가 간의 괴리율 계산
+        price_diff_ratio = abs(target_price - current_price) / target_price
+
+        if price_diff_ratio <= max_price_diff_ratio:
+            logger.info(f'[타임컷 강제매도] {current_dt.isoformat()} - {stock_code} 목표가: {target_price:,.0f}, 현재가: {current_price:,.0f}, 괴리율: {price_diff_ratio:.2%}. 매도 실행.')
+            # broker 대신 brokerage 사용
+            self.execute_order(stock_code, 'sell', current_price, current_position_size, current_dt)
+            self.reset_signal(stock_code) # 신호 처리 완료
+            return True
+        else:
+            logger.info(f'[타임컷 미체결] {current_dt.isoformat()} - {stock_code} 목표가: {target_price:,.0f}, 현재가: {current_price:,.0f}, 괴리율: {price_diff_ratio:.2%} ({max_price_diff_ratio:.1%} 초과).')
+            return False
+
+
 
     def cancel_order(self, order_id: str, stock_code: str, quantity: int = 0) -> bool:
         """
@@ -283,125 +379,6 @@ class Brokerage(AbstractBroker):
         else:
             logger.error(f"포트폴리오 상태 DB 저장 실패: {current_dt.date()}")
 
-    def check_and_execute_stop_loss(self, current_prices: Dict[str, float], current_dt: datetime) -> bool:
-        """
-        설정된 손절매/익절매 조건을 확인하고 해당되는 경우 매도 주문을 실행합니다.
-        (backtest.Broker의 로직을 Real Brokerage에 맞게 수정)
-        """
-        # stop_loss_params는 TradingStrategy에서 설정되므로, TradingStrategy에서 전달받거나
-        # TradingManager를 통해 관리하는 것이 더 적합할 수 있습니다.
-        # 여기서는 임시로 매번 최신 포지션 정보를 가져와서 계산합니다.
-        positions = self.get_current_positions()
-        executed_any_stop_loss = False
-
-        for stock_code, pos_info in positions.items():
-            quantity = pos_info.get('quantity', 0)
-            avg_price = pos_info.get('average_buy_price', 0)
-            entry_date = pos_info.get('entry_date', date.today())
-            current_price = current_prices.get(stock_code)
-
-            if quantity <= 0 or current_price is None or current_price == 0:
-                continue
-
-            # TODO: 손절매 파라미터는 TradingStrategy (또는 Trading 클래스)에서 관리하고,
-            # 이곳으로 전달되어야 합니다. 현재는 하드코딩된 예시.
-            # 실제 파라미터는 `strategy_params`나 전역 설정에서 로드될 것입니다.
-            stop_loss_params = {
-                'take_profit_ratio': 0.20,       # 20% 익절
-                'early_stop_loss': -0.05,        # 매수 후 초기 손실 제한: -5% (예: 매수 후 3일 이내)
-                'stop_loss_ratio': -0.10,        # 매수가 기준 손절율: -10%
-                'trailing_stop_ratio': -0.07,    # 최고가 기준 트레일링 손절률: -7%
-            }
-
-            profit_loss_ratio = (current_price - avg_price) / avg_price if avg_price != 0 else 0
-
-            # 익절 조건 (take_profit_ratio)
-            if profit_loss_ratio >= stop_loss_params['take_profit_ratio']:
-                logger.info(f"[익절] {stock_code} - {profit_loss_ratio:.2%} 수익, 매도.")
-                self.execute_order(stock_code, 'sell', current_price, quantity, current_dt)
-                executed_any_stop_loss = True
-                self.notifier.send_message(f"💰 익절: {stock_code} {quantity}주 ({profit_loss_ratio:.2%})")
-                continue
-
-            # 초기 손실 제한 (early_stop_loss) - 예: 매수 후 3일 이내
-            holding_days = (current_dt.date() - entry_date).days
-            if holding_days <= 3 and profit_loss_ratio <= stop_loss_params['early_stop_loss']:
-                logger.info(f"[초기 손절] {stock_code} - {profit_loss_ratio:.2%} 손실, 매도.")
-                self.execute_order(stock_code, 'sell', current_price, quantity, current_dt)
-                executed_any_stop_loss = True
-                self.notifier.send_message(f"📉 초기 손절: {stock_code} {quantity}주 ({profit_loss_ratio:.2%})")
-                continue
-
-            # 일반 손절 조건 (stop_loss_ratio)
-            if profit_loss_ratio <= stop_loss_params['stop_loss_ratio']:
-                logger.info(f"[손절] {stock_code} - {profit_loss_ratio:.2%} 손실, 매도.")
-                self.execute_order(stock_code, 'sell', current_price, quantity, current_dt)
-                executed_any_stop_loss = True
-                self.notifier.send_message(f"🚨 손절: {stock_code} {quantity}주 ({profit_loss_ratio:.2%})")
-                continue
-
-            # 트레일링 스탑 (trailing_stop_ratio)
-            # 최고가 정보는 `current_positions`에 `highest_price`로 저장되어야 함.
-            highest_price = pos_info.get('highest_price', avg_price) # 최고가 없으면 평단가로 시작
-            if current_price > highest_price: # 현재가가 최고가보다 높으면 갱신
-                pos_info['highest_price'] = current_price
-                # DB에도 이 정보가 업데이트되어야 함. (trading_manager.update_current_positions)
-                self.manager.update_current_positions(pos_info)
-            elif current_price < highest_price * (1 + stop_loss_params['trailing_stop_ratio']): # 트레일링 손절 조건
-                logger.info(f"[트레일링 스탑] {stock_code} - 최고가 대비 하락, 매도.")
-                self.execute_order(stock_code, 'sell', current_price, quantity, current_dt)
-                executed_any_stop_loss = True
-                self.notifier.send_message(f"🛑 트레일링 스탑: {stock_code} {quantity}주")
-                continue
-
-
-        # TODO: 포트폴리오 전체 손절매 로직 추가
-        # (check_and_execute_stop_loss 내부에서 _check_portfolio_stop_loss_conditions 호출)
-        # 이 부분은 Backtest Broker의 로직을 참고하여 구현.
-        # 이 함수는 Brokerage 내부에서 전체 포트폴리오를 평가하여 청산 결정을 내릴 수 있습니다.
-        # 예시:
-        # if self._check_portfolio_stop_loss_conditions(current_prices, current_dt):
-        #     self._execute_portfolio_sellout(current_prices, current_dt)
-        #     executed_any_stop_loss = True
-
-        return executed_any_stop_loss
-    
-    def execute_time_cut_sell(self,
-                              stock_code: str,
-                              current_price: float,
-                              current_position_size: int,
-                              current_dt: datetime,
-                              max_price_diff_ratio: float = 0.01
-                              ) -> bool:
-        """
-        타임컷 강제 매도 로직을 실행합니다.
-        이 함수는 `RSIMinute` 등의 분봉 전략에서 사용될 수 있습니다.
-        """
-        # 현재 보유하고 있는 해당 종목에 대한 매수 신호가 있는지 확인 (아직 체결되지 않은 신호)
-        if stock_code not in self.signals or self.signals[stock_code]['signal_type'] != 'BUY':
-            logger.debug(f"[타임컷] {stock_code}: 매수 신호가 없거나 다른 신호임. 타임컷 건너뜀.")
-            return False
-
-        # 해당 매수 신호의 목표가
-        target_price = self.signals[stock_code].get('target_price')
-
-        if target_price is None or target_price <= 0:
-            logger.warning(f"[타임컷] {stock_code}: 유효한 목표 가격이 없습니다. 타임컷 매도 건너뜀.")
-            return False
-
-        # 목표가와 현재가 간의 괴리율 계산
-        price_diff_ratio = abs(target_price - current_price) / target_price
-
-        if price_diff_ratio <= max_price_diff_ratio:
-            logger.info(f'[타임컷 강제매도] {current_dt.isoformat()} - {stock_code} 목표가: {target_price:,.0f}, 현재가: {current_price:,.0f}, 괴리율: {price_diff_ratio:.2%}. 매도 실행.')
-            # broker 대신 brokerage 사용
-            self.execute_order(stock_code, 'sell', current_price, current_position_size, current_dt)
-            self.reset_signal(stock_code) # 신호 처리 완료
-            return True
-        else:
-            logger.info(f'[타임컷 미체결] {current_dt.isoformat()} - {stock_code} 목표가: {target_price:,.0f}, 현재가: {current_price:,.0f}, 괴리율: {price_diff_ratio:.2%} ({max_price_diff_ratio:.1%} 초과).')
-            return False
-
     # --- 실시간 체결/잔고 업데이트 콜백 핸들러 (Creon API 연동) ---
     def handle_order_conclusion(self, conclusion_data: Dict[str, Any]):
         """
@@ -516,3 +493,34 @@ class Brokerage(AbstractBroker):
         logger.info("Brokerage cleanup initiated.")
         # CreonAPIClient의 cleanup은 Trading 클래스에서 최종적으로 호출
         logger.info("Brokerage cleanup completed.")
+
+    def sync_account_status(self):
+        """
+        Creon API로부터 최신 계좌 잔고, 보유 종목, 미체결 주문 정보를 가져와
+        내부 캐시를 업데이트하고 DB에 동기화합니다.
+        TradingManager의 메소드를 활용하여 DB 동기화를 수행합니다.
+        """
+        logger.info("계좌 상태 동기화 시작...")
+        # 1. 현금 잔고 업데이트
+        balance_info = self.manager.get_account_balance()
+        if balance_info:
+            self._current_cash_balance = balance_info.get('cash_balance', 0.0)
+            # CreonAPIClient에 초기 예수금 설정 (TradingManager에서 가져온 값으로)
+            self.api_client.initial_deposit = balance_info.get('deposit', 0.0) # 예수금으로 설정
+            logger.info(f"현금 잔고 업데이트: {self._current_cash_balance:,.0f}원, 예수금: {self.api_client.initial_deposit:,.0f}원")
+        else:
+            logger.warning("현금 잔고 조회 실패. 0으로 초기화합니다.")
+            self._current_cash_balance = 0.0
+            self.api_client.initial_deposit = 0.0
+
+        # 2. 보유 종목 업데이트 (DB 동기화는 TradingManager 내부에서 처리)
+        # self._current_positions는 딕셔너리 형태로 저장
+        api_positions_list = self.manager.get_open_positions() # TradingManager가 DB 동기화 후 반환
+        self._current_positions = {pos['stock_code']: pos for pos in api_positions_list}
+        logger.info(f"보유 종목 {len(self._current_positions)}건 업데이트 및 DB 동기화 완료.")
+
+        # 3. 미체결 주문 업데이트
+        self._unfilled_orders = self.manager.get_unfilled_orders()
+        logger.info(f"미체결 주문 {len(self._unfilled_orders)}건 업데이트 완료.")
+        logger.info("계좌 상태 동기화 완료.")
+

@@ -272,7 +272,6 @@ class TradingManager:
         return [(code, name) for code, name in self.stock_names.items()]
 
     # --- 데이터 수집 및 캐싱 관련 메소드 ---
-
     def fetch_daily_ohlcv(self, stock_code: str, from_date: date, to_date: date) -> pd.DataFrame:
         """
         DB에서 일봉 OHLCV 데이터를 조회합니다.
