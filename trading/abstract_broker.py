@@ -82,3 +82,9 @@ class AbstractBroker(abc.ABC):
         설정된 손절매 조건을 확인하고 해당되는 경우 매도 주문을 실행합니다.
         """
         pass
+    
+    @abc.abstractmethod
+    def cleanup(self) -> None:
+        """브로커 리소스 정리 """
+        pass
+    

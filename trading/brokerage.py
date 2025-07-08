@@ -32,6 +32,9 @@ class Brokerage(AbstractBroker):
         self.commission_rate = 0.00165 # 매도시에만 부과
         # 현재 포지션 및 잔고는 API를 통해 실시간으로 조회하고 DB에 동기화.
         # 내부적으로 캐시할 수도 있으나, 항상 최신 정보는 API에서 가져오는 것을 우선.
+        self.positions = {}  # {stock_code: {'size': int, 'avg_price': float, 'entry_date': datetime.date, 'highest_price': float}}
+        #self.transaction_log = [] # (date, stock_code, type, price, quantity, commission, net_amount)
+
         self._current_cash_balance: float = 0.0
         self._current_positions: Dict[str, Any] = {} # {stock_code: {...}}
         self._unfilled_orders: List[Dict[str, Any]] = []
@@ -43,6 +46,13 @@ class Brokerage(AbstractBroker):
 
         logger.info("Brokerage 초기화 완료: CreonAPIClient, TradingManager 연결")
         self.sync_account_status() # 초기 계좌 상태 동기화
+    
+    def set_stop_loss_params(self, stop_loss_params):
+        """손절매 관련 파라미터를 설정합니다."""
+        if stop_loss_params is None:
+            return
+        self.stop_loss_params = stop_loss_params
+        logging.info(f"브로커 손절매 파라미터 설정 완료: {stop_loss_params}")
 
     def sync_account_status(self):
         """

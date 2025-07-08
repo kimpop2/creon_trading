@@ -30,10 +30,13 @@ API_REQUEST_INTERVAL = 0.2 # API 요청 간 최소 대기 시간 (초)
 CREON_ID = os.getenv('CREON_ID')        # 크레온 HTS 로그인 ID
 CREON_PWD = os.getenv('CREON_PWD')  # 크레온 HTS 로그인 비밀번호
 CREON_CERT_PWD = os.getenv('CREON_CERT_PWD') # 크레온 공동인증서 비밀번호
+# --- 텔레그램 설정 (보안 주의: 실제 계정 정보) ---
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')        # 크레온 HTS 로그인 ID
+TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')  # 크레온 HTS 로그인 비밀번호
 
 # --- 자동매매 기본 설정 ---
 # 초기 투자 자본 (백테스트 및 실전 거래의 초기 예수금으로 사용됩니다.)
-INITIAL_DEPOSIT = 10_000_000 # 1천만원 예시
+INITIAL_CASH = 10_000_000 # 1천만원 예시
 
 # 시장 개장 시간 (KST 기준)
 MARKET_OPEN_TIME = "09:00:00"
@@ -49,27 +52,37 @@ PORTFOLIO_UPDATE_TIME = "16:00:00"
 # 각 전략에 대한 파라미터를 딕셔너리 형태로 정의합니다.
 
 # SMADaily 전략 파라미터
-SMADAILY_PARAMS = {
+SMA_PARAMS = {
     'short_sma_period': 5,          # 단기 이동평균 기간
     'long_sma_period': 20,          # 장기 이동평균 기간
     'volume_ma_period': 20,         # 거래량 이동평균 기간
     'num_top_stocks': 10,           # 매수 후보 상위 종목 수
+    'minute_rsi_period': 35,        #  5 → 52분 (더 안정적인 RSI)
+    'minute_rsi_oversold': 34,      # 30 → 34 (매수 조건 보수적)
+    'minute_rsi_overbought': 70,    # 60 → 70 (매도 조건 보수적)
+    # 미적용
     'min_holding_days': 3,          # 매도 후보 선정 시 최소 홀딩 일수
-    'buy_capital_ratio': 0.1        # 매수 시 총 현금 자산의 비율 (10%)
-                                    # 예: 남은 현금 5천만원의 10% (5백만원)을 매수에 사용
-    # 'buy_quantity_per_stock': None # 종목당 고정 매수 수량 (None이면 buy_capital_ratio에 따라 계산)
+    'buy_capital_ratio': 0.1        # 매수 시 총 현금 자산의 비율 (10%) 예: 남은 현금 5천만원의 10% (5백만원)을 매수에 사용
 }
-
+# 손절매 파라미터 설정 (선택사항)
+STOP_LOSS_PARAMS = {
+    'take_profit_ratio': 20,       # 매수 후 익절
+    'early_stop_loss': -5,        # 매수 후 초기 손실 제한: -3.5% (매수 후 3일 이내)
+    'stop_loss_ratio': -10,        # 매수가 기준 손절율: -6.0%
+    'trailing_stop_ratio': -7,    # 최고가 기준 트레일링 손절률: -4.0%
+    'portfolio_stop_loss': -4,    # 전체 자본금 손실률 (전량매도 조건): -4.0%
+    'max_losing_positions': 4       # 최대 손절 종목 수 (전량매도 조건): 3개
+}  
 # RSIMinute 전략 파라미터
-RSIMINUTE_PARAMS = {
-    'minute_rsi_period': 14,                # 분봉 RSI 계산 기간
-    'minute_rsi_oversold': 30,              # RSI 과매도 기준
-    'minute_rsi_overbought': 70,            # RSI 과매수 기준
-    'minute_lookback': 120,                 # 분봉 데이터 조회 기간 (분)
-    'time_cut_sell_after_minutes': (15 * 60) + 5, # 장 시작 후 15시 5분 (분 단위, 즉 9시부터 6시간 5분 = 365분)
-                                                # 이 시간 이후 미체결 매수 주문에 대한 타임컷 검토
-    'max_price_diff_ratio_for_timecut': 0.01 # 타임컷 매도 허용 괴리율 (1%)
-}
+# RSIMINUTE_PARAMS = {
+#     'minute_rsi_period': 14,                # 분봉 RSI 계산 기간
+#     'minute_rsi_oversold': 30,              # RSI 과매도 기준
+#     'minute_rsi_overbought': 70,            # RSI 과매수 기준
+#     'minute_lookback': 120,                 # 분봉 데이터 조회 기간 (분)
+#     'time_cut_sell_after_minutes': (15 * 60) + 5, # 장 시작 후 15시 5분 (분 단위, 즉 9시부터 6시간 5분 = 365분)
+#                                                 # 이 시간 이후 미체결 매수 주문에 대한 타임컷 검토
+#     'max_price_diff_ratio_for_timecut': 0.01 # 타임컷 매도 허용 괴리율 (1%)
+# }
 
 # --- 로깅 설정 ---
 LOG_LEVEL = "INFO" # DEBUG, INFO, WARNING, ERROR, CRITICAL

@@ -19,7 +19,7 @@ from manager.backtest_manager import BacktestManager
 from manager.db_manager import DBManager
 from trade.trader_report import Reporter
 from selector.stock_selector import StockSelector
-from config.sector_config import sector_stocks
+from config.sector_stocks import sector_stocks
 
 # 로깅 설정
 logging.basicConfig(level=logging.DEBUG,

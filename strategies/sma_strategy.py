@@ -4,12 +4,12 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Any
-from strategies.trading_strategy import TradingStrategy
+from strategies.strategy import Strategy
 from util.strategies_util import *
 
 logger = logging.getLogger(__name__)
 
-class SMAStrategy(TradingStrategy):
+class SMAStrategy(Strategy):
     """
     SMA(Simple Moving Average) 기반 일봉 전략입니다.
     골든 크로스/데드 크로스와 거래량 조건을 활용하여 매매 신호를 생성합니다.
@@ -17,20 +17,23 @@ class SMAStrategy(TradingStrategy):
     def __init__(self, broker, data_store, strategy_params: Dict[str, Any]):
         # DailyStrategy 에서 trade의 broker, data_store 연결, signal 초기화 진행
         super().__init__(broker, data_store, strategy_params)
-        #self.strategy_params = strategy_params
-        self._validate_strategy_params() # 전략 파라미터 검증
-
+        self.broker = broker
+        self.data_store = data_store
+        self.strategy_name = "SMAStrategy"
         # SMA 누적 계산을 위한 캐시 추가
         self.sma_cache = {}  # SMA 캐시
         self.volume_cache = {}  # 거래량 MA 캐시
         self.last_prices = {}  # 마지막 가격 캐시
         self.last_volumes = {}  # 마지막 거래량 캐시
+        self.strategy_params = strategy_params
+        self._validate_strategy_params() # 전략 파라미터 검증
 
-        self.strategy_name = "SMADaily"
         
     def _validate_strategy_params(self):
         """전략 파라미터의 유효성을 검증합니다."""
-        required_params = ['short_sma_period', 'long_sma_period', 'volume_ma_period', 'num_top_stocks']
+        required_params = ['short_sma_period', 'long_sma_period', 'volume_ma_period', 
+                           'minute_rsi_period', 'minute_rsi_oversold', 'minute_rsi_overbought', 
+                           'num_top_stocks']
         
         for param in required_params:
             if param not in self.strategy_params:
@@ -41,10 +44,13 @@ class SMAStrategy(TradingStrategy):
             raise ValueError("단기 SMA 기간은 장기 SMA 기간보다 짧아야 합니다.")
             
         logging.info(f"SMA 전략 파라미터 검증 완료: "
-                   f"단기SMA={self.strategy_params['short_sma_period']}, "
-                   f"장기SMA={self.strategy_params['long_sma_period']}, "
-                   f"거래량MA={self.strategy_params['volume_ma_period']}, "
-                   f"선택종목수={self.strategy_params['num_top_stocks']}")
+                   f"단기 SMA={self.strategy_params['short_sma_period']}, "
+                   f"장기 SMA={self.strategy_params['long_sma_period']}, "
+                   f"거래량 MA={self.strategy_params['volume_ma_period']}, "
+                   f"RSI 분봉 기간={self.strategy_params['minute_rsi_period']}, "
+                   f"과매수 점수={self.strategy_params['minute_rsi_oversold']}, "
+                   f"과매도 점수={self.strategy_params['minute_rsi_overbought']}, "
+                   f"선택종목 수={self.strategy_params['num_top_stocks']}")
         
     def _calculate_rsi(self, historical_data, stock_code):
         """
@@ -111,19 +117,17 @@ class SMAStrategy(TradingStrategy):
         return rsi
     
     # 필수 : 반드시 구현
-    def run_strategy_logic(self, current_dt: datetime, stock_code: str) -> None:
+    def run_strategy_logic(self, current_date: datetime) -> None:
         """ 
         분봉 데이터를 기반으로 매매 신호 발생 시키는 전략 로직 
         """
-        prev_trading_day = current_dt.date()
-
         # 1. SMA 신호 점수 계산 (전일 데이터까지만 사용)
         buy_scores = {}  # 매수 점수
         sell_scores = {}  # 매도 점수 (새로 추가)
         all_stock_codes = list(self.data_store['daily'].keys())
         
         for stock_code in all_stock_codes:
-            historical_data = self._get_historical_data_up_to('daily', stock_code, prev_trading_day, lookback_period=max(self.strategy_params['long_sma_period'], self.strategy_params['volume_ma_period']) + 1)
+            historical_data = self._get_historical_data_up_to('daily', stock_code, current_date, lookback_period=max(self.strategy_params['long_sma_period'], self.strategy_params['volume_ma_period']) + 1)
             if historical_data.empty or len(historical_data) < max(self.strategy_params['long_sma_period'], self.strategy_params['volume_ma_period']) + 1:
                 continue
                 
@@ -168,8 +172,8 @@ class SMAStrategy(TradingStrategy):
             # 매수 후보에서 빠진 종목은 일정 기간 홀딩 후 매도 후보
             elif stock_code not in buy_candidates:
                 position_info = self.broker.positions.get(stock_code, {})
-                entry_date = position_info.get('entry_date', prev_trading_day)
-                holding_days = (prev_trading_day - entry_date).days if entry_date else 0
+                entry_date = position_info.get('entry_date', current_date)
+                holding_days = (current_date - entry_date).days if entry_date else 0
                 if holding_days >= min_holding_days:
                     sell_candidates.add(stock_code)
                     logging.info(f"매수 후보 제외+홀딩기간 경과로 매도 후보 추가: {stock_code}")
@@ -178,13 +182,13 @@ class SMAStrategy(TradingStrategy):
         
         # 3. 신호 생성 및 업데이트 (부모 메서드) - 전일 데이터 기준
         # 수정: buy_candidates와 sell_candidates를 모두 전달
-        final_positions = self._generate_signals(prev_trading_day, buy_candidates, sorted_buy_stocks, sell_candidates)
+        final_positions = self._generate_signals(current_date, buy_candidates, sorted_buy_stocks, sell_candidates)
         
         # 4. 리밸런싱 요약 로그
-        self._log_rebalancing_summary(prev_trading_day, buy_candidates, final_positions, sell_candidates)
+        self._log_rebalancing_summary(current_date, buy_candidates, final_positions, sell_candidates)
 
     # 필수 : 반드시 구현
-    def run_trading_logic(self, current_dt, stock_code):
+    def run_trading_logic(self, current_dt: datetime, stock_code: str) -> None:
         """
         매매 신호 발생 여부를 확인하고, 분봉데이터를 기반으로 필요시 매매 주문을 실행합니다.
         """
@@ -231,18 +235,20 @@ class SMAStrategy(TradingStrategy):
         # --------------------------
         if order_signal == 'sell' and current_position_size > 0:
             # 매도 전략 로직 시작 : (자유롭게 작성) ==============================
-            # RSI 매도 로직 설명 :
             #
             # ----------------------------------------------------------------
             # 2-1. RSI 지표 계산 : 매수와 중복되지만 코드를 보기 쉽게 중복 함
-            current_rsi_value = self._calculate_rsi(historical_minute_data, stock_code)
-            if current_rsi_value is None:
-                return        
+            logging.info(f'[매도] {current_dt.isoformat()} - {stock_code}, 매도가: {current_price:,.0f}원, 수량: {current_position_size}주')
+            self.broker.execute_order(stock_code, 'sell', current_price, current_position_size, current_dt)
+            self.reset_signal(stock_code)
+            # current_rsi_value = self._calculate_rsi(historical_minute_data, stock_code)
+            # if current_rsi_value is None:
+            #     return        
 
-            if current_rsi_value >= self.strategy_params['minute_rsi_overbought']:
-                logging.info(f'[RSI 매도] {current_dt.isoformat()} - {stock_code} RSI: {current_rsi_value:.2f}, 매도가: {current_price:,.0f}원, 수량: {current_position_size}주')
-                self.broker.execute_order(stock_code, 'sell', current_price, current_position_size, current_dt)
-                self.reset_signal(stock_code)
+            # if current_rsi_value >= self.strategy_params['minute_rsi_overbought']:
+            #     logging.info(f'[매도] {current_dt.isoformat()} - {stock_code} RSI: {current_rsi_value:.2f}, 매도가: {current_price:,.0f}원, 수량: {current_position_size}주')
+            #     self.broker.execute_order(stock_code, 'sell', current_price, current_position_size, current_dt)
+            #     self.reset_signal(stock_code)
             # 끝 매도 전략 로직 =================================================
             
             # 2-2. 강제매도 (타임컷) 전략에 강제매도가 필요하다면 다음 형식으로 추가
@@ -268,23 +274,26 @@ class SMAStrategy(TradingStrategy):
             #
             # ----------------------------------------------------------------
             # 3-1. RSI 지표 계산
-            current_rsi_value = self._calculate_rsi(historical_minute_data, stock_code)
-            if current_rsi_value is None:
-                return        
+            logging.info(f'[매수] {current_dt.isoformat()} - {stock_code} 가격: {current_price:,.0f}원, 수량: {target_quantity}주')
+            self.broker.execute_order(stock_code, 'buy', current_price, target_quantity, current_dt)
+            self.reset_signal(stock_code)
+            # current_rsi_value = self._calculate_rsi(historical_minute_data, stock_code)
+            # if current_rsi_value is None:
+            #     return        
     
-            if current_rsi_value <= self.strategy_params['minute_rsi_oversold']:
-                logging.info(f'[RSI 매수] {current_dt.isoformat()} - {stock_code} RSI: {current_rsi_value:.2f}, 가격: {current_price:,.0f}원, 수량: {target_quantity}주')
-                self.broker.execute_order(stock_code, 'buy', current_price, target_quantity, current_dt)
-                self.reset_signal(stock_code)
+            # if current_rsi_value <= self.strategy_params['minute_rsi_oversold']:
+            #     logging.info(f'[RSI 매수] {current_dt.isoformat()} - {stock_code} RSI: {current_rsi_value:.2f}, 가격: {current_price:,.0f}원, 수량: {target_quantity}주')
+            #     self.broker.execute_order(stock_code, 'buy', current_price, target_quantity, current_dt)
+            #     self.reset_signal(stock_code)
             
-            # 끝 매수 전략 로직 =================================================
+            # # 끝 매수 전략 로직 =================================================
             
-            # 3-2. 강제매수 (타임컷) 수정금지 -----------------------------------------
-            if current_minutes >= (15 * 60 + 5) and current_minutes >= (15 * 60 + 20): # 오후 3:05 이후 강제매수 가능 (시간 범위 확장)
-                today_data = minute_df[minute_df.index == pd.Timestamp(current_dt)]
-                if today_data.empty:
-                    return
-                # 타임컷 강제매수 실행 (괴리율 조건 완화)
-                self.execute_time_cut_buy(stock_code, current_dt, current_price, target_quantity, max_price_diff_ratio=0.02)
-            # 끝 강제매수 -------------------------------------------------------
+            # # 3-2. 강제매수 (타임컷) 수정금지 -----------------------------------------
+            # if current_minutes >= (15 * 60 + 5) and current_minutes >= (15 * 60 + 20): # 오후 3:05 이후 강제매수 가능 (시간 범위 확장)
+            #     today_data = minute_df[minute_df.index == pd.Timestamp(current_dt)]
+            #     if today_data.empty:
+            #         return
+            #     # 타임컷 강제매수 실행 (괴리율 조건 완화)
+            #     self.execute_time_cut_buy(stock_code, current_dt, current_price, target_quantity, max_price_diff_ratio=0.02)
+            # # 끝 강제매수 -------------------------------------------------------
 

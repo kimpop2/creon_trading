@@ -18,7 +18,7 @@ from trade.backtest_report import BacktestReport
 from selector.stock_selector import StockSelector
 from optimizer.bayesian_optimizer import BayesianOptimizationStrategy
 from trade.backtest import Backtest
-from config.sector_config import sector_stocks  # 공통 설정 파일에서 import
+from config.sector_stocks import sector_stocks  # 공통 설정 파일에서 import
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO,

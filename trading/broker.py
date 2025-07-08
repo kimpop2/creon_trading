@@ -9,13 +9,13 @@ logger = logging.getLogger(__name__)
 class Broker(AbstractBroker):
     def __init__(self, initial_cash:float=10_000_000):
         super().__init__()
-        self.cash = initial_cash
+        self.initial_cash = initial_cash
         self.positions = {}  # {stock_code: {'size': int, 'avg_price': float, 'entry_date': datetime.date, 'highest_price': float}}
         self.transaction_log = [] # (date, stock_code, type, price, quantity, commission, net_amount)
         self.commission_rate = 0.00165 # 매도시에만 부과
         self.stop_loss_params = None
         self.initial_portfolio_value = initial_cash # 포트폴리오 손절을 위한 초기값
-        logging.info(f"브로커 초기화: 초기 현금 {self.cash:,.0f}원, 수수료율 {self.commission_rate*100:.2f}%")
+        logging.info(f"브로커 초기화: 초기 현금 {self.initial_cash:,.0f}원, 수수료율 {self.commission_rate*100:.2f}%")
 
     def set_stop_loss_params(self, stop_loss_params):
         """손절매 관련 파라미터를 설정합니다."""
@@ -32,11 +32,11 @@ class Broker(AbstractBroker):
             logging.warning(f"[{current_dt.isoformat()}] {stock_code}: {order_type} 수량 0. 주문 실행하지 않음.")
             return False
 
-        effective_price = price * (1 + self.slippage_rate if order_type == 'buy' else 1 - self.slippage_rate)
+        effective_price = price * (1 + self.commission_rate if order_type == 'buy' else 1 - self.commission_rate)
 
         if order_type == 'buy':
             total_cost = effective_price * quantity  # 커미션 없이
-            if self.cash >= total_cost:
+            if self.initial_cash >= total_cost:
                 # 기존 포지션이 있으면 평균 단가 계산
                 if stock_code in self.positions and self.positions[stock_code]['size'] > 0:
                     current_size = self.positions[stock_code]['size']
@@ -53,13 +53,13 @@ class Broker(AbstractBroker):
                         'entry_date': current_dt.date(),
                         'highest_price': effective_price
                     }
-                self.cash -= total_cost
+                self.initial_cash -= total_cost
                 commission = 0  # 매수 시 커미션 없음
                 self.transaction_log.append((current_dt, stock_code, 'buy', price, quantity, commission, total_cost))
                 logging.info(f"[{current_dt.isoformat()}] {stock_code}: {quantity}주 매수. 실제 가격: {effective_price:,.0f}원, 수수료: {commission:,.0f}원, 매매대금: {total_cost:,.0f}원, ")
                 return True
             else:
-                logging.warning(f"[{current_dt.isoformat()}] {stock_code}: 현금 부족으로 매수 불가. 필요: {total_cost:,.0f}원, 현재: {self.cash:,.0f}원")
+                logging.warning(f"[{current_dt.isoformat()}] {stock_code}: 현금 부족으로 매수 불가. 필요: {total_cost:,.0f}원, 현재: {self.initial_cash:,.0f}원")
                 return False
         
         elif order_type == 'sell':
@@ -71,7 +71,7 @@ class Broker(AbstractBroker):
                 avg_price = self.positions[stock_code]['avg_price']
                 profit = (effective_price - avg_price) * actual_quantity
                 profit_rate = ((effective_price - avg_price) / avg_price * 100) if avg_price > 0 else 0
-                self.cash += revenue
+                self.initial_cash += revenue
                 self.transaction_log.append((current_dt, stock_code, 'sell', price, actual_quantity, commission, revenue))
                 self.positions[stock_code]['size'] -= actual_quantity
                 if self.positions[stock_code]['size'] == 0:
@@ -98,7 +98,7 @@ class Broker(AbstractBroker):
                 logging.warning(f"경고: {stock_code}의 현재 가격 데이터가 없습니다. 보유 포지션 가치 계산에 문제 발생 가능.")
                 holdings_value += pos_info['size'] * pos_info['avg_price'] # 대안으로 평균 단가 사용
 
-        return self.cash + holdings_value
+        return self.initial_cash + holdings_value
 
     def _update_highest_price(self, stock_code, current_price):
         """포지션의 최고가를 업데이트합니다 (트레일링 스탑을 위해)."""
@@ -226,3 +226,8 @@ class Broker(AbstractBroker):
         pass
 
 
+    def cleanup(self) -> None:
+        """리소스 정리 및 Creon API 연결 해제"""
+        logger.info("Brokerage cleanup initiated.")
+        # CreonAPIClient의 cleanup은 Trading 클래스에서 최종적으로 호출
+        logger.info("Brokerage cleanup completed.")

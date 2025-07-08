@@ -29,14 +29,31 @@ from manager.trading_manager import TradingManager
 # 로거 설정
 def setup_startup_logging():
     log_level = getattr(logging, LOG_LEVEL.upper(), logging.INFO)
-    logging.basicConfig(
-        level=log_level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(LOG_FILE_STARTUP, encoding='utf-8'), # 시작 스크립트 전용 로그 파일
-            logging.StreamHandler(sys.stdout)
-        ]
-    )
+    # 기본 로거를 가져옴
+    root_logger = logging.getLogger()
+    root_logger.setLevel(log_level)
+    
+    # 기존 핸들러 제거 (basicConfig가 여러 번 호출될 경우 중복을 방지)
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+    # 파일 핸들러 (UTF-8)
+    file_handler = logging.FileHandler(LOG_FILE_STARTUP, encoding='utf-8')
+    #file_handler = logging.FileHandler(LOG_FILE_STARTUP, encoding='cp949')
+    file_handler.setFormatter(formatter)
+    root_logger.addHandler(file_handler)   
+    
+    # 스트림 핸들러 (UTF-8)
+    # sys.stdout의 인코딩을 시스템과 일치시키기 위해 명시적으로 'utf-8' 지정
+    # 그러나 Windows 콘솔이 UTF-8을 제대로 지원하지 않으면 여전히 깨질 수 있음
+    # 그럴 경우, 배치 파일에서 chcp 65001 설정이 필수
+    stream_handler = logging.StreamHandler(sys.stdout)
+    stream_handler.setFormatter(formatter)
+    stream_handler.encoding = 'utf-8' # ⭐ 여기를 utf-8로 명시적으로 설정
+
+    root_logger.addHandler(stream_handler)
     logging.getLogger('urllib3').setLevel(logging.WARNING) # 불필요한 로깅 줄이기
 
 setup_startup_logging() # 로깅 설정 호출
@@ -115,7 +132,7 @@ def run_startup_tasks():
 
         # CreonAPIClient는 내부적으로 CpCybos 객체를 사용하여 연결 상태를 확인
         creon_api = CreonAPIClient() # 새로운 CreonAPIClient 인스턴스 생성
-        if not creon_api.is_creon_connected(): # CreonAPIClient 내부에서 연결 확인
+        if not creon_api._check_creon_status(): # CreonAPIClient 내부에서 연결 확인
             logger.critical("CreonAPIClient가 Creon Plus에 연결되지 않았습니다. 시작 전 작업 중단.")
             notifier.send_message("❌ CreonAPIClient 연결 실패. 시작 전 작업 중단.")
             return False
@@ -135,22 +152,22 @@ def run_startup_tasks():
         logger.info("TradingManager 초기화 완료.")
 
         # 3. 일봉 데이터 수집 (예시: 모든 종목에 대해 1년치 데이터 업데이트)
-        logger.info("최신 일봉 데이터 수집 시작 (모든 종목)...")
-        all_stock_codes = trading_manager.get_all_stock_list() # (code, name) 튜플 리스트
-        today = datetime.now().date()
-        one_year_ago = today - timedelta(days=365)
+        # logger.info("최신 일봉 데이터 수집 시작 (모든 종목)...")
+        # all_stock_codes = trading_manager.get_all_stock_list() # (code, name) 튜플 리스트
+        # today = datetime.now().date()
+        # one_year_ago = today - timedelta(days=365)
 
-        for stock_code, stock_name in all_stock_codes:
-            try:
-                # TradingManager의 fetch_daily_ohlcv가 내부적으로 DB 조회 후 없으면 API 조회 및 저장 처리
-                df_daily = trading_manager.fetch_daily_ohlcv(stock_code, one_year_ago, today)
-                if df_daily.empty:
-                    logger.warning(f"종목 {stock_name}({stock_code})의 일봉 데이터 수집 실패 또는 데이터 없음.")
-                else:
-                    logger.debug(f"종목 {stock_name}({stock_code}) 일봉 데이터 {len(df_daily)}건 수집/확인 완료.")
-            except Exception as e:
-                logger.error(f"종목 {stock_name}({stock_code}) 일봉 데이터 수집 중 오류 발생: {e}")
-        logger.info("일봉 데이터 수집 완료.")
+        # for stock_code, stock_name in all_stock_codes:
+        #     try:
+        #         # TradingManager의 fetch_daily_ohlcv가 내부적으로 DB 조회 후 없으면 API 조회 및 저장 처리
+        #         df_daily = trading_manager.fetch_daily_ohlcv(stock_code, one_year_ago, today)
+        #         if df_daily.empty:
+        #             logger.warning(f"종목 {stock_name}({stock_code})의 일봉 데이터 수집 실패 또는 데이터 없음.")
+        #         else:
+        #             logger.debug(f"종목 {stock_name}({stock_code}) 일봉 데이터 {len(df_daily)}건 수집/확인 완료.")
+        #     except Exception as e:
+        #         logger.error(f"종목 {stock_name}({stock_code}) 일봉 데이터 수집 중 오류 발생: {e}")
+        # logger.info("일봉 데이터 수집 완료.")
 
         # 4. 유니버스 생성/업데이트 (daily_universe 테이블)
         logger.info("유니버스(매매 대상 종목군) 생성/업데이트 시작...")

@@ -17,7 +17,7 @@ from config.settings import (
     INITIAL_DEPOSIT,
     MARKET_OPEN_TIME, MARKET_CLOSE_TIME,
     DAILY_STRATEGY_RUN_TIME, PORTFOLIO_UPDATE_TIME,
-    SMADAILY_PARAMS, RSIMINUTE_PARAMS,
+    SMA_PARAMS, STOP_LOSS_PARAMS,
     LOG_LEVEL, LOG_FILE
 )
 
@@ -108,14 +108,15 @@ def main():
     logger.info(f"포트폴리오 업데이트 시간: {trading_system.portfolio_update_time}")
 
     # 6. 매매 전략 설정
-    # SMADaily 전략 인스턴스 생성
+    # SMA 전략 인스턴스 생성
     strategy_instance = SMAStrategy(
         brokerage=trading_system.brokerage,
         trading_manager=trading_system.trading_manager,
-        strategy_params=SMADAILY_PARAMS
+        strategy_params=SMA_PARAMS
     )
-
     trading_system.set_strategies(strategy=strategy_instance)
+    # 손절매 파라미터 설정 (선택사항)
+    trading_system.set_broker_stop_loss_params(STOP_LOSS_PARAMS)
     logger.info("매매 전략 설정 완료.")
 
     logger.info("========================================")
@@ -125,7 +126,7 @@ def main():
 
     try:
         # 메인 자동매매 루프 시작
-        trading_system.start_trading_loop()
+        trading_system.run()
     except KeyboardInterrupt:
         logger.info("사용자에 의해 시스템 종료 요청됨.")
         notifier.send_message("⚠️ 사용자 요청으로 자동매매 시스템이 종료됩니다.")
