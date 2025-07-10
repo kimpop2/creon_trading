@@ -1309,32 +1309,52 @@ class CreonAPIClient:
 
             ret = objReq.BlockRequest()
             if ret != 0:
+                # BlockRequest 자체 실패 (통신 오류, 요청 한도 등)
                 logger.error(f"BlockRequest failed for order status {order_id}: {ret}")
-                return {"status": "ERROR", "message": f"BlockRequest failed: {ret}"}
+                return {"status": "ERROR", "message": f"BlockRequest failed with return code: {ret}"}
             
+            # DibStatus 확인: API 내부 오류나 데이터 없음 등
             status = objReq.GetDibStatus()
             msg = objReq.GetDibMsg1()
             if status != 0:
-                logger.error(f"Order status request error {order_id}: Status={status}, Msg={msg}")
-                return {"status": "ERROR", "message": f"API error: {msg}"}
+                logger.error(f"Order status request error for {order_id}: Status={status}, Msg={msg}")
+                # 특정 DibStatus 코드가 주문번호 없음 등을 나타낼 경우 더 상세한 메시지 가능
+                return {"status": "API_ERROR", "message": f"API internal error: {msg}"}
 
             # 반환 필드 확인 (CpTrade.CpTd0311 설명서 참고)
             # 1: 주문상태 (접수, 체결, 확인, 거부 등)
             # 5: 체결수량
             # 6: 체결가격
-            order_status = objReq.GetHeaderValue(1)
+            order_status_str = objReq.GetHeaderValue(1)
             executed_qty = int(objReq.GetHeaderValue(5))
-            executed_price = float(objReq.GetHeaderValue(6))
+            
+            executed_price = 0.0 # 체결가격 기본값 설정
 
-            logger.info(f"Order {order_id} Status: {order_status}, Executed Qty: {executed_qty}, Price: {executed_price}")
+            if executed_qty > 0:
+                # 체결 수량이 있을 때만 체결 가격을 가져오고 float으로 변환 시도
+                price_value = objReq.GetHeaderValue(6)
+                if price_value is not None and str(price_value).strip() != '':
+                    try:
+                        executed_price = float(str(price_value).strip())
+                    except ValueError:
+                        logger.warning(f"Order {order_id}: 체결가격 '{price_value}' 변환 오류 발생. 기본값 0.0 사용.")
+                else:
+                    logger.warning(f"Order {order_id}: 체결 수량은 있으나 체결가격이 비어있습니다. 기본값 0.0 사용.")
+            
+            # 주식 코드와 종목명 추가 (선택 사항, 필요시)
+            # stock_code = objReq.GetHeaderValue(3) # 해당 필드가 있다면
+            # stock_name = objReq.GetHeaderValue(4) # 해당 필드가 있다면
+
+            logger.info(f"Order {order_id} Status: {order_status_str}, Executed Qty: {executed_qty}, Price: {executed_price}")
             return {
-                "status": order_status,
+                "status": order_status_str,
                 "executed_quantity": executed_qty,
                 "executed_price": executed_price
             }
         except Exception as e:
-            logger.error(f"Error fetching order status for {order_id}: {e}", exc_info=True)
-            return {"status": "ERROR", "message": str(e)}
+            logger.error(f"Critical error fetching order status for {order_id}: {e}", exc_info=True)
+            return {"status": "EXCEPTION", "message": str(e)}
+
 
     def generate_calendar_data(self, trading_days: list[date], start_date: date, end_date: date) -> list[dict]:
         """

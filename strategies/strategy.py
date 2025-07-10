@@ -494,7 +494,7 @@ class Strategy(BaseStrategy):
             self.reset_signal(stock_code)
             return True
         else:
-            logging.info(f'[타임컷 미체결] {current_dt.isoformat()} - {stock_code} 목표가: {target_price:.2f}, 매수가: {current_price:.2f}, 괴리율: {price_diff_ratio:.2%} ({max_price_diff_ratio:.1%} 초과)')
+            logging.info(f'[타임컷 미체결] {current_dt.isoformat()} - {stock_code} 목표가: {target_price:.2f}, 매수가: {current_price:.2f}, 괴리율: {price_diff_ratio:.2%} ({max_deviation_ratio:.1%} 초과)')
             return False
 
     def execute_time_cut_sell(self, stock_code, current_dt, current_price, current_position_size, max_deviation_ratio):
@@ -529,6 +529,6 @@ class Strategy(BaseStrategy):
             self.reset_signal(stock_code)
             return True
         else:
-            logging.info(f'[타임컷 미체결] {current_dt.isoformat()} - {stock_code} 목표가: {target_price:.2f}, 매도가: {current_price:.2f}, 괴리율: {price_diff_ratio:.2%} ({max_price_diff_ratio:.1%} 초과)')
+            logging.info(f'[타임컷 미체결] {current_dt.isoformat()} - {stock_code} 목표가: {target_price:.2f}, 매도가: {current_price:.2f}, 괴리율: {price_diff_ratio:.2%} ({max_deviation_ratio:.1%} 초과)')
             return False
 

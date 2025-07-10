@@ -4,6 +4,12 @@ def get_order_code(order_str: str) -> str:
         if key == order_str:
             return val
     return None  # 값을 찾지 못한 경우 None 반환
+
+def get_order_name(order_str: str) -> str:
+    for key, val in order_dic.items():
+        if val == order_str:
+            return key
+    return None  # 값을 찾지 못한 경우 None 반환
 # 주문상수 변환
 order_dic = {
     '매도': '1', '매수': '2',                       # 주문 유형 (order_type)

@@ -501,7 +501,7 @@ if __name__ == "__main__":
         # 손절매 파라미터 설정 (선택사항)
         backtest_system.set_broker_stop_loss_params(STOP_LOSS_PARAMS)
         
-        end_date = date(2025, 7, 7)
+        end_date = date(2025, 5, 7)
         start_date = end_date - timedelta(days=60)
         # 일봉 데이터 로드
         backtest_system.load_stocks(start_date, end_date)
