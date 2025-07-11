@@ -20,6 +20,7 @@ if project_root not in sys.path:
 from config.settings import DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
 from manager.backtest_manager import BacktestManager
 from manager.db_manager import DBManager
+from api.creon_api import CreonAPIClient
 # 로거 설정
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -92,7 +93,8 @@ class SetupManager:
         self.db_manager = db_manager if db_manager else DBManager()
         self.connection = None
         self.cursor = None
-        self.backtest_manager = BacktestManager() # BacktestManager 인스턴스 초기화
+        self.creon_api = CreonAPIClient()
+        self.backtest_manager = BacktestManager(self.creon_api, self.db_manager) # BacktestManager 인스턴스 초기화
     
         # 처리 기간 설정
         self.to_date = to_date if to_date else date.today()

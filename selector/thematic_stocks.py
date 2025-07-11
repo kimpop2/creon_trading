@@ -332,7 +332,7 @@ def get_actionable_insights(cursor, limit_themes=5, limit_stocks_per_theme=3):
                 recent_rate = float(recent_data[0]) if recent_data and recent_data[0] else 0.0
                 recent_reason = recent_data[1] if recent_data and recent_data[1] else "N/A"
 
-                print(f"    - 종목: {stock_name} ({stock_code}), 테마 기여 점수: {stock_score}, 최근 등락률: {recent_rate:.2f}%, \n    * 이유: {recent_reason}")
+                print(f"    - 종목: {stock_name} ({stock_code}), 테마 기여 점수: {stock_score}, 최근 등락률: {recent_rate:.2f}%, \n      이유: {recent_reason}")
                 theme_result['recommended_stocks'].append({
                     'stock_code': stock_code,
                     'stock_name': stock_name,

@@ -35,8 +35,7 @@ class TestCreonAPIScenario(unittest.TestCase):
     cls_api: CreonAPIClient = None
     
     # 실시간 이벤트 핸들링 변수 (클래스 변수로 선언하여 콜백에서 접근)
-    _conclusion_events_queue: List[Dict[str, Any]] = [] # 체결/응답 이벤트를 큐로 관리 (리스트로 변경)
-    _conclusion_event_signal = Event() # 체결/응답 이벤트 수신 신호
+    _conclusion_events_queue: queue.Queue = None # 체결/응답 이벤트를 큐로 관리
     _price_event_data = None
     _price_event_received = Event() # 현재가 이벤트 수신 신호
     
@@ -49,6 +48,8 @@ class TestCreonAPIScenario(unittest.TestCase):
         logger.info("--- 테스트 클래스 설정 시작 ---")
         try:
             cls.cls_api = CreonAPIClient()
+            # 큐 초기화 (클래스 변수로)
+            cls._conclusion_events_queue = queue.Queue()
             # 콜백 함수 등록
             cls.cls_api.set_conclusion_callback(cls._conclusion_callback)
             cls.cls_api.set_price_update_callback(cls._price_update_callback)
@@ -75,8 +76,13 @@ class TestCreonAPIScenario(unittest.TestCase):
         
         # 각 테스트 시작 시 이벤트 플래그 및 데이터 초기화
         with TestCreonAPIScenario._callback_lock:
-            TestCreonAPIScenario._conclusion_events_queue.clear() # 큐 초기화
-            TestCreonAPIScenario._conclusion_event_signal.clear() # 신호 초기화
+            # 큐를 비우기 (이전 테스트의 잔여 이벤트 제거)
+            while not TestCreonAPIScenario._conclusion_events_queue.empty():
+                try:
+                    TestCreonAPIScenario._conclusion_events_queue.get_nowait()
+                    TestCreonAPIScenario._conclusion_events_queue.task_done()
+                except queue.Empty:
+                    pass
             TestCreonAPIScenario._price_event_received.clear()
             TestCreonAPIScenario._price_event_data = None
 
@@ -92,9 +98,8 @@ class TestCreonAPIScenario(unittest.TestCase):
     def _conclusion_callback(cls, data: Dict[str, Any]):
         """실시간 주문 체결/응답 콜백 핸들러"""
         with cls._callback_lock:
-            logger.info(f"실시간 체결/응답 수신: {data}")
-            cls._conclusion_events_queue.append(data) # 큐에 이벤트 추가
-            cls._conclusion_event_signal.set() # 이벤트 발생 신호
+            logger.info(f"[CpEvent] 주문 체결/응답 수신: {data.get('flag')} {data.get('buy_sell')} 종목:{data.get('code')} 가격:{data.get('price'):,.0f} 수량:{data.get('amount')} 주문번호:{data.get('order_num')} 잔고:{data.get('balance')}")
+            cls._conclusion_events_queue.put(data) # 큐에 이벤트 추가
 
     @classmethod
     def _price_update_callback(cls, stock_code: str, current_price: int, timestamp: float):
@@ -113,42 +118,37 @@ class TestCreonAPIScenario(unittest.TestCase):
     def _bid_update_callback(cls, stock_code: str, offer_prices: List[int], bid_prices: List[int], offer_amounts: List[int], bid_amounts: List[int]):
         """실시간 10차 호가 업데이트 콜백 핸들러 (현재는 로깅만)"""
         logger.debug(f"실시간 호가 수신: 종목={stock_code}, 1차 매도={offer_prices[0]}, 1차 매수={bid_prices[0]}")
-        # 이 콜백에서 직접 데이터를 사용하는 대신, 필요 시점에 get_current_price_and_quotes를 다시 호출하여 최신 스냅샷을 가져오는 방식 사용
 
     def _wait_for_conclusion_event(self, target_order_id: Optional[int], expected_flags: List[str], timeout: int = 60) -> Optional[Dict[str, Any]]:
         """
         특정 주문 ID에 대한 체결/응답 이벤트를 기다립니다.
-        target_order_id가 None이면 어떤 체결 이벤트든 기다립니다.
-        expected_flags 리스트에 있는 flag 중 하나라도 만족하면 반환합니다.
+        _conclusion_events_queue를 모니터링합니다.
         """
         start_time = time.time()
         while time.time() - start_time < timeout:
-            TestCreonAPIScenario._conclusion_event_signal.clear() # 이전 신호 초기화
-            logger.debug(f"체결/응답 이벤트 대기 중 (남은 시간: {int(timeout - (time.time() - start_time))}초), 기대 플래그: {expected_flags}, 대상 주문: {target_order_id}...")
-            
-            # 이벤트를 기다리거나, 0.5초마다 큐를 확인 (너무 짧으면 CPU 소모가 클 수 있음)
-            if TestCreonAPIScenario._conclusion_event_signal.wait(0.5): # 짧은 대기 후 큐 확인
-                pass # 신호가 왔으니 큐를 바로 확인
-            
-            with TestCreonAPIScenario._callback_lock:
-                # 큐를 역순으로 탐색하여 가장 최신 이벤트를 먼저 확인
-                for i in range(len(TestCreonAPIScenario._conclusion_events_queue) - 1, -1, -1):
-                    data = TestCreonAPIScenario._conclusion_events_queue[i]
-                    
-                    if target_order_id is None or data.get('order_num') == target_order_id:
+            try:
+                # 큐에서 이벤트를 가져오되, 타임아웃을 설정하여 무한 대기 방지
+                data = TestCreonAPIScenario._conclusion_events_queue.get(timeout=0.5) 
+                
+                with TestCreonAPIScenario._callback_lock:
+                    # 해당 주문 ID에 대한 이벤트인지 확인
+                    if data.get('order_num') == target_order_id:
                         if data.get('flag') in expected_flags:
                             logger.info(f"대상 체결/응답 이벤트 수신: {data}")
-                            # 해당 이벤트를 큐에서 제거 (선택 사항이지만, 중복 처리 방지)
-                            del TestCreonAPIScenario._conclusion_events_queue[i]
+                            TestCreonAPIScenario._conclusion_events_queue.task_done() # 처리 완료
                             return data
                         else:
                             logger.debug(f"대상 주문 ({target_order_id})의 다른 플래그 ({data.get('flag')}) 이벤트 수신. 기대 플래그 {expected_flags} 대기 계속...")
-                            # 해당 이벤트를 큐에서 제거 (이미 확인했으므로)
-                            del TestCreonAPIScenario._conclusion_events_queue[i]
-                    
-                # 큐에 남은 다른 주문 이벤트가 있을 경우 처리
-                if TestCreonAPIScenario._conclusion_events_queue:
-                    logger.debug(f"큐에 다른 미처리 체결/응답 이벤트가 남아있습니다: {TestCreonAPIScenario._conclusion_events_queue}")
+                            TestCreonAPIScenario._conclusion_events_queue.task_done() # 처리 완료
+                            # 다른 플래그이므로 큐에 다시 넣지 않고 다음 이벤트를 기다림
+                    else:
+                        # 다른 주문의 이벤트이므로 다시 큐에 넣고 다음 이벤트를 기다림
+                        TestCreonAPIScenario._conclusion_events_queue.put(data)
+                        TestCreonAPIScenario._conclusion_events_queue.task_done() # get 후 put 했으므로 task_done 호출
+                        
+            except queue.Empty:
+                # 큐가 비어있으면 계속 대기
+                pass
             
         logger.warning(f"체결/응답 이벤트 타임아웃 ({timeout}초) 또는 대상 주문 ({target_order_id}) 이벤트 미수신.")
         return None
@@ -193,15 +193,14 @@ class TestCreonAPIScenario(unittest.TestCase):
             api.subscribe_realtime_price(test_stock_code)
             # 실시간 구독 후 데이터가 들어올 때까지 충분히 대기
             time.sleep(5) # 5초 대기 추가
-            self._wait_for_price_event(timeout=10) # 실시간 데이터가 들어올 때까지 잠시 대기
+            self._wait_for_price_event(timeout=5) # 실시간 데이터가 들어올 때까지 잠시 대기
 
             # 4. 현재가 및 호가 조회 및 초기 매수 주문 (매수 3호가)
             logger.info("4. 현재가 및 호가 조회 후 매수 3호가 주문 시도...")
             api.subscribe_realtime_bid(test_stock_code) # 호가 수신 이벤트 등록 (주문 직전)
             time.sleep(5) # 5초 대기 추가
             price_info = api.get_current_price_and_quotes(test_stock_code)
-            # api.unsubscribe_realtime_bid(test_stock_code) # <-- 이 위치에서 해지하지 않고, 주문 처리 루프 후에 해지
-
+            
             self.assertIsNotNone(price_info, "현재가 및 호가 조회 실패")
             current_price = price_info['current_price']
             bid_prices = price_info['bid_prices']
@@ -220,21 +219,43 @@ class TestCreonAPIScenario(unittest.TestCase):
                 price=initial_buy_price,
                 order_unit="01" # 보통가
             )
-            self.assertEqual(buy_order_result['status'], 'success', f"초기 매수 주문 실패: {buy_order_result['message']}")
             current_order_id = buy_order_result['order_num']
             current_buy_order_price = initial_buy_price # 현재 주문 가격 추적
-            self.assertIsNotNone(current_order_id, "초기 매수 주문번호가 반환되지 않았습니다.")
-            logger.info(f"초기 매수 주문번호: {current_order_id}")
+
+            # --- NEW: 초기 매수 주문 실패 시 처리 로직 ---
+            if buy_order_result['status'] != 'success':
+                logger.error(f"초기 매수 주문 실패: {buy_order_result['message']}")
+                # 주문 실패 시, 실제 체결되었는지 확인
+                positions_after_initial_buy = api.get_portfolio_positions()
+                bought_quantity = 0
+                for pos in positions_after_initial_buy:
+                    if pos['stock_code'] == test_stock_code:
+                        bought_quantity = pos['quantity']
+                        break
+                
+                if bought_quantity >= order_quantity:
+                    logger.info(f"초기 매수 주문 ({current_order_id})은 API 응답은 실패였으나, 실제 체결되어 보유 수량 {bought_quantity}주 확인. 시나리오 계속 진행.")
+                    order_filled = True
+                else:
+                    self.fail(f"초기 매수 주문 실패 (API 응답: {buy_order_result['message']}). 보유 수량 변화 없음. 시나리오 중단.")
+            else:
+                self.assertIsNotNone(current_order_id, "초기 매수 주문번호가 반환되지 않았습니다.")
+                logger.info(f"초기 매수 주문번호: {current_order_id}")
+                order_filled = False # 초기 주문은 아직 체결되지 않았을 수 있음
+            # --- NEW: 초기 매수 주문 실패 시 처리 로직 끝 ---
+
 
             # 5. 매수 주문 정정/취소/시장가 매수 로직
             executed_buy_qty = 0
-            order_filled = False
             
             # 정정 시나리오 (3차 -> 2차 -> 1차)
             for i in range(3): # 0: 3차, 1: 2차, 2: 1차
+                if order_filled: # 이미 체결되었다면 정정/취소 루프 종료
+                    break
+
                 logger.info(f"매수 주문 ({current_order_id}) 체결 대기 (단계 {i+1}/3 - {10}초)...")
                 # '체결' 또는 '확인' 플래그를 기다립니다.
-                conclusion_data = self._wait_for_conclusion_event(target_order_id=current_order_id, expected_flags=['체결', '확인'], timeout=10)
+                conclusion_data = self._wait_for_conclusion_event(target_order_id=current_order_id, expected_flags=['체결', '확인'], timeout=5)
                 
                 if conclusion_data and conclusion_data['flag'] == '체결':
                     executed_buy_qty += conclusion_data['amount']
@@ -250,23 +271,16 @@ class TestCreonAPIScenario(unittest.TestCase):
                 else: # 10초 내 미체결 (또는 원하는 플래그 미수신)
                     logger.info(f"매수 주문 ({current_order_id}) {10}초 내 미체결 또는 원하는 이벤트 미수신. 정정 시도...")
                     if i < 2: # 2차, 1차 호가로 정정
-                        # 호가 정보는 이미 구독 중이므로 다시 구독할 필요 없음. 최신 정보 조회
-                        # api.subscribe_realtime_bid(test_stock_code) # 제거
-                        # time.sleep(5) # 제거
                         price_info_mod = api.get_current_price_and_quotes(test_stock_code)
-                        # api.unsubscribe_realtime_bid(test_stock_code) # 제거
                         
                         if not price_info_mod:
                             logger.error("정정 시 호가 정보 조회 실패. 정정 중단.")
                             break
 
-                        # bid_prices의 인덱스를 0, 1, 2 순으로 사용 (3차 -> 2차 -> 1차 매수호가)
-                        # i=0: 3차 호가 (bid_prices[2]), i=1: 2차 호가 (bid_prices[1]), i=2: 1차 호가 (bid_prices[0])
                         next_bid_price = price_info_mod['bid_prices'][2-i] if len(price_info_mod['bid_prices']) > (2-i) and price_info_mod['bid_prices'][2-i] > 0 else price_info_mod['current_price']
                         if next_bid_price == 0: next_bid_price = price_info_mod['current_price']
                         next_bid_price = api.round_to_tick(next_bid_price)
 
-                        # 정정 단가가 현재 주문 단가와 동일한지 확인
                         if next_bid_price == current_buy_order_price:
                             logger.info(f"매수 주문 ({current_order_id}) 정정 단가 ({next_bid_price})가 현재 주문 단가 ({current_buy_order_price})와 동일하여 정정 스킵.")
                             continue # 다음 단계로 넘어감
@@ -279,10 +293,39 @@ class TestCreonAPIScenario(unittest.TestCase):
                             price=next_bid_price,
                             org_order_num=current_order_id
                         )
-                        self.assertEqual(modify_result['status'], 'success', f"매수 정정 주문 실패: {modify_result['message']}")
-                        current_order_id = modify_result['order_num'] # 정정 시 새 주문번호 받을 수 있음
-                        current_buy_order_price = next_bid_price # 정정 성공 시 가격 업데이트
-                        logger.info(f"매수 정정 주문 성공. 새 주문번호: {current_order_id}")
+                        # --- NEW: 정정 주문 실패 시 체결 여부 확인 로직 추가 ---
+                        if modify_result['status'] != 'success':
+                            logger.error(f"매수 정정 주문 실패: {modify_result['message']}")
+                            if "정정/취소가능수량이 없습니다" in modify_result['message'] or "해당 주문이 없습니다" in modify_result['message']:
+                                logger.warning(f"매수 주문 ({current_order_id})은 이미 체결되었거나 취소된 것으로 보입니다. 미체결 주문 목록 확인 중...")
+                                unfilled_orders_check = api.get_unfilled_orders()
+                                is_still_unfilled = any(order['order_id'] == current_order_id for order in unfilled_orders_check)
+                                
+                                if not is_still_unfilled:
+                                    logger.info(f"주문번호 {current_order_id}가 미체결 목록에 없습니다. 이미 체결/취소된 것으로 간주하고 다음 단계로 진행합니다.")
+                                    # 이 경우 주문이 체결되었을 가능성이 높으므로, 보유 수량을 확인하여 order_filled를 업데이트
+                                    positions_after_modify_fail = api.get_portfolio_positions()
+                                    current_held_qty = 0
+                                    for pos in positions_after_modify_fail:
+                                        if pos['stock_code'] == test_stock_code:
+                                            current_held_qty = pos['quantity']
+                                            break
+                                    if current_held_qty >= order_quantity:
+                                        order_filled = True
+                                        logger.info(f"매수 주문 ({current_order_id}) 정정 실패 후, 보유 수량 {current_held_qty}주 확인. 전량 체결로 간주.")
+                                    else:
+                                        logger.warning(f"매수 주문 ({current_order_id}) 정정 실패 후, 보유 수량 변화 없음. 시나리오 계속 진행.")
+                                    break # 정정 루프 종료
+                                else:
+                                    logger.error(f"주문번호 {current_order_id}가 여전히 미체결 목록에 있습니다. 정정 실패로 시나리오 중단.")
+                                    self.fail(f"매수 정정 주문 실패: {modify_result['message']}")
+                            else:
+                                self.fail(f"매수 정정 주문 실패: {modify_result['message']}")
+                        # --- NEW: 정정 주문 실패 시 체결 여부 확인 로직 추가 끝 ---
+                        else: # 정정 주문 성공 시
+                            current_order_id = modify_result['order_num'] # 정정 시 새 주문번호 받을 수 있음
+                            current_buy_order_price = next_bid_price # 정정 성공 시 가격 업데이트
+                            logger.info(f"매수 정정 주문 성공. 새 주문번호: {current_order_id}")
                     else: # 1차 호가까지 정정 후에도 미체결 -> 취소
                         logger.info(f"매수 주문 ({current_order_id}) 1차 호가 정정 후에도 미체결. 취소 시도...")
                         cancel_result = api.send_order(
@@ -291,38 +334,51 @@ class TestCreonAPIScenario(unittest.TestCase):
                             amount=0, # 잔량 취소
                             org_order_num=current_order_id
                         )
-                        self.assertEqual(cancel_result['status'], 'success', f"매수 취소 주문 실패: {cancel_result['message']}")
-                        logger.info(f"매수 주문 ({current_order_id}) 취소 요청 성공. 체결 이벤트 대기...")
-                        # 취소 확인 이벤트 대기
-                        conclusion_data = self._wait_for_conclusion_event(target_order_id=current_order_id, expected_flags=['확인'], timeout=10)
-                        if conclusion_data and conclusion_data['flag'] == '확인':
-                            logger.info(f"매수 주문 ({current_order_id}) 취소 확인 완료.")
-                            # --- NEW: Verify cancellation by checking unfilled orders ---
-                            logger.info(f"미체결 주문 목록에서 주문번호 {current_order_id} 제거 확인 중...")
-                            cancellation_confirmed_in_unfilled = False
-                            start_time_unfilled_check = time.time()
-                            while time.time() - start_time_unfilled_check < 10: # Wait up to 10 seconds for it to disappear
-                                unfilled_orders_after_cancel = api.get_unfilled_orders()
-                                found_cancelled_order = False
-                                for order in unfilled_orders_after_cancel:
-                                    if order['order_id'] == current_order_id:
-                                        found_cancelled_order = True
-                                        logger.debug(f"주문번호 {current_order_id}가 아직 미체결 목록에 있습니다. 대기 중...")
-                                        time.sleep(1)
+                        # --- NEW: 취소 주문 실패 시 처리 로직 ---
+                        if cancel_result['status'] != 'success':
+                            logger.error(f"매수 취소 주문 실패: {cancel_result['message']}")
+                            # 취소 실패 시, 실제 취소되었거나 체결되었는지 확인
+                            unfilled_orders_check = api.get_unfilled_orders()
+                            is_still_unfilled = any(order['order_id'] == current_order_id for order in unfilled_orders_check)
+                            
+                            if not is_still_unfilled:
+                                logger.info(f"주문번호 {current_order_id}가 미체결 목록에 없습니다. 이미 취소/체결된 것으로 간주하고 다음 단계로 진행합니다.")
+                                order_filled = False # 취소되었으므로 체결되지 않음 (또는 이미 체결된 경우)
+                                break # 정정/취소 루프 종료
+                            else:
+                                self.fail(f"매수 취소 주문 실패 (API 응답: {cancel_result['message']}). 주문이 여전히 미체결 목록에 존재. 시나리오 중단.")
+                        # --- NEW: 취소 주문 실패 시 처리 로직 끝 ---
+                        else: # 취소 주문 성공 시
+                            logger.info(f"매수 주문 ({current_order_id}) 취소 요청 성공. 체결 이벤트 대기...")
+                            # 취소 확인 이벤트 대기
+                            conclusion_data = self._wait_for_conclusion_event(target_order_id=current_order_id, expected_flags=['확인'], timeout=5)
+                            if conclusion_data and conclusion_data['flag'] == '확인':
+                                logger.info(f"매수 주문 ({current_order_id}) 취소 확인 완료.")
+                                logger.info(f"미체결 주문 목록에서 주문번호 {current_order_id} 제거 확인 중...")
+                                cancellation_confirmed_in_unfilled = False
+                                start_time_unfilled_check = time.time()
+                                while time.time() - start_time_unfilled_check < 10: # Wait up to 10 seconds for it to disappear
+                                    unfilled_orders_after_cancel = api.get_unfilled_orders()
+                                    found_cancelled_order = False
+                                    for order in unfilled_orders_after_cancel:
+                                        if order['order_id'] == current_order_id:
+                                            found_cancelled_order = True
+                                            logger.debug(f"주문번호 {current_order_id}가 아직 미체결 목록에 있습니다. 대기 중...")
+                                            time.sleep(1)
+                                            break
+                                    if not found_cancelled_order:
+                                        cancellation_confirmed_in_unfilled = True
+                                        logger.info(f"주문번호 {current_order_id}가 미체결 목록에서 제거됨을 확인했습니다.")
                                         break
-                                if not found_cancelled_order:
-                                    cancellation_confirmed_in_unfilled = True
-                                    logger.info(f"주문번호 {current_order_id}가 미체결 목록에서 제거됨을 확인했습니다.")
-                                    break
-                            if not cancellation_confirmed_in_unfilled:
-                                logger.warning(f"매수 주문 ({current_order_id})이 미체결 목록에서 제거되지 않았거나 타임아웃 발생.")
-                        else:
-                            logger.warning(f"매수 주문 ({current_order_id}) 취소 확인 실패 또는 타임아웃.")
-                        order_filled = False # 취소되었으므로 체결되지 않음
-                        break # 정정/취소 루프 종료
+                                if not cancellation_confirmed_in_unfilled:
+                                    logger.warning(f"매수 주문 ({current_order_id})이 미체결 목록에서 제거되지 않았거나 타임아웃 발생.")
+                            else:
+                                logger.warning(f"매수 주문 ({current_order_id}) 취소 확인 실패 또는 타임아웃.")
+                            order_filled = False # 취소되었으므로 체결되지 않음
+                            break # 정정/취소 루프 종료
             
             # 매수 주문 처리 루프 종료 후 호가 구독 해지
-            api.unsubscribe_realtime_bid(test_stock_code) # <-- 호가 구독 해지 위치 변경
+            api.unsubscribe_realtime_bid(test_stock_code) 
 
             if not order_filled:
                 logger.info("매수 주문이 최종적으로 체결되지 않았습니다. 시장가 매수 시도...")
@@ -334,11 +390,28 @@ class TestCreonAPIScenario(unittest.TestCase):
                     price=0, # 시장가
                     order_unit="03" # 시장가 주문
                 )
-                self.assertEqual(market_buy_result['status'], 'success', f"시장가 매수 주문 실패: {market_buy_result['message']}")
                 current_order_id = market_buy_result['order_num']
-                self.assertIsNotNone(current_order_id, "시장가 매수 주문번호가 반환되지 않았습니다.")
-                logger.info(f"시장가 매수 주문번호: {current_order_id}. 시장가 주문은 성공 시 즉시 체결된 것으로 간주합니다.")
-                order_filled = True # 시장가 매수 주문은 성공 시 즉시 체결된 것으로 간주
+                # --- NEW: 시장가 매수 주문 실패 시 처리 로직 ---
+                if market_buy_result['status'] != 'success':
+                    logger.error(f"시장가 매수 주문 실패: {market_buy_result['message']}")
+                    # 시장가 주문 실패 시, 실제 체결되었는지 확인
+                    positions_after_market_buy = api.get_portfolio_positions()
+                    bought_quantity_market = 0
+                    for pos in positions_after_market_buy:
+                        if pos['stock_code'] == test_stock_code:
+                            bought_quantity_market = pos['quantity']
+                            break
+                    
+                    if bought_quantity_market >= order_quantity:
+                        logger.info(f"시장가 매수 주문 ({current_order_id})은 API 응답은 실패였으나, 실제 체결되어 보유 수량 {bought_quantity_market}주 확인. 시나리오 계속 진행.")
+                        order_filled = True
+                    else:
+                        self.fail(f"시장가 매수 주문 실패 (API 응답: {market_buy_result['message']}). 보유 수량 변화 없음. 시나리오 중단.")
+                else:
+                    self.assertIsNotNone(current_order_id, "시장가 매수 주문번호가 반환되지 않았습니다.")
+                    logger.info(f"시장가 매수 주문번호: {current_order_id}. 시장가 주문은 성공 시 즉시 체결된 것으로 간주합니다.")
+                    order_filled = True # 시장가 매수 주문은 성공 시 즉시 체결된 것으로 간주
+                # --- NEW: 시장가 매수 주문 실패 시 처리 로직 끝 ---
 
             # 9. 종목 잔고 확인 (매수 후)
             logger.info("9. 매수 후 종목 잔고 확인...")
@@ -354,7 +427,6 @@ class TestCreonAPIScenario(unittest.TestCase):
 
             # 10. 매수 체결 완료 후 호가 실시간 이벤트 해제 (현재가는 유지)
             logger.info("10. 매수 체결 완료 후 호가 실시간 이벤트 해지.")
-            # 호가는 이미 위에서 해지되었으므로, 추가 해지 불필요 (안전하게 한번 더 호출 가능)
             api.unsubscribe_realtime_bid(test_stock_code) 
 
 
@@ -381,8 +453,7 @@ class TestCreonAPIScenario(unittest.TestCase):
             api.subscribe_realtime_bid(test_stock_code) # 호가 수신 이벤트 등록 (주문 직전)
             time.sleep(5) # 5초 대기 추가
             price_info_sell = api.get_current_price_and_quotes(test_stock_code)
-            # api.unsubscribe_realtime_bid(test_stock_code) # <-- 이 위치에서 해지하지 않고, 주문 처리 루프 후에 해지
-
+            
             self.assertIsNotNone(price_info_sell, "매도 시나리오를 위한 현재가 및 호가 조회 실패")
             current_price_sell = price_info_sell['current_price']
             offer_prices = price_info_sell['offer_prices']
@@ -401,20 +472,44 @@ class TestCreonAPIScenario(unittest.TestCase):
                 price=initial_sell_price,
                 order_unit="01" # 보통가
             )
-            self.assertEqual(sell_order_result['status'], 'success', f"초기 매도 주문 실패: {sell_order_result['message']}")
             current_sell_order_id = sell_order_result['order_num']
             current_sell_order_price = initial_sell_price # 현재 주문 가격 추적
-            self.assertIsNotNone(current_sell_order_id, "초기 매도 주문번호가 반환되지 않았습니다.")
-            logger.info(f"초기 매도 주문번호: {current_sell_order_id}")
+
+            # --- NEW: 초기 매도 주문 실패 시 처리 로직 ---
+            if sell_order_result['status'] != 'success':
+                logger.error(f"초기 매도 주문 실패: {sell_order_result['message']}")
+                # 주문 실패 시, 실제 체결되었는지 확인
+                positions_after_initial_sell = api.get_portfolio_positions()
+                current_held_qty_after_sell = 0
+                for pos in positions_after_initial_sell:
+                    if pos['stock_code'] == test_stock_code:
+                        current_held_qty_after_sell = pos['quantity']
+                        break
+                
+                # 매도 주문 실패 시, 보유 수량이 줄었는지 확인
+                # (원래 보유 수량 - 주문 수량)과 비교하여 체결 여부 판단
+                # 이 테스트에서는 1주만 매도하므로, 0주가 되면 체결된 것으로 간주
+                if current_held_qty_after_sell == 0:
+                    logger.info(f"초기 매도 주문 ({current_sell_order_id})은 API 응답은 실패였으나, 실제 체결되어 보유 수량 0주 확인. 시나리오 계속 진행.")
+                    sell_order_filled = True
+                else:
+                    self.fail(f"초기 매도 주문 실패 (API 응답: {sell_order_result['message']}). 보유 수량 변화 없음. 시나리오 중단.")
+            else:
+                self.assertIsNotNone(current_sell_order_id, "초기 매도 주문번호가 반환되지 않았습니다.")
+                logger.info(f"초기 매도 주문번호: {current_sell_order_id}")
+                sell_order_filled = False # 초기 주문은 아직 체결되지 않았을 수 있음
+            # --- NEW: 초기 매도 주문 실패 시 처리 로직 끝 ---
 
             # 15. 매도 주문 정정/시장가 매도 로직
             executed_sell_qty = 0
-            sell_order_filled = False
-
+            
             # 정정 시나리오 (3차 -> 2차 -> 1차)
             for i in range(3): # 0: 3차, 1: 2차, 2: 1차
+                if sell_order_filled: # 이미 체결되었다면 정정 루프 종료
+                    break
+
                 logger.info(f"매도 주문 ({current_sell_order_id}) 체결 대기 (단계 {i+1}/3 - {10}초)...")
-                conclusion_data = self._wait_for_conclusion_event(target_order_id=current_sell_order_id, expected_flags=['체결', '확인'], timeout=10)
+                conclusion_data = self._wait_for_conclusion_event(target_order_id=current_sell_order_id, expected_flags=['체결', '확인'], timeout=5)
                 
                 if conclusion_data and conclusion_data['flag'] == '체결':
                     executed_sell_qty += conclusion_data['amount']
@@ -430,22 +525,16 @@ class TestCreonAPIScenario(unittest.TestCase):
                 else: # 10초 내 미체결
                     logger.info(f"매도 주문 ({current_sell_order_id}) {10}초 내 미체결 또는 원하는 이벤트 미수신. 정정 시도...")
                     if i < 2: # 2차, 1차 호가로 정정
-                        # 호가 정보는 이미 구독 중이므로 다시 구독할 필요 없음. 최신 정보 조회
-                        # api.subscribe_realtime_bid(test_stock_code) # 제거
-                        # time.sleep(5) # 제거
                         price_info_mod_sell = api.get_current_price_and_quotes(test_stock_code)
-                        # api.unsubscribe_realtime_bid(test_stock_code) # 제거
 
                         if not price_info_mod_sell:
                             logger.error("정정 시 호가 정보 조회 실패. 정정 중단.")
                             break
 
-                        # offer_prices의 인덱스를 0, 1, 2 순으로 사용 (3차 -> 2차 -> 1차 매도호가)
                         next_offer_price = price_info_mod_sell['offer_prices'][2-i] if len(price_info_mod_sell['offer_prices']) > (2-i) and price_info_mod_sell['offer_prices'][2-i] > 0 else price_info_mod_sell['current_price']
                         if next_offer_price == 0: next_offer_price = price_info_mod_sell['current_price']
                         next_offer_price = api.round_to_tick(next_offer_price)
 
-                        # 정정 단가가 현재 주문 단가와 동일한지 확인
                         if next_offer_price == current_sell_order_price:
                             logger.info(f"매도 주문 ({current_sell_order_id}) 정정 단가 ({next_offer_price})가 현재 주문 단가 ({current_sell_order_price})와 동일하여 정정 스킵.")
                             continue # 다음 단계로 넘어감
@@ -458,10 +547,39 @@ class TestCreonAPIScenario(unittest.TestCase):
                             price=next_offer_price,
                             org_order_num=current_sell_order_id
                         )
-                        self.assertEqual(modify_result_sell['status'], 'success', f"매도 정정 주문 실패: {modify_result_sell['message']}")
-                        current_sell_order_id = modify_result_sell['order_num'] # 정정 시 새 주문번호 받을 수 있음
-                        current_sell_order_price = next_offer_price # 정정 성공 시 가격 업데이트
-                        logger.info(f"매도 정정 주문 성공. 새 주문번호: {current_sell_order_id}")
+                        # --- NEW: 정정 주문 실패 시 체결 여부 확인 로직 추가 ---
+                        if modify_result_sell['status'] != 'success':
+                            logger.error(f"매도 정정 주문 실패: {modify_result_sell['message']}")
+                            if "정정/취소가능수량이 없습니다" in modify_result_sell['message'] or "해당 주문이 없습니다" in modify_result_sell['message']:
+                                logger.warning(f"매도 주문 ({current_sell_order_id})은 이미 체결되었거나 취소된 것으로 보입니다. 미체결 주문 목록 확인 중...")
+                                unfilled_orders_check = api.get_unfilled_orders()
+                                is_still_unfilled = any(order['order_id'] == current_sell_order_id for order in unfilled_orders_check)
+                                
+                                if not is_still_unfilled:
+                                    logger.info(f"주문번호 {current_sell_order_id}가 미체결 목록에 없습니다. 이미 체결/취소된 것으로 간주하고 다음 단계로 진행합니다.")
+                                    # 이 경우 주문이 체결되었을 가능성이 높으므로, 보유 수량을 확인하여 sell_order_filled를 업데이트
+                                    positions_after_modify_fail_sell = api.get_portfolio_positions()
+                                    current_held_qty_sell = 0
+                                    for pos in positions_after_modify_fail_sell:
+                                        if pos['stock_code'] == test_stock_code:
+                                            current_held_qty_sell = pos['quantity']
+                                            break
+                                    if current_held_qty_sell == 0: # 매도 주문이므로 0주가 되면 체결된 것
+                                        sell_order_filled = True
+                                        logger.info(f"매도 주문 ({current_sell_order_id}) 정정 실패 후, 보유 수량 0주 확인. 전량 체결로 간주.")
+                                    else:
+                                        logger.warning(f"매도 주문 ({current_sell_order_id}) 정정 실패 후, 보유 수량 변화 없음. 시나리오 계속 진행.")
+                                    break # 정정 루프 종료
+                                else:
+                                    logger.error(f"주문번호 {current_sell_order_id}가 여전히 미체결 목록에 있습니다. 정정 실패로 시나리오 중단.")
+                                    self.fail(f"매도 정정 주문 실패: {modify_result_sell['message']}")
+                            else:
+                                self.fail(f"매도 정정 주문 실패: {modify_result_sell['message']}")
+                        # --- NEW: 정정 주문 실패 시 체결 여부 확인 로직 추가 끝 ---
+                        else: # 정정 주문 성공 시
+                            current_sell_order_id = modify_result_sell['order_num'] # 정정 시 새 주문번호 받을 수 있음
+                            current_sell_order_price = next_offer_price # 정정 성공 시 가격 업데이트
+                            logger.info(f"매도 정정 주문 성공. 새 주문번호: {current_sell_order_id}")
                     else: # 1차 호가까지 정정 후에도 미체결 -> 취소
                         logger.info(f"매도 주문 ({current_sell_order_id}) 1차 호가 정정 후에도 미체결. 취소 시도...")
                         cancel_result = api.send_order(
@@ -470,49 +588,56 @@ class TestCreonAPIScenario(unittest.TestCase):
                             amount=0, # 잔량 취소
                             org_order_num=current_sell_order_id
                         )
-                        self.assertEqual(cancel_result['status'], 'success', f"매도 취소 주문 실패: {cancel_result['message']}")
-                        logger.info(f"매도 주문 ({current_sell_order_id}) 취소 요청 성공. 체결 이벤트 대기...")
-                        # 취소 확인 이벤트 대기
-                        conclusion_data = self._wait_for_conclusion_event(target_order_id=current_sell_order_id, expected_flags=['확인'], timeout=10)
-                        if conclusion_data and conclusion_data['flag'] == '확인':
-                            logger.info(f"매도 주문 ({current_sell_order_id}) 취소 확인 완료.")
-                            # --- NEW: Verify cancellation by checking unfilled orders ---
-                            logger.info(f"미체결 주문 목록에서 주문번호 {current_sell_order_id} 제거 확인 중...")
-                            cancellation_confirmed_in_unfilled = False
-                            start_time_unfilled_check = time.time()
-                            while time.time() - start_time_unfilled_check < 10: # Wait up to 10 seconds for it to disappear
-                                unfilled_orders_after_cancel = api.get_unfilled_orders()
-                                found_cancelled_order = False
-                                for order in unfilled_orders_after_cancel:
-                                    if order['order_id'] == current_sell_order_id:
-                                        found_cancelled_order = True
-                                        logger.debug(f"주문번호 {current_sell_order_id}가 아직 미체결 목록에 있습니다. 대기 중...")
-                                        time.sleep(1)
+                        # --- NEW: 취소 주문 실패 시 처리 로직 ---
+                        if cancel_result['status'] != 'success':
+                            logger.error(f"매도 취소 주문 실패: {cancel_result['message']}")
+                            # 취소 실패 시, 실제 취소되었거나 체결되었는지 확인
+                            unfilled_orders_check = api.get_unfilled_orders()
+                            is_still_unfilled = any(order['order_id'] == current_sell_order_id for order in unfilled_orders_check)
+                            
+                            if not is_still_unfilled:
+                                logger.info(f"주문번호 {current_sell_order_id}가 미체결 목록에 없습니다. 이미 취소/체결된 것으로 간주하고 다음 단계로 진행합니다.")
+                                sell_order_filled = False # 취소되었으므로 체결되지 않음 (또는 이미 체결된 경우)
+                                break # 정정/취소 루프 종료
+                            else:
+                                self.fail(f"매도 취소 주문 실패 (API 응답: {cancel_result['message']}). 주문이 여전히 미체결 목록에 존재. 시나리오 중단.")
+                        # --- NEW: 취소 주문 실패 시 처리 로직 끝 ---
+                        else: # 취소 주문 성공 시
+                            logger.info(f"매도 주문 ({current_sell_order_id}) 취소 요청 성공. 체결 이벤트 대기...")
+                            # 취소 확인 이벤트 대기
+                            conclusion_data = self._wait_for_conclusion_event(target_order_id=current_sell_order_id, expected_flags=['확인'], timeout=5)
+                            if conclusion_data and conclusion_data['flag'] == '확인':
+                                logger.info(f"매도 주문 ({current_sell_order_id}) 취소 확인 완료.")
+                                logger.info(f"미체결 주문 목록에서 주문번호 {current_sell_order_id} 제거 확인 중...")
+                                cancellation_confirmed_in_unfilled = False
+                                start_time_unfilled_check = time.time()
+                                while time.time() - start_time_unfilled_check < 10: # Wait up to 10 seconds for it to disappear
+                                    unfilled_orders_after_cancel = api.get_unfilled_orders()
+                                    found_cancelled_order = False
+                                    for order in unfilled_orders_after_cancel:
+                                        if order['order_id'] == current_sell_order_id:
+                                            found_cancelled_order = True
+                                            logger.debug(f"주문번호 {current_sell_order_id}가 아직 미체결 목록에 있습니다. 대기 중...")
+                                            time.sleep(1)
+                                            break
+                                    if not found_cancelled_order:
+                                        cancellation_confirmed_in_unfilled = True
+                                        logger.info(f"주문번호 {current_sell_order_id}가 미체결 목록에서 제거됨을 확인했습니다.")
                                         break
-                                if not found_cancelled_order:
-                                    cancellation_confirmed_in_unfilled = True
-                                    logger.info(f"주문번호 {current_sell_order_id}가 미체결 목록에서 제거됨을 확인했습니다.")
-                                    break
-                            if not cancellation_confirmed_in_unfilled:
-                                logger.warning(f"매도 주문 ({current_sell_order_id})이 미체결 목록에서 제거되지 않았거나 타임아웃 발생.")
-                        else:
-                            logger.warning(f"매도 주문 ({current_sell_order_id}) 취소 확인 실패 또는 타임아웃.")
+                                if not cancellation_confirmed_in_unfilled:
+                                    logger.warning(f"매도 주문 ({current_sell_order_id})이 미체결 목록에서 제거되지 않았거나 타임아웃 발생.")
+                            else:
+                                logger.warning(f"매도 주문 ({current_sell_order_id}) 취소 확인 실패 또는 타임아웃.")
 
-                        sell_order_filled = False # 취소되었으므로 체결되지 않음
-                        break # 정정/취소 루프 종료
+                            sell_order_filled = False # 취소되었으므로 체결되지 않음
+                            break # 정정/취소 루프 종료
             
             # 매도 주문 처리 루프 종료 후 호가 구독 해지
-            api.unsubscribe_realtime_bid(test_stock_code) # <-- 호가 구독 해지 위치 변경
+            api.unsubscribe_realtime_bid(test_stock_code) 
 
             if not sell_order_filled:
                 logger.info("매도 주문이 최종적으로 체결되지 않았습니다. 시장가 매도 시도...")
                 time.sleep(5) # 시장가 매도 전 잠시 대기 (API 부하 감소)
-                
-                # --- 기존 로직: 시장가 매도 전 미체결 매도 주문 확인 및 취소 ---
-                # 이 부분은 이미 위에서 취소 확인 로직에 포함되었으므로,
-                # 여기서는 추가적인 미체결 주문이 없다고 가정하고 바로 시장가 매도를 시도합니다.
-                # 필요하다면 여기에 다시 미체결 주문을 확인하고 취소하는 로직을 추가할 수 있습니다.
-                # 현재는 취소 확인 로직이 강화되었으므로, 대부분의 경우 추가적인 미체결 주문은 없을 것입니다.
                 
                 # 최종 시장가 매도 시 모든 잔량 매도
                 logger.info("시장가 매도를 위해 현재 보유 잔량을 다시 조회합니다.")
@@ -535,11 +660,28 @@ class TestCreonAPIScenario(unittest.TestCase):
                         price=0, # 시장가
                         order_unit="03" # 시장가 주문
                     )
-                    self.assertEqual(market_sell_result['status'], 'success', f"시장가 매도 주문 실패: {market_sell_result['message']}")
                     current_sell_order_id = market_sell_result['order_num']
-                    self.assertIsNotNone(current_sell_order_id, "시장가 매도 주문번호가 반환되지 않았습니다.")
-                    logger.info(f"시장가 매도 주문번호: {current_sell_order_id}. 시장가 주문은 성공 시 즉시 체결된 것으로 간주합니다.")
-                    sell_order_filled = True # 시장가 매도 주문은 성공 시 즉시 체결된 것으로 간주
+                    # --- NEW: 시장가 매도 주문 실패 시 처리 로직 ---
+                    if market_sell_result['status'] != 'success':
+                        logger.error(f"시장가 매도 주문 실패: {market_sell_result['message']}")
+                        # 시장가 주문 실패 시, 실제 체결되었는지 확인
+                        positions_after_market_sell = api.get_portfolio_positions()
+                        final_quantity_market_sell = 0
+                        for pos in positions_after_market_sell:
+                            if pos['stock_code'] == test_stock_code:
+                                final_quantity_market_sell = pos['quantity']
+                                break
+                        
+                        if final_quantity_market_sell == 0:
+                            logger.info(f"시장가 매도 주문 ({current_sell_order_id})은 API 응답은 실패였으나, 실제 체결되어 보유 수량 0주 확인. 시나리오 계속 진행.")
+                            sell_order_filled = True
+                        else:
+                            self.fail(f"시장가 매도 주문 실패 (API 응답: {market_sell_result['message']}). 보유 수량 변화 없음. 시나리오 중단.")
+                    else:
+                        self.assertIsNotNone(current_sell_order_id, "시장가 매도 주문번호가 반환되지 않았습니다.")
+                        logger.info(f"시장가 매도 주문번호: {current_sell_order_id}. 시장가 주문은 성공 시 즉시 체결된 것으로 간주합니다.")
+                        sell_order_filled = True # 시장가 매도 주문은 성공 시 즉시 체결된 것으로 간주
+                    # --- NEW: 시장가 매도 주문 실패 시 처리 로직 끝 ---
 
             # 19. 종목 잔고 확인 (매도 후)
             logger.info("19. 매도 후 종목 잔고 확인...")
@@ -549,8 +691,6 @@ class TestCreonAPIScenario(unittest.TestCase):
                 if pos['stock_code'] == test_stock_code:
                     final_quantity = pos['quantity']
                     break
-            # 만약 매도 가능 수량이 전체 보유 수량보다 적어서 일부만 매도되었다면, final_quantity는 0이 아닐 수 있습니다.
-            # 테스트의 목표가 '잔고에 남아 있는 모든 수량'을 시장가 매도하는 것이므로, 0이 되는 것을 기대합니다.
             self.assertEqual(final_quantity, 0, f"매도 후 {test_stock_code} 잔고가 0이 아닙니다. 현재 잔고: {final_quantity}주")
             logger.info(f"매도 후 {test_stock_code} 최종 보유 수량: {final_quantity}주")
 

@@ -179,12 +179,13 @@ class CreonAPIClient:
 
         # 실시간 구독 객체 관리 딕셔너리 (실제 구독 객체 인스턴스)
         self.conclusion_subscriber: Optional[ConclusionSubscriber] = None
-        self.stock_cur_subscribers: Dict[str, StockCurSubscriber] = {} # {종목코드: StockCurSubscriber 객체}
-        self.stock_bid_subscribers: Dict[str, StockBidSubscriber] = {} # {종목코드: StockBidSubscriber 객체}
+        # 구독 객체 딕셔너리: {종목코드: Subscriber 객체}
+        self.stock_cur_subscribers: Dict[str, StockCurSubscriber] = {} 
+        self.stock_bid_subscribers: Dict[str, StockBidSubscriber] = {} 
 
-        # 현재 활성화된 구독 종목 코드를 추적하는 세트
-        self._active_cur_subscriptions: set[str] = set()
-        self._active_bid_subscriptions: set[str] = set()
+        # 현재 활성화된 구독 종목 코드를 추적하는 세트 (이전 구현에서 필요했으나, 딕셔너리로 대체 가능)
+        # _active_cur_subscriptions = set(self.stock_cur_subscribers.keys())
+        # _active_bid_subscriptions = set(self.stock_bid_subscribers.keys())
 
         # 실시간 이벤트 콜백 함수 (외부 모듈에서 등록)
         self.conclusion_callback: Optional[Callable[[Dict[str, Any]], None]] = None
@@ -304,120 +305,90 @@ class CreonAPIClient:
         self.bid_update_callback = callback
         logger.info("10차 호가 업데이트 콜백 함수 등록 완료.")
 
+    # -----------------------------------------------------------
+    # 실시간 현재가 구독/해제 (종목 단위로 동작하도록 수정)
+    # -----------------------------------------------------------
     def subscribe_realtime_price(self, stock_code: str):
         """
-        특정 종목의 실시간 현재가 (StockCur)를 구독합니다.
-        Creon API의 특성을 고려하여, 기존 구독을 모두 해지하고 새로운 목록으로 재구독합니다.
+        특정 종목의 실시간 현재가 (StockCur)를 구독합니다. 
+        이미 구독 중인 종목은 제외하고, 새로운 종목만 추가합니다.
         """
-        with CreonAPIClient._realtime_sub_lock: # 실시간 구독 락으로 보호
-            if stock_code in self._active_cur_subscriptions:
-                logger.warning(f"종목 [{stock_code}]의 현재가 실시간 구독이 이미 활성화되어 있습니다. 재구독을 시도합니다.")
-            
-            # 새로운 종목을 활성 구독 목록에 추가
-            self._active_cur_subscriptions.add(stock_code)
-            
-            # 기존 현재가 구독 객체들을 모두 해지
-            for s_code in list(self.stock_cur_subscribers.keys()):
-                self.stock_cur_subscribers[s_code].Unsubscribe()
-                del self.stock_cur_subscribers[s_code]
-                if s_code in self._last_price_print_time_per_stock:
-                    del self._last_price_print_time_per_stock[s_code]
-            
-            # 활성 구독 목록에 있는 모든 종목을 다시 구독
-            for s_code in self._active_cur_subscriptions:
-                subscriber = StockCurSubscriber()
-                subscriber.Subscribe(self, s_code)
-                self.stock_cur_subscribers[s_code] = subscriber
-                self._last_price_print_time_per_stock[s_code] = 0.0 # 출력 시간 초기화
-            
-            logger.info(f"종목 [{stock_code}] 포함, 총 {len(self._active_cur_subscriptions)}개 종목 현재가 실시간 재구독 완료.")
+        with CreonAPIClient._realtime_sub_lock:
+            if stock_code in self.stock_cur_subscribers:
+                logger.warning(f"종목 [{stock_code}]의 현재가 실시간 구독이 이미 활성화되어 있습니다.")
+                return
 
+            try:
+                # 새 구독 객체 생성 및 구독 시작
+                subscriber = StockCurSubscriber()
+                subscriber.Subscribe(self, stock_code)
+                self.stock_cur_subscribers[stock_code] = subscriber
+                # 출력 시간 초기화
+                self._last_price_print_time_per_stock[stock_code] = 0.0 
+                logger.info(f"종목 [{stock_code}] 현재가 실시간 구독 추가 완료. 현재 구독 중인 종목 수: {len(self.stock_cur_subscribers)}")
+            except Exception as e:
+                logger.error(f"종목 [{stock_code}] 현재가 실시간 구독 실패: {e}")
 
     def unsubscribe_realtime_price(self, stock_code: str):
         """
         특정 종목의 실시간 현재가 (StockCur) 구독을 해지합니다.
-        Creon API의 특성을 고려하여, 해당 종목을 제외한 나머지 종목들을 재구독합니다.
         """
-        with CreonAPIClient._realtime_sub_lock: # 실시간 구독 락으로 보호
-            if stock_code not in self._active_cur_subscriptions:
+        with CreonAPIClient._realtime_sub_lock:
+            if stock_code not in self.stock_cur_subscribers:
                 logger.warning(f"종목 [{stock_code}]의 현재가 실시간 구독이 활성화되어 있지 않습니다.")
                 return
 
-            # 활성 구독 목록에서 해당 종목 제거
-            self._active_cur_subscriptions.discard(stock_code) # remove 대신 discard 사용 (없을 경우 에러 방지)
+            try:
+                # 해당 종목의 구독 객체를 해지
+                subscriber = self.stock_cur_subscribers.pop(stock_code)
+                subscriber.Unsubscribe()
 
-            # 기존 현재가 구독 객체들을 모두 해지
-            for s_code in list(self.stock_cur_subscribers.keys()):
-                self.stock_cur_subscribers[s_code].Unsubscribe()
-                del self.stock_cur_subscribers[s_code]
-                if s_code in self._last_price_print_time_per_stock:
-                    del self._last_price_print_time_per_stock[s_code]
+                # 관련 정보 삭제
+                if stock_code in self._last_price_print_time_per_stock:
+                    del self._last_price_print_time_per_stock[stock_code]
 
-            # 남은 활성 구독 목록에 있는 모든 종목을 다시 구독
-            if self._active_cur_subscriptions:
-                for s_code in self._active_cur_subscriptions:
-                    subscriber = StockCurSubscriber()
-                    subscriber.Subscribe(self, s_code)
-                    self.stock_cur_subscribers[s_code] = subscriber
-                    self._last_price_print_time_per_stock[s_code] = 0.0 # 출력 시간 초기화
-                logger.info(f"종목 [{stock_code}] 해지 후, 총 {len(self._active_cur_subscriptions)}개 종목 현재가 실시간 재구독 완료.")
-            else:
-                logger.info(f"종목 [{stock_code}] 해지 후, 현재가 실시간 구독 중인 종목이 없습니다.")
+                logger.info(f"종목 [{stock_code}] 현재가 실시간 구독 해지 완료. 현재 구독 중인 종목 수: {len(self.stock_cur_subscribers)}")
+            except Exception as e:
+                logger.error(f"종목 [{stock_code}] 현재가 실시간 구독 해지 실패: {e}")
 
-
+    # -----------------------------------------------------------
+    # 실시간 10차 호가 구독/해제 (종목 단위로 동작하도록 수정)
+    # -----------------------------------------------------------
     def subscribe_realtime_bid(self, stock_code: str):
         """
         특정 종목의 실시간 10차 호가 (StockJpBid)를 구독합니다.
-        Creon API의 특성을 고려하여, 기존 구독을 모두 해지하고 새로운 목록으로 재구독합니다.
+        이미 구독 중인 종목은 제외하고, 새로운 종목만 추가합니다.
         """
-        with CreonAPIClient._realtime_sub_lock: # 실시간 구독 락으로 보호
-            if stock_code in self._active_bid_subscriptions:
-                logger.warning(f"종목 [{stock_code}]의 10차 호가 실시간 구독이 이미 활성화되어 있습니다. 재구독을 시도합니다.")
-            
-            # 새로운 종목을 활성 구독 목록에 추가
-            self._active_bid_subscriptions.add(stock_code)
-            
-            # 기존 호가 구독 객체들을 모두 해지
-            for s_code in list(self.stock_bid_subscribers.keys()):
-                self.stock_bid_subscribers[s_code].Unsubscribe()
-                del self.stock_bid_subscribers[s_code]
-            
-            # 활성 구독 목록에 있는 모든 종목을 다시 구독
-            for s_code in self._active_bid_subscriptions:
-                subscriber = StockBidSubscriber()
-                subscriber.Subscribe(self, s_code)
-                self.stock_bid_subscribers[s_code] = subscriber
-            
-            logger.info(f"종목 [{stock_code}] 포함, 총 {len(self._active_bid_subscriptions)}개 종목 10차 호가 실시간 재구독 완료.")
+        with CreonAPIClient._realtime_sub_lock:
+            if stock_code in self.stock_bid_subscribers:
+                logger.warning(f"종목 [{stock_code}]의 10차 호가 실시간 구독이 이미 활성화되어 있습니다.")
+                return
 
+            try:
+                # 새 구독 객체 생성 및 구독 시작
+                subscriber = StockBidSubscriber()
+                subscriber.Subscribe(self, stock_code)
+                self.stock_bid_subscribers[stock_code] = subscriber
+                logger.info(f"종목 [{stock_code}] 10차 호가 실시간 구독 추가 완료. 현재 구독 중인 종목 수: {len(self.stock_bid_subscribers)}")
+            except Exception as e:
+                logger.error(f"종목 [{stock_code}] 10차 호가 실시간 구독 실패: {e}")
 
     def unsubscribe_realtime_bid(self, stock_code: str):
         """
         특정 종목의 실시간 10차 호가 (StockJpBid) 구독을 해지합니다.
-        Creon API의 특성을 고려하여, 해당 종목을 제외한 나머지 종목들을 재구독합니다.
         """
-        with CreonAPIClient._realtime_sub_lock: # 실시간 구독 락으로 보호
-            if stock_code not in self._active_bid_subscriptions:
+        with CreonAPIClient._realtime_sub_lock:
+            if stock_code not in self.stock_bid_subscribers:
                 logger.warning(f"종목 [{stock_code}]의 10차 호가 실시간 구독이 활성화되어 있지 않습니다.")
                 return
 
-            # 활성 구독 목록에서 해당 종목 제거
-            self._active_bid_subscriptions.discard(stock_code)
-
-            # 기존 호가 구독 객체들을 모두 해지
-            for s_code in list(self.stock_bid_subscribers.keys()):
-                self.stock_bid_subscribers[s_code].Unsubscribe()
-                del self.stock_bid_subscribers[s_code]
-
-            # 남은 활성 구독 목록에 있는 모든 종목을 다시 구독
-            if self._active_bid_subscriptions:
-                for s_code in self._active_bid_subscriptions:
-                    subscriber = StockBidSubscriber()
-                    subscriber.Subscribe(self, s_code)
-                    self.stock_bid_subscribers[s_code] = subscriber
-                logger.info(f"종목 [{stock_code}] 해지 후, 총 {len(self._active_bid_subscriptions)}개 종목 10차 호가 실시간 재구독 완료.")
-            else:
-                logger.info(f"종목 [{stock_code}] 해지 후, 10차 호가 실시간 구독 중인 종목이 없습니다.")
+            try:
+                # 해당 종목의 구독 객체를 해지
+                subscriber = self.stock_bid_subscribers.pop(stock_code)
+                subscriber.Unsubscribe()
+                logger.info(f"종목 [{stock_code}] 10차 호가 실시간 구독 해지 완료. 현재 구독 중인 종목 수: {len(self.stock_bid_subscribers)}")
+            except Exception as e:
+                logger.error(f"종목 [{stock_code}] 10차 호가 실시간 구독 해지 실패: {e}")
 
 
     def unsubscribe_all_realtime_data(self):
@@ -427,13 +398,14 @@ class CreonAPIClient:
             for stock_code in list(self.stock_cur_subscribers.keys()):
                 self.stock_cur_subscribers[stock_code].Unsubscribe()
             self.stock_cur_subscribers.clear()
-            self._active_cur_subscriptions.clear()
             
             # 호가 구독 해지
             for stock_code in list(self.stock_bid_subscribers.keys()):
                 self.stock_bid_subscribers[stock_code].Unsubscribe()
             self.stock_bid_subscribers.clear()
-            self._active_bid_subscriptions.clear()
+            
+            # 출력 시간 정보 정리
+            self._last_price_print_time_per_stock.clear()
 
             logger.info("모든 종목의 실시간 현재가/호가 구독 해지 완료.")
 

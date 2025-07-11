@@ -94,7 +94,7 @@ def connect_creon_auto_login(reconnect=True):
             logger.info("coStarter.exe 실행. 로그인 대기 중...")
 
             # 연결 될때까지 무한루프
-            max_wait_time = 60 # 최대 60초 대기
+            max_wait_time = 180 # 최대 60초 대기
             start_time = time.time()
             while True:
                 if CpCybos.IsConnect:
