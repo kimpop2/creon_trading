@@ -1546,4 +1546,318 @@ class DBManager:
             return True
         return False
 
+    # ----------------------------------------------------------------------------
+    # Feed 관련 테이블 메서드 (db_feed.py에서 성공적으로 테스트된 기능들)
+    # ----------------------------------------------------------------------------
     
+    def create_feed_tables(self):
+        """Feed 관련 테이블들을 생성합니다."""
+        return self.execute_sql_file('create_feed_tables')
+
+    def drop_feed_tables(self):
+        """Feed 관련 테이블들을 삭제합니다."""
+        return self.execute_sql_file('drop_feed_tables')
+    
+    # --- ohlcv_minute 테이블 관련 메서드 ---
+    def save_ohlcv_minute(self, ohlcv_data_list: List[Dict[str, Any]]) -> bool:
+        """
+        분봉 데이터를 DB의 ohlcv_minute 테이블에 저장하거나 업데이트합니다.
+        """
+        sql = """
+        INSERT INTO ohlcv_minute (stock_code, datetime, open, high, low, close, volume)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            open=VALUES(open), high=VALUES(high), low=VALUES(low), close=VALUES(close),
+            volume=VALUES(volume), updated_at=CURRENT_TIMESTAMP
+        """
+        data = [(d['stock_code'], d['datetime'], d['open'], d['high'],
+                 d['low'], d['close'], d['volume']) for d in ohlcv_data_list]
+        cursor = self.execute_sql(sql, data)
+        if cursor:
+            logger.info(f"분봉 데이터 {len(ohlcv_data_list)}건 저장/업데이트 완료.")
+            cursor.close()
+            return True
+        return False
+
+    def fetch_ohlcv_minute(self, stock_code: str, start_datetime: datetime, end_datetime: datetime) -> pd.DataFrame:
+        """
+        DB에서 특정 종목의 분봉 데이터를 조회합니다.
+        """
+        sql = """
+        SELECT stock_code, datetime, open, high, low, close, volume
+        FROM ohlcv_minute
+        WHERE stock_code = %s AND datetime BETWEEN %s AND %s
+        ORDER BY datetime ASC
+        """
+        params = (stock_code, start_datetime, end_datetime)
+        cursor = self.execute_sql(sql, params)
+        if cursor:
+            df = pd.DataFrame(cursor.fetchall())
+            cursor.close()
+            if not df.empty:
+                df['datetime'] = pd.to_datetime(df['datetime'])
+                df.set_index('datetime', inplace=True)
+                for col in ['open', 'high', 'low', 'close', 'volume']:
+                    if col in df.columns:
+                        df[col] = df[col].apply(lambda x: float(x) if isinstance(x, (Decimal, int, float)) else x)
+            return df
+        return pd.DataFrame()
+
+    # --- market_volume 테이블 관련 메서드 ---
+    def save_market_volume(self, market_volume_list: List[Dict[str, Any]]) -> bool:
+        """
+        시장별 거래대금 데이터를 DB의 market_volume 테이블에 저장하거나 업데이트합니다.
+        """
+        sql = """
+        INSERT INTO market_volume (market_type, date, time, total_amount)
+        VALUES (%s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            total_amount=VALUES(total_amount)
+        """
+        data = [(d['market_type'], d['date'], d['time'], d['total_amount']) for d in market_volume_list]
+        cursor = self.execute_sql(sql, data)
+        if cursor:
+            logger.info(f"시장별 거래대금 데이터 {len(market_volume_list)}건 저장/업데이트 완료.")
+            cursor.close()
+            return True
+        return False
+
+    def fetch_market_volume(self, market_type: str, start_date: date, end_date: date) -> pd.DataFrame:
+        """
+        DB에서 시장별 거래대금 데이터를 조회합니다.
+        """
+        sql = """
+        SELECT market_type, date, time, total_amount
+        FROM market_volume
+        WHERE market_type = %s AND date BETWEEN %s AND %s
+        ORDER BY date ASC, time ASC
+        """
+        params = (market_type, start_date, end_date)
+        cursor = self.execute_sql(sql, params)
+        if cursor:
+            df = pd.DataFrame(cursor.fetchall())
+            cursor.close()
+            if not df.empty:
+                # 'date'와 'time' 컬럼을 이용하여 'datetime' 컬럼 생성
+                # time 컬럼이 Timedelta로 변환될 수 있으므로 안전하게 처리
+                def combine_datetime(row):
+                    try:
+                        if hasattr(row['time'], 'time'):
+                            return datetime.combine(row['date'], row['time'].time())
+                        elif hasattr(row['time'], 'total_seconds'):
+                            # Timedelta인 경우
+                            seconds = int(row['time'].total_seconds())
+                            hours = seconds // 3600
+                            minutes = (seconds % 3600) // 60
+                            seconds = seconds % 60
+                            time_obj = time(hours, minutes, seconds)
+                            return datetime.combine(row['date'], time_obj)
+                        else:
+                            return datetime.combine(row['date'], row['time'])
+                    except:
+                        return None
+                
+                df['datetime'] = df.apply(combine_datetime, axis=1)
+                
+                # 필요에 따라 다른 데이터 타입 변환 (예: 거래량/거래대금 float 변환)
+                df['total_amount'] = df['total_amount'].apply(lambda x: float(x) if isinstance(x, Decimal) else x)
+            return df
+        return pd.DataFrame()
+
+    # --- news_raw 테이블 관련 메서드 ---
+    def save_news_raw(self, news_list: List[Dict[str, Any]]) -> bool:
+        """
+        원본 뉴스 및 텔레그램 메시지를 DB의 news_raw 테이블에 저장합니다.
+        """
+        sql = """
+        INSERT INTO news_raw (source, datetime, title, content, url, related_stocks)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        """
+        data = []
+        for n in news_list:
+            related_stocks_json = json.dumps(n.get('related_stocks')) if n.get('related_stocks') else None
+            data.append((
+                n['source'], n['datetime'], n['title'], n.get('content'), n.get('url'), related_stocks_json
+            ))
+        cursor = self.execute_sql(sql, data)
+        if cursor:
+            logger.info(f"뉴스 데이터 {len(news_list)}건 저장 완료.")
+            cursor.close()
+            return True
+        return False
+
+    def fetch_news_raw(self, start_datetime: datetime, end_datetime: datetime, source: Optional[str] = None) -> pd.DataFrame:
+        """
+        DB에서 원본 뉴스 및 메시지 데이터를 조회합니다.
+        """
+        sql = "SELECT id, source, datetime, title, content, url, related_stocks FROM news_raw WHERE datetime BETWEEN %s AND %s"
+        params = [start_datetime, end_datetime]
+        if source:
+            sql += " AND source = %s"
+            params.append(source)
+        sql += " ORDER BY datetime ASC"
+
+        cursor = self.execute_sql(sql, tuple(params))
+        if cursor:
+            df = pd.DataFrame(cursor.fetchall())
+            cursor.close()
+            if not df.empty:
+                df['datetime'] = pd.to_datetime(df['datetime'])
+                df['related_stocks'] = df['related_stocks'].apply(lambda x: json.loads(x) if x else [])
+            return df
+        return pd.DataFrame()
+
+    # --- investor_trends 테이블 관련 메서드 ---
+    def save_investor_trends(self, trends_list: List[Dict[str, Any]]) -> bool:
+        """
+        투자자 매매 동향 데이터를 DB의 investor_trends 테이블에 저장하거나 업데이트합니다.
+        """
+        sql = """
+        INSERT INTO investor_trends (stock_code, date, time, current_price, volume_total,
+                                     net_foreign, net_institutional, net_insurance_etc, net_trust,
+                                     net_bank, net_pension, net_gov_local, net_other_corp, data_type)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            current_price=VALUES(current_price), volume_total=VALUES(volume_total),
+            net_foreign=VALUES(net_foreign), net_institutional=VALUES(net_institutional),
+            net_insurance_etc=VALUES(net_insurance_etc), net_trust=VALUES(net_trust),
+            net_bank=VALUES(net_bank), net_pension=VALUES(net_pension),
+            net_gov_local=VALUES(net_gov_local), net_other_corp=VALUES(net_other_corp)
+        """
+        data = []
+        for t in trends_list:
+            data.append((
+                t['stock_code'], t['date'], t['time'], t.get('current_price'), t.get('volume_total'),
+                t.get('net_foreign'), t.get('net_institutional'), t.get('net_insurance_etc'), t.get('net_trust'),
+                t.get('net_bank'), t.get('net_pension'), t.get('net_gov_local'), t.get('net_other_corp'), t['data_type']
+            ))
+        cursor = self.execute_sql(sql, data)
+        if cursor:
+            logger.info(f"투자자 매매 동향 데이터 {len(trends_list)}건 저장/업데이트 완료.")
+            cursor.close()
+            return True
+        return False
+
+    def fetch_investor_trends(self, stock_code: str, start_date: date, end_date: date, data_type: str) -> pd.DataFrame:
+        """
+        DB에서 특정 종목의 투자자 매매 동향 데이터를 조회합니다.
+        """
+        sql = """
+        SELECT stock_code, date, time, current_price, volume_total,
+               net_foreign, net_institutional, net_insurance_etc, net_trust,
+               net_bank, net_pension, net_gov_local, net_other_corp, data_type
+        FROM investor_trends
+        WHERE stock_code = %s AND date BETWEEN %s AND %s AND data_type = %s
+        ORDER BY date ASC, time ASC
+        """
+        params = (stock_code, start_date, end_date, data_type)
+        cursor = self.execute_sql(sql, params)
+        if cursor:
+            df = pd.DataFrame(cursor.fetchall())
+            cursor.close()
+            if not df.empty:
+                # 'date'와 'time' 컬럼을 이용하여 'datetime' 컬럼 생성
+                # time 컬럼이 Timedelta로 변환될 수 있으므로 안전하게 처리
+                def combine_datetime(row):
+                    try:
+                        if hasattr(row['time'], 'time'):
+                            return datetime.combine(row['date'], row['time'].time())
+                        elif hasattr(row['time'], 'total_seconds'):
+                            # Timedelta인 경우
+                            seconds = int(row['time'].total_seconds())
+                            hours = seconds // 3600
+                            minutes = (seconds % 3600) // 60
+                            seconds = seconds % 60
+                            time_obj = time(hours, minutes, seconds)
+                            return datetime.combine(row['date'], time_obj)
+                        else:
+                            return datetime.combine(row['date'], row['time'])
+                    except:
+                        return None
+                
+                df['datetime'] = df.apply(combine_datetime, axis=1)
+                
+                # 수치형 데이터 변환
+                for col in ['current_price', 'volume_total', 'net_foreign', 'net_institutional', 'net_insurance_etc', 'net_trust', 'net_bank', 'net_pension', 'net_gov_local', 'net_other_corp']:
+                    if col in df.columns:
+                        df[col] = df[col].apply(lambda x: float(x) if isinstance(x, (Decimal, int, float)) else x)
+            return df
+        return pd.DataFrame()
+
+    # --- news_summaries 테이블 관련 메서드 ---
+    def save_news_summaries(self, summaries_list: List[Dict[str, Any]]) -> bool:
+        """
+        NLP 분석을 통해 요약된 뉴스 및 감성 정보를 DB의 news_summaries 테이블에 저장합니다.
+        """
+        sql = """
+        INSERT INTO news_summaries (original_news_id, summary, sentiment_score, processed_at)
+        VALUES (%s, %s, %s, %s)
+        """
+        data = [(s['original_news_id'], s['summary'], s.get('sentiment_score'), s['processed_at']) for s in summaries_list]
+        cursor = self.execute_sql(sql, data)
+        if cursor:
+            logger.info(f"뉴스 요약 데이터 {len(summaries_list)}건 저장 완료.")
+            cursor.close()
+            return True
+        return False
+
+    def fetch_news_summaries(self, start_datetime: datetime, end_datetime: datetime, original_news_id: Optional[int] = None) -> pd.DataFrame:
+        """
+        DB에서 뉴스 요약 및 감성 분석 결과를 조회합니다.
+        """
+        sql = "SELECT id, original_news_id, summary, sentiment_score, processed_at FROM news_summaries WHERE processed_at BETWEEN %s AND %s"
+        params = [start_datetime, end_datetime]
+        if original_news_id:
+            sql += " AND original_news_id = %s"
+            params.append(original_news_id)
+        sql += " ORDER BY processed_at ASC"
+
+        cursor = self.execute_sql(sql, tuple(params))
+        if cursor:
+            df = pd.DataFrame(cursor.fetchall())
+            cursor.close()
+            if not df.empty:
+                df['processed_at'] = pd.to_datetime(df['processed_at'])
+                df['sentiment_score'] = df['sentiment_score'].apply(lambda x: float(x) if isinstance(x, Decimal) else x)
+            return df
+        return pd.DataFrame()
+
+    # --- thematic_stocks 테이블 관련 메서드 ---
+    def save_thematic_stocks(self, thematic_list: List[Dict[str, Any]]) -> bool:
+        """
+        발굴된 테마 및 관련 종목 정보를 DB의 thematic_stocks 테이블에 저장하거나 업데이트합니다.
+        """
+        sql = """
+        INSERT INTO thematic_stocks (theme_name, stock_code, analysis_date, relevance_score, mention_count)
+        VALUES (%s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            relevance_score=VALUES(relevance_score), mention_count=VALUES(mention_count)
+        """
+        data = [(t['theme_name'], t['stock_code'], t['analysis_date'], t.get('relevance_score'), t.get('mention_count')) for t in thematic_list]
+        cursor = self.execute_sql(sql, data)
+        if cursor:
+            logger.info(f"테마별 종목 데이터 {len(thematic_list)}건 저장/업데이트 완료.")
+            cursor.close()
+            return True
+        return False
+
+    def fetch_thematic_stocks(self, analysis_date: date, theme_name: Optional[str] = None) -> pd.DataFrame:
+        """
+        DB에서 테마별 관련 종목 정보를 조회합니다.
+        """
+        sql = "SELECT theme_name, stock_code, analysis_date, relevance_score, mention_count FROM thematic_stocks WHERE analysis_date = %s"
+        params = [analysis_date]
+        if theme_name:
+            sql += " AND theme_name = %s"
+            params.append(theme_name)
+        sql += " ORDER BY relevance_score DESC"
+
+        cursor = self.execute_sql(sql, tuple(params))
+        if cursor:
+            df = pd.DataFrame(cursor.fetchall())
+            cursor.close()
+            if not df.empty:
+                df['analysis_date'] = pd.to_datetime(df['analysis_date']).dt.date
+                df['relevance_score'] = df['relevance_score'].apply(lambda x: float(x) if isinstance(x, Decimal) else x)
+            return df
+        return pd.DataFrame() 

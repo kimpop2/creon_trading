@@ -14,8 +14,7 @@ CREATE TABLE IF NOT EXISTS ohlcv_minute (
     volume BIGINT NOT NULL COMMENT '거래량',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '기록 생성 시각',
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '최종 업데이트 시각',
-    UNIQUE KEY uk_ohlcv_minute (stock_code, datetime),
-    FOREIGN KEY (stock_code) REFERENCES stock_info(stock_code) ON DELETE CASCADE
+    UNIQUE KEY uk_ohlcv_minute (stock_code, datetime)
 ) COMMENT='분봉 OHLCV 데이터';
 
 
@@ -69,7 +68,6 @@ CREATE TABLE IF NOT EXISTS investor_trends (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '기록 생성 시각',
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '최종 업데이트 시각',
     UNIQUE KEY uk_investor_trends (stock_code, date, time, data_type),
-    FOREIGN KEY (stock_code) REFERENCES stock_info(stock_code) ON DELETE CASCADE,
     INDEX idx_investor_trends_date_time (date, time)
 ) COMMENT='투자자별 매매 동향 데이터';
 
@@ -99,22 +97,5 @@ CREATE TABLE IF NOT EXISTS thematic_stocks (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '기록 생성 시각',
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '최종 업데이트 시각',
     UNIQUE KEY uk_thematic_stocks (theme_name, stock_code, analysis_date),
-    FOREIGN KEY (stock_code) REFERENCES stock_info(stock_code) ON DELETE CASCADE,
     INDEX idx_thematic_stocks_theme_date (theme_name, analysis_date)
 ) COMMENT='테마별 관련 종목 정보';
-
--- daily_universe 테이블 생성 (일별 매매 대상 유니버스 종목 및 점수)
--- NLP_Analysis 모듈에서 처리 (setup_daily_universe.py)
-CREATE TABLE IF NOT EXISTS daily_universe (
-    id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '고유 ID',
-    stock_code VARCHAR(10) NOT NULL COMMENT '종목 코드',
-    date DATE NOT NULL COMMENT '유니버스 선정 날짜',
-    total_score DECIMAL(10, 4) NOT NULL COMMENT '계산된 총 점수 (가격 추세, 거래량, 테마 등)',
-    score_detail JSON COMMENT '점수 세부 내용 (예: {"price_trend": 0.5, "volume": 0.3})',
-    is_selected BOOLEAN DEFAULT FALSE COMMENT '매매 유니버스에 포함 여부',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '기록 생성 시각',
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '최종 업데이트 시각',
-    UNIQUE KEY uk_daily_universe (stock_code, date),
-    FOREIGN KEY (stock_code) REFERENCES stock_info(stock_code) ON DELETE CASCADE,
-    INDEX idx_daily_universe_date (date)
-) COMMENT='일일 매매 유니버스 선정 결과';

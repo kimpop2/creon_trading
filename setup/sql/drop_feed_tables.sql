@@ -6,7 +6,6 @@ SET FOREIGN_KEY_CHECKS = 0;
 
 -- Feed 관련 테이블들을 삭제합니다.
 -- 자식 테이블을 먼저 삭제하고 부모 테이블을 나중에 삭제하는 것이 좋습니다.
--- DROP TABLE IF EXISTS daily_universe;
 DROP TABLE IF EXISTS thematic_stocks;
 DROP TABLE IF EXISTS news_summaries;
 DROP TABLE IF EXISTS investor_trends;

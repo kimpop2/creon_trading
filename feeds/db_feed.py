@@ -7,6 +7,7 @@ from datetime import datetime, date, timedelta, time
 import os
 import sys
 import json
+import re
 from decimal import Decimal
 from typing import Dict, Any, Optional, List, Tuple
 
@@ -155,12 +156,75 @@ class DBFeed:
             return False
 
     # --- stock_info 테이블 관련 메서드 ---
-    def create_stock_tables(self):
-        return self.execute_sql_file('create_feeds_tables')
+    def create_feed_tables(self):
+        return self.execute_sql_file('create_feed_tables')
 
-    def drop_stock_tables(self):
-        return self.execute_sql_file('drop_feeds_tables')
+    def drop_feed_tables(self):
+        return self.execute_sql_file('drop_feed_tables')
+    
+    def execute_sql_file(self, file_name):
+        """특정 SQL 파일을 읽어 SQL 쿼리를 실행합니다."""
+        # 이 스크립트 파일의 디렉토리를 기준으로 'sql' 하위 디렉토리를 찾습니다.
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+        script_dir = os.path.join(project_root, 'setup')
+        sql_dir = os.path.join(script_dir, 'sql') 
+        schema_path = os.path.join(sql_dir, file_name + '.sql')
 
+        logger.info(f"SQL 파일 로드 및 실행 시도: {schema_path}")
+        if not os.path.exists(schema_path): 
+            logger.error(f"SQL 파일 '{schema_path}'을(를) 찾을 수 없습니다. 경로를 확인해주세요.")
+            return False
+
+        sql_script = ''
+        try:
+            with open(schema_path, 'r', encoding='utf-8') as f:
+                sql_script = f.read()
+            return self.execute_script(sql_script)
+        except Exception as e:
+            logger.error(f"SQL 파일 읽기 또는 실행 오류 발생: {e}", exc_info=True)
+            return False
+
+    def execute_script(self, sql_script):
+        """SQL 스크립트를 실행하여 모든 테이블을 생성합니다."""
+        conn = self.get_db_connection()
+        if not conn:
+            logger.error("DB 연결이 없어 SQL 스크립트를 실행할 수 없습니다.")
+            return False
+
+        cur_command = ''
+        try:
+            # Step 1: Remove all SQL comments (single-line -- and multi-line /* */)
+            # This is a more robust approach to clean the script before splitting.
+            cleaned_script = re.sub(r'--.*$', '', sql_script, flags=re.MULTILINE) # Remove single-line comments
+            cleaned_script = re.sub(r'/\*.*?\*/', '', cleaned_script, flags=re.DOTALL) # Remove multi-line comments
+
+            # Step 2: Split by semicolon and filter out empty strings and purely whitespace strings
+            sql_commands = [
+                cmd.strip() for cmd in cleaned_script.split(';') if cmd.strip()
+            ]
+            
+            logger.debug(f"Parsed SQL commands ({len(sql_commands)} found):")
+            for i, cmd in enumerate(sql_commands):
+                logger.debug(f"  Command {i+1} (first 300 chars): {cmd[:300]}...") 
+
+            if not sql_commands:
+                logger.warning("SQL 스크립트에서 실행할 유효한 명령어를 찾을 수 없습니다. (스크립트가 비어있거나 모든 내용이 주석 처리되었나요?)")
+                return False 
+
+            with conn.cursor() as cursor:
+                for i, command in enumerate(sql_commands):
+                    cur_command = command
+                    logger.debug(f"Executing SQL command {i+1}/{len(sql_commands)}: {cur_command[:100]}...") 
+                    cursor.execute(cur_command)
+            conn.commit()
+            logger.info(f"SQL 스크립트 ({len(sql_commands)}개의 명령)가 정상적으로 실행되었습니다.")
+            return True
+        except Exception as e:
+            logger.error(f"SQL 스크립트 실행 오류 발생: {e}", exc_info=True)
+            logger.error(f"오류가 발생한 명령어: {cur_command}") 
+            conn.rollback()
+            return False
+                
     def save_stock_info(self, stock_info_list: List[Dict[str, Any]]) -> bool:
         """
         종목 기본 정보를 DB의 stock_info 테이블에 저장하거나 업데이트합니다.
@@ -233,7 +297,7 @@ class DBFeed:
         INSERT INTO market_volume (market_type, date, time, total_amount)
         VALUES (%s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
-            total_amount=VALUES(total_amount), updated_at=CURRENT_TIMESTAMP
+            total_amount=VALUES(total_amount)
         """
         data = [(d['market_type'], d['date'], d['time'], d['total_amount']) for d in market_volume_list]
         return self.execute_sql(sql, data) is not None
@@ -253,8 +317,28 @@ class DBFeed:
         if cursor:
             df = pd.DataFrame(cursor.fetchall())
             if not df.empty:
-                df['datetime'] = pd.to_datetime(df['date'].astype(str) + ' ' + df['time'].astype(str))
-                df.set_index('datetime', inplace=True)
+                # 'date'와 'time' 컬럼을 이용하여 'datetime' 컬럼 생성
+                # time 컬럼이 Timedelta로 변환될 수 있으므로 안전하게 처리
+                def combine_datetime(row):
+                    try:
+                        if hasattr(row['time'], 'time'):
+                            return datetime.combine(row['date'], row['time'].time())
+                        elif hasattr(row['time'], 'total_seconds'):
+                            # Timedelta인 경우
+                            seconds = int(row['time'].total_seconds())
+                            hours = seconds // 3600
+                            minutes = (seconds % 3600) // 60
+                            seconds = seconds % 60
+                            time_obj = time(hours, minutes, seconds)
+                            return datetime.combine(row['date'], time_obj)
+                        else:
+                            return datetime.combine(row['date'], row['time'])
+                    except:
+                        return None
+                
+                df['datetime'] = df.apply(combine_datetime, axis=1)
+                
+                # 필요에 따라 다른 데이터 타입 변환 (예: 거래량/거래대금 float 변환)
                 df['total_amount'] = df['total_amount'].apply(lambda x: float(x) if isinstance(x, Decimal) else x)
             return df
         return pd.DataFrame()
@@ -311,8 +395,7 @@ class DBFeed:
             net_foreign=VALUES(net_foreign), net_institutional=VALUES(net_institutional),
             net_insurance_etc=VALUES(net_insurance_etc), net_trust=VALUES(net_trust),
             net_bank=VALUES(net_bank), net_pension=VALUES(net_pension),
-            net_gov_local=VALUES(net_gov_local), net_other_corp=VALUES(net_other_corp),
-            updated_at=CURRENT_TIMESTAMP
+            net_gov_local=VALUES(net_gov_local), net_other_corp=VALUES(net_other_corp)
         """
         data = []
         for t in trends_list:
@@ -340,11 +423,31 @@ class DBFeed:
         if cursor:
             df = pd.DataFrame(cursor.fetchall())
             if not df.empty:
-                df['datetime'] = pd.to_datetime(df['date'].astype(str) + ' ' + df['time'].astype(str))
-                df.set_index('datetime', inplace=True)
+                # 'date'와 'time' 컬럼을 이용하여 'datetime' 컬럼 생성
+                # time 컬럼이 Timedelta로 변환될 수 있으므로 안전하게 처리
+                def combine_datetime(row):
+                    try:
+                        if hasattr(row['time'], 'time'):
+                            return datetime.combine(row['date'], row['time'].time())
+                        elif hasattr(row['time'], 'total_seconds'):
+                            # Timedelta인 경우
+                            seconds = int(row['time'].total_seconds())
+                            hours = seconds // 3600
+                            minutes = (seconds % 3600) // 60
+                            seconds = seconds % 60
+                            time_obj = time(hours, minutes, seconds)
+                            return datetime.combine(row['date'], time_obj)
+                        else:
+                            return datetime.combine(row['date'], row['time'])
+                    except:
+                        return None
+                
+                df['datetime'] = df.apply(combine_datetime, axis=1)
+                
+                # 수치형 데이터 변환
                 for col in ['current_price', 'volume_total', 'net_foreign', 'net_institutional', 'net_insurance_etc', 'net_trust', 'net_bank', 'net_pension', 'net_gov_local', 'net_other_corp']:
                     if col in df.columns:
-                        df[col] = df[col].apply(lambda x: float(x) if isinstance(x, Decimal) else x)
+                        df[col] = df[col].apply(lambda x: float(x) if isinstance(x, (Decimal, int, float)) else x)
             return df
         return pd.DataFrame()
 
@@ -389,8 +492,7 @@ class DBFeed:
         INSERT INTO thematic_stocks (theme_name, stock_code, analysis_date, relevance_score, mention_count)
         VALUES (%s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
-            relevance_score=VALUES(relevance_score), mention_count=VALUES(mention_count),
-            updated_at=CURRENT_TIMESTAMP
+            relevance_score=VALUES(relevance_score), mention_count=VALUES(mention_count)
         """
         data = [(t['theme_name'], t['stock_code'], t['analysis_date'], t.get('relevance_score'), t.get('mention_count')) for t in thematic_list]
         return self.execute_sql(sql, data) is not None
@@ -421,38 +523,67 @@ class DBFeed:
         일일 매매 유니버스 종목 및 점수를 DB의 daily_universe 테이블에 저장하거나 업데이트합니다.
         """
         sql = """
-        INSERT INTO daily_universe (stock_code, date, total_score, score_detail, is_selected)
-        VALUES (%s, %s, %s, %s, %s)
+        INSERT INTO daily_universe 
+        (date, stock_code, stock_name, stock_score, 
+         price_trend_score, trading_volume_score, volatility_score, theme_mention_score,
+         theme_id, theme)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
-            total_score=VALUES(total_score), score_detail=VALUES(score_detail),
-            is_selected=VALUES(is_selected), updated_at=CURRENT_TIMESTAMP
+            stock_name=VALUES(stock_name), stock_score=VALUES(stock_score),
+            price_trend_score=VALUES(price_trend_score), trading_volume_score=VALUES(trading_volume_score),
+            volatility_score=VALUES(volatility_score), theme_mention_score=VALUES(theme_mention_score),
+            theme_id=VALUES(theme_id), theme=VALUES(theme)
         """
         data = []
         for u in universe_list:
-            score_detail_json = json.dumps(u.get('score_detail')) if u.get('score_detail') else None
             data.append((
-                u['stock_code'], u['date'], u['total_score'], score_detail_json, u.get('is_selected', False)
+                u['date'], u['stock_code'], u.get('stock_name'), u.get('stock_score'),
+                u.get('price_trend_score'), u.get('trading_volume_score'), 
+                u.get('volatility_score'), u.get('theme_mention_score'),
+                u.get('theme_id'), u.get('theme')
             ))
         return self.execute_sql(sql, data) is not None
 
-    def fetch_daily_universe(self, date: date, is_selected: Optional[bool] = None) -> pd.DataFrame:
+    def fetch_daily_universe(self, target_date: date = None, stock_code: str = None) -> pd.DataFrame:
         """
-        DB에서 일일 매매 유니버스 선정 결과를 조회합니다.
+        DB에서 daily_universe 데이터를 조회합니다.
         """
-        sql = "SELECT stock_code, date, total_score, score_detail, is_selected FROM daily_universe WHERE date = %s"
-        params = [date]
-        if is_selected is not None:
-            sql += " AND is_selected = %s"
-            params.append(1 if is_selected else 0)
-        sql += " ORDER BY total_score DESC"
+        sql = """
+        SELECT date, stock_code, stock_name, stock_score, 
+               price_trend_score, trading_volume_score, volatility_score, theme_mention_score,
+               theme_id, theme
+        FROM daily_universe
+        WHERE 1=1
+        """
+        params = []
+        if target_date:
+            sql += " AND date = %s"
+            params.append(target_date)
+        if stock_code:
+            sql += " AND stock_code = %s"
+            params.append(stock_code)
+        
+        sql += " ORDER BY date DESC, stock_score DESC"
 
-        cursor = self.execute_sql(sql, params)
+        cursor = self.execute_sql(sql, tuple(params))
         if cursor:
-            df = pd.DataFrame(cursor.fetchall())
+            result = cursor.fetchall()
+            # SELECT 문과 순서 일치하도록 컬럼 이름 직접 지정
+            columns = [
+                'date', 'stock_code', 'stock_name', 'stock_score',
+                'price_trend_score', 'trading_volume_score', 'volatility_score', 'theme_mention_score',
+                'theme_id', 'theme'
+            ]
+            df = pd.DataFrame(result, columns=columns)
             if not df.empty:
+                # 날짜 데이터 표준화
                 df['date'] = pd.to_datetime(df['date']).dt.date
-                df['total_score'] = df['total_score'].apply(lambda x: float(x) if isinstance(x, Decimal) else x)
-                df['score_detail'] = df['score_detail'].apply(lambda x: json.loads(x) if x else {})
-                df['is_selected'] = df['is_selected'].astype(bool)
+                
+                # 수치형 데이터 변환
+                numeric_cols = ['stock_score', 'price_trend_score', 'trading_volume_score', 
+                               'volatility_score', 'theme_mention_score', 'theme_id']
+                for col in numeric_cols:
+                    if col in df.columns:
+                        df[col] = df[col].apply(lambda x: float(x) if isinstance(x, (Decimal, int, float)) else x)
             return df
         return pd.DataFrame()
