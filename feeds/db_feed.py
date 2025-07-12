@@ -12,7 +12,6 @@ from typing import Dict, Any, Optional, List, Tuple
 
 # 로거 설정
 logger = logging.getLogger(__name__)
-
 # SQLAlchemy는 필요할 때 임포트 (Python 3.9 환경 호환성 고려)
 try:
     from sqlalchemy import create_engine
@@ -96,70 +95,6 @@ class DBFeed:
                 logger.error(f"DBFeed: Failed to create SQLAlchemy Engine: {e}", exc_info=True)
                 self._engine = None
         return self._engine
-    def check_table_exist(self, table_name):
-        """MariaDB에서 테이블 존재 여부를 확인하는 메서드"""
-        table_name = table_name.lower() # 테이블 이름을 소문자로 변환하여 비교
-        conn = self.get_db_connection()
-        if not conn:
-            logger.error("DB 연결이 없어 테이블 존재 여부를 확인할 수 없습니다.")
-            return False
-        
-        try:
-            with conn.cursor() as cur:
-                sql = "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = %s AND table_name = %s"
-                cur.execute(sql, (self.db_name, table_name))
-                result = cur.fetchone()
-                exists = result['COUNT(*)'] > 0
-                logger.debug(f"테이블 '{table_name}' 존재 여부 확인 결과: {exists}")
-                return exists
-        except pymysql.MySQLError as e:
-            logger.error(f"MariaDB Error during table existence check for '{table_name}': {e}", exc_info=True)
-            return False
-        except Exception as e:
-            logger.error(f"An unexpected error occurred during table existence check for '{table_name}': {e}", exc_info=True)
-            return False
-
-    def execute_script(self, sql_script):
-        """SQL 스크립트를 실행하여 모든 테이블을 생성합니다."""
-        conn = self.get_db_connection()
-        if not conn:
-            logger.error("DB 연결이 없어 SQL 스크립트를 실행할 수 없습니다.")
-            return False
-
-        cur_command = ''
-        try:
-            # Step 1: Remove all SQL comments (single-line -- and multi-line /* */)
-            # This is a more robust approach to clean the script before splitting.
-            cleaned_script = re.sub(r'--.*$', '', sql_script, flags=re.MULTILINE) # Remove single-line comments
-            cleaned_script = re.sub(r'/\*.*?\*/', '', cleaned_script, flags=re.DOTALL) # Remove multi-line comments
-
-            # Step 2: Split by semicolon and filter out empty strings and purely whitespace strings
-            sql_commands = [
-                cmd.strip() for cmd in cleaned_script.split(';') if cmd.strip()
-            ]
-            
-            logger.debug(f"Parsed SQL commands ({len(sql_commands)} found):")
-            for i, cmd in enumerate(sql_commands):
-                logger.debug(f"  Command {i+1} (first 300 chars): {cmd[:300]}...") 
-
-            if not sql_commands:
-                logger.warning("SQL 스크립트에서 실행할 유효한 명령어를 찾을 수 없습니다. (스크립트가 비어있거나 모든 내용이 주석 처리되었나요?)")
-                return False 
-
-            with conn.cursor() as cursor:
-                for i, command in enumerate(sql_commands):
-                    cur_command = command
-                    logger.debug(f"Executing SQL command {i+1}/{len(sql_commands)}: {cur_command[:100]}...") 
-                    cursor.execute(cur_command)
-            conn.commit()
-            logger.info(f"SQL 스크립트 ({len(sql_commands)}개의 명령)가 정상적으로 실행되었습니다.")
-            return True
-        except Exception as e:
-            logger.error(f"SQL 스크립트 실행 오류 발생: {e}", exc_info=True)
-            logger.error(f"오류가 발생한 명령어: {cur_command}") 
-            conn.rollback()
-            return False
-        
 
     def execute_sql(self, sql: str, params: Optional[Any] = None) -> Optional[pymysql.cursors.DictCursor]:
         """
