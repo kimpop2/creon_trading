@@ -24,9 +24,9 @@ from trade.backtest import Backtest
 from strategies.sma_daily import SMADaily
 from strategies.triple_screen_daily import TripleScreenDaily
 from manager.backtest_manager import BacktestManager
-from manager.db_manager import DBManager # DBManager import 추가
+from manager.db_manager import DBManager
 from trade.backtest_report import BacktestReport
-# from selector.stock_selector import StockSelector # StockSelector는 더 이상 필요 없으므로 삭제
+from selector.stock_selector import StockSelector
 from strategies.open_minute import OpenMinute
 
 # 로거 설정
@@ -42,7 +42,7 @@ class GridSearchOptimizer:
                  api_client: CreonAPIClient,
                  backtest_manager: BacktestManager,
                  report: BacktestReport,
-                 db_manager: DBManager, # stock_selector 대신 db_manager를 받도록 변경
+                 stock_selector: StockSelector,
                  initial_cash: float = 10_000_000):
         """
         GridSearchOptimizer 초기화
@@ -51,13 +51,13 @@ class GridSearchOptimizer:
             api_client: Creon API 클라이언트
             backtest_manager: 데이터 매니저
             report: 리포터
-            db_manager: DB 매니저 (daily_universe에서 종목 조회용)
+            stock_selector: 종목 선택기
             initial_cash: 초기 자본금
         """
         self.api_client = api_client
         self.backtest_manager = backtest_manager
         self.report = report
-        self.db_manager = db_manager # db_manager 저장
+        self.stock_selector = stock_selector
         self.initial_cash = initial_cash
         
         # 최적화 결과 저장
@@ -80,7 +80,7 @@ class GridSearchOptimizer:
         sma_short_periods = [1, 2, 3, 4]        # 2일 주변 세밀 조정
         sma_long_periods = [8, 10, 12, 15]      # 10일 주변 세밀 조정
         volume_ma_periods = [2, 3, 4, 5]        # 3일 주변 세밀 조정
-        num_top_stocks = [2, 3, 4, 5]           # 3개 주변 세밀 조정 (전략이 선택할 상위 종목 수)
+        num_top_stocks = [2, 3, 4, 5]           # 3개 주변 세밀 조정
         minute_rsi_periods = [7, 14, 21]         # 분봉 RSI 기간 추가
         minute_rsi_oversold = [25, 30]           # 분봉 RSI 과매도
         minute_rsi_overbought = [70, 75]         # 분봉 RSI 과매수
@@ -168,7 +168,8 @@ class GridSearchOptimizer:
     def run_single_backtest(self, 
                            params: Dict[str, Any], 
                            start_date: datetime.date, 
-                           end_date: datetime.date) -> Dict[str, Any]: # sector_stocks 인자 제거
+                           end_date: datetime.date,
+                           sector_stocks: Dict[str, List[Tuple[str, str]]]) -> Dict[str, Any]:
         """
         단일 파라미터 조합으로 백테스트를 실행합니다.
         
@@ -176,6 +177,7 @@ class GridSearchOptimizer:
             params: 파라미터 조합
             start_date: 백테스트 시작일
             end_date: 백테스트 종료일
+            sector_stocks: 섹터별 종목 정보
             
         Returns:
             백테스트 결과
@@ -186,7 +188,7 @@ class GridSearchOptimizer:
                 backtest_manager=self.backtest_manager,
                 api_client=self.api_client,
                 backtest_report=self.report,
-                db_manager=self.db_manager, # db_manager 전달
+                stock_selector=self.stock_selector,
                 initial_cash=self.initial_cash
             )
             
@@ -227,12 +229,11 @@ class GridSearchOptimizer:
             # 손절매 파라미터 설정
             backtest.set_broker_stop_loss_params(params['stop_loss_params'])
             
-            # 데이터 로딩 (이제 이 함수는 이미 캐시된 데이터를 사용하거나, 필요시 추가 로딩)
-            # _load_backtest_data(backtest, start_date, end_date, sector_stocks) 호출 제거
-            # Backtest 클래스 내부에서 매일 daily_universe를 조회하여 종목을 선택하고 데이터를 사용하도록 변경되어야 함
+            # 데이터 로딩
+            self._load_backtest_data(backtest, start_date, end_date, sector_stocks)
             
             # 백테스트 실행
-            portfolio_values, metrics = backtest.run(start_date, end_date) # Backtest.run 내부에서 종목 선택 및 데이터 사용
+            portfolio_values, metrics = backtest.run(start_date, end_date)
             
             # 결과 정리
             result = {
@@ -257,9 +258,13 @@ class GridSearchOptimizer:
                 'error': str(e)
             }
     
-    def _load_all_unique_universe_data(self, start_date: datetime.date, end_date: datetime.date):
+    def _load_backtest_data(self, 
+                           backtest: Backtest, 
+                           start_date: datetime.date, 
+                           end_date: datetime.date,
+                           sector_stocks: Dict[str, List[Tuple[str, str]]]):
         """
-        백테스트 기간 동안 daily_universe에 등장할 수 있는 모든 고유 종목의 데이터를 로딩합니다.
+        백테스트에 필요한 데이터를 로딩합니다.
         """
         # 데이터 가져오기 시작일 (백테스트 시작일 1개월 전)
         data_fetch_start = (start_date - timedelta(days=30)).replace(day=1)
@@ -269,35 +274,39 @@ class GridSearchOptimizer:
         if safe_asset_code not in self.daily_ohlcv_cache:
             daily_df = self.backtest_manager.cache_daily_ohlcv(safe_asset_code, data_fetch_start, end_date)
             self.daily_ohlcv_cache[safe_asset_code] = daily_df
-        # else: 이미 캐시되어 있으므로 추가 로딩 불필요
-
-        # 백테스트 기간 동안 daily_universe에 등장하는 모든 고유 종목 코드 가져오기
-        # 이 함수는 DBManager에 구현되어야 합니다.
-        unique_stocks_in_universe = self.db_manager.get_unique_universe_stocks_in_period(start_date, end_date)
+        else:
+            daily_df = self.daily_ohlcv_cache[safe_asset_code]
+        backtest.add_daily_data(safe_asset_code, daily_df)
         
-        logger.info(f"백테스트 기간 ({start_date} ~ {end_date}) 동안 daily_universe에 등장하는 고유 종목 {len(unique_stocks_in_universe)}개 데이터 로딩 시작.")
-
-        for stock_code, stock_name in unique_stocks_in_universe:
-            if stock_code not in self.daily_ohlcv_cache:
-                daily_df = self.backtest_manager.cache_daily_ohlcv(stock_code, data_fetch_start, end_date)
-                self.daily_ohlcv_cache[stock_code] = daily_df
-            # else: 이미 캐시되어 있으므로 추가 로딩 불필요
-
-        logger.info(f"모든 고유 종목 데이터 로딩 완료.")
+        # 모든 종목 데이터 로딩
+        stock_names = []
+        for sector, stocks in sector_stocks.items():
+            for stock_name, _ in stocks:
+                stock_names.append(stock_name)
+        
+        for name in stock_names:
+            code = self.api_client.get_stock_code(name)
+            if code:
+                if code not in self.daily_ohlcv_cache:
+                    daily_df = self.backtest_manager.cache_daily_ohlcv(code, data_fetch_start, end_date)
+                    self.daily_ohlcv_cache[code] = daily_df
+                else:
+                    daily_df = self.daily_ohlcv_cache[code]
+                if not daily_df.empty:
+                    backtest.add_daily_data(code, daily_df)
     
-    # _load_backtest_data 함수는 더 이상 직접 호출되지 않으며, 위의 _load_all_unique_universe_data로 대체
-    # Backtest 클래스의 run 메서드 내부에서 필요한 시점에 daily_universe 조회 및 캐시된 데이터 사용
-
     def run_grid_search(self, 
                        start_date: datetime.date, 
                        end_date: datetime.date,
-                       max_combinations: int = None) -> Dict[str, Any]: # sector_stocks 인자 제거
+                       sector_stocks: Dict[str, List[Tuple[str, str]]],
+                       max_combinations: int = None) -> Dict[str, Any]:
         """
         그리드서치 최적화를 실행합니다.
         
         Args:
             start_date: 백테스트 시작일
             end_date: 백테스트 종료일
+            sector_stocks: 섹터별 종목 정보
             max_combinations: 최대 테스트할 조합 수 (None이면 모든 조합)
             
         Returns:
@@ -305,9 +314,6 @@ class GridSearchOptimizer:
         """
         logger.info("그리드서치 최적화 시작")
         
-        # 백테스트 시작 전에 전체 기간 동안 daily_universe에 등장할 수 있는 모든 고유 종목 데이터 로딩
-        self._load_all_unique_universe_data(start_date, end_date)
-
         # 파라미터 조합 생성
         combinations = self.generate_parameter_combinations()
         
@@ -323,8 +329,7 @@ class GridSearchOptimizer:
         for i, params in enumerate(combinations):
             logger.info(f"진행률: {i+1}/{len(combinations)} ({((i+1)/len(combinations)*100):.1f}%)")
             
-            # sector_stocks 인자 제거
-            result = self.run_single_backtest(params, start_date, end_date) 
+            result = self.run_single_backtest(params, start_date, end_date, sector_stocks)
             
             if result['success']:
                 successful_results.append(result)
@@ -536,14 +541,15 @@ if __name__ == "__main__":
                             logging.StreamHandler(sys.stdout)
                         ])
 
-    # Creon API, DataManager, Reporter, DBManager 등 초기화
+    # Creon API, DataManager, Reporter, StockSelector 등 초기화
     api_client = CreonAPIClient()
     backtest_manager = BacktestManager()
-    db_manager = DBManager() # DBManager 인스턴스 생성
+    db_manager = DBManager()
     report = BacktestReport(db_manager=db_manager)
     
-    # StockSelector는 더 이상 필요 없으므로 삭제
-    # stock_selector = StockSelector(backtest_manager=backtest_manager, api_client=api_client, sector_stocks_config=sector_stocks)
+    # 공통 설정 파일에서 sector_stocks 가져오기
+    from config.sector_config import sector_stocks
+    stock_selector = StockSelector(backtest_manager=backtest_manager, api_client=api_client, sector_stocks_config=sector_stocks)
 
     # 백테스트 기간 설정
     start_date = datetime(2025, 3, 1).date()
@@ -553,7 +559,7 @@ if __name__ == "__main__":
         api_client=api_client,
         backtest_manager=backtest_manager,
         report=report,
-        db_manager=db_manager, # db_manager 전달
+        stock_selector=stock_selector,
         initial_cash=10_000_000
     )
 
@@ -561,9 +567,9 @@ if __name__ == "__main__":
     results = optimizer.run_grid_search(
         start_date=start_date,
         end_date=end_date,
-        # sector_stocks=sector_stocks, # 제거
+        sector_stocks=sector_stocks,
         max_combinations=100  # 50개 → 100개로 증가 (세밀 조정)
     )
 
     optimizer.save_results(results)
-    optimizer.print_summary(results)
+    optimizer.print_summary(results) 

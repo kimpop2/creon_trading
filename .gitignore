@@ -33,7 +33,7 @@ optimization_results/
 *.doc
 logs/
 temp/
-_trade/
+trade/
 test_data/
 examples/
 setup/datas/

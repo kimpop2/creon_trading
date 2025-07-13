@@ -10,6 +10,7 @@ from PyQt5.QtGui import QColor
 # project_root를 sys.path에 추가하여 모듈 임포트 가능하게 함
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, project_root)
+
 from api.creon_api import CreonAPIClient
 from manager.db_manager import DBManager
 from manager.backtest_manager import BacktestManager

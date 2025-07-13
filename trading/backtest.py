@@ -18,7 +18,6 @@ from manager.backtest_manager import BacktestManager # BacktestManager 타입 �
 from manager.db_manager import DBManager    
 from util.strategies_util import *
 from strategies.strategy import BaseStrategy
-from strategies.sma_strategy import SMAStrategy
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +41,10 @@ class Backtest:
         self.market_open_time = time(9, 0, 0)
         self.market_single_time = time(15, 20, 0)
         self.market_close_time = time(15, 30, 0)
-        self.strategy: BaseStrategy = None
+        
+        # NEW: DailyStrategy와 MinuteStrategy 인스턴스를 별도로 관리
+        self.daily_strategy: BaseStrategy = None
+        self.minute_strategy: BaseStrategy = None
         
         # 외부에서 주입받은 인스턴스를 사용
         self.manager = BacktestManager(self.api_client, self.db_manager) # manager 초기화
@@ -61,9 +63,11 @@ class Backtest:
 
         logging.info(f"백테스터 초기화 완료. 초기 현금: {self.initial_cash:,.0f}원, DB저장: {self.save_to_db}")
 
-    def set_strategies(self, strategy: BaseStrategy):
-            self.strategy = strategy
-            logging.info(f"전략 '{strategy.__class__.__name__}' 설정 완료.")
+    # NEW: set_strategies 메서드를 변경하여 DailyStrategy와 MinuteStrategy를 모두 받도록 함
+    def set_strategies(self, daily_strategy: BaseStrategy, minute_strategy: BaseStrategy):
+            self.daily_strategy = daily_strategy
+            self.minute_strategy = minute_strategy
+            logging.info(f"일봉 전략 '{daily_strategy.__class__.__name__}' 및 분봉 전략 '{minute_strategy.__class__.__name__}' 설정 완료.")
         
     def set_broker_stop_loss_params(self, params: dict = None):
         self.broker.set_stop_loss_params(params)
@@ -77,17 +81,8 @@ class Backtest:
         else:
             logging.warning(f"빈 데이터프레임이므로 {stock_code}의 일봉 데이터를 추가하지 않습니다.")
 
-    # add_minute_data 함수는 이제 사용되지 않습니다.
     # 분봉 데이터는 run 루프 내에서 cache_minute_ohlcv를 통해 직접 data_store['minute']에 저장됩니다.
-    # def add_minute_data(self, stock_code: str, df: pd.DataFrame):
-    #     """백테스트를 위한 분봉 데이터를 추가합니다."""
-    #     if not df.empty:
-    #         self.data_store['minute'][stock_code] = df
-    #         logging.debug(f"분봉 데이터 추가: {stock_code}, {len(df)}행")
-    #     else:
-    #         logging.warning(f"빈 데이터프레임이므로 {stock_code}의 분봉 데이터를 추가하지 않습니다.")
-
-
+ 
     def _should_check_portfolio(self, current_dt):
         """포트폴리오 체크가 필요한 시점인지 확인합니다."""
         if self.last_portfolio_check is None:
@@ -208,6 +203,13 @@ class Backtest:
     def run(self, start_date: datetime.date, end_date: datetime.date):
         logging.info(f"백테스트 시작: {start_date} 부터 {end_date} 까지")
         
+        # NEW: 전략 인스턴스 확인
+        if not self.daily_strategy or not self.minute_strategy:
+            logger.error("일봉 또는 분봉 전략이 설정되지 않았습니다. 백테스트를 중단합니다.")
+            return
+        
+        has_stop_loss = self.broker.stop_loss_params is not None # 손절처리 유무
+
         # 시장 캘린더 데이터 로드 (전영업일 계산을 위해 충분히 가져옴)
         market_calendar_df = self.db_manager.fetch_market_calendar(start_date - timedelta(days=10), end_date)
         if market_calendar_df.empty:
@@ -233,9 +235,9 @@ class Backtest:
         initial_portfolio_value = self.broker.get_portfolio_value({}) # 초기 현금만 반영
         self.portfolio_values.append((prev_date_for_initial_portfolio, initial_portfolio_value))
         
-        # =========================================                      
+        # #########################################                      
         # 영업일을 순회하며 전략 실행
-        # =========================================
+        # vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
         for i in range(actual_start_index, len(trading_dates)):
             current_date = trading_dates[i]
             if current_date > end_date: # 종료일 초과하면 중단
@@ -246,44 +248,56 @@ class Backtest:
             # 새로운 날짜로 넘어갈 때 일봉 업데이트 캐시 초기화
             self._clear_daily_update_cache() # 오늘치 분봉 캐시 초기화
 
-            # 전일 날짜 계산 (전략 로직은 전일 종가 기준으로 신호 생성)
+            # 전일 날짜 계산
             prev_date = trading_dates[i - 1] if i > 0 else current_date - timedelta(days=1) # 첫 날은 임시로 전날 사용
 
             logging.info(f"-------- {current_date.isoformat()} 매매 시작 --------")
             
-            # 1. 일봉 전략 실행 (전일 데이터 기준)
-            self.strategy.run_strategy_logic(prev_date)
+            # 1. 일봉 로직 실행
+            # DailyStrategy.run_daily_logic()을 호출하여 신호 생성
+            self.daily_strategy.run_daily_logic(current_date)
             
-            # 2. 분봉 데이터 로드 및 매매 로직 실행
-            stocks_to_trade = set() # 분봉 데이터가 필요한 종목들
+            # 2. 신호 동기화
+            # DailyStrategy가 생성한 신호(self.daily_strategy.signals)를 MinuteStrategy로 전달
+            # MinuteStrategy는 이 신호를 기반으로 분봉 매매를 실행
+            self.minute_strategy.update_signals(self.daily_strategy.signals)
             
+            # 3. 필요한 종목(보유+매매신호)들의 분봉 데이터를 로드 (전일 + 당일) vvvvvvvvvvvvvvvvvvvvvv
+            stocks_to_load = set()  # 분봉 데이터가 필요한 종목들
             # 매수/매도 신호가 있는 종목들 추가
-            for stock_code, signal_info in self.strategy.signals.items():
+            for stock_code, signal_info in self.minute_strategy.signals.items():
                 if signal_info['signal'] in ['buy', 'sell']:
-                    stocks_to_trade.add(stock_code)
-            
-            # 보유중인 종목 추가 (손절 체크 등을 위해)
-            current_positions_in_broker = set(self.broker.positions.keys())
-            stocks_to_trade.update(current_positions_in_broker)
+                    stocks_to_load.add(stock_code)
+            # 보유종목 추가
+            current_positions = set(self.broker.positions.keys()) 
+            stocks_to_load.update(current_positions)                        
+            # 3-1. 먼저 당일 실행할 신호(매수/매도/보유)가 있는 종목들의 분봉 데이터를 모두 로드
+            for stock_code in stocks_to_load:
+                signal_info = self.minute_strategy.signals.get(stock_code)
+                prev_date = signal_info.get('signal_date', current_date) if signal_info else current_date
 
-            # 필요한 종목들의 분봉 데이터를 로드 (전일 + 당일)
-            # 이 부분에서 각 종목의 분봉 데이터를 data_store['minute'][stock_code]에 통째로 저장합니다.
-            # 그리고 오늘치 분봉 데이터는 _minute_data_cache에 저장하여 재활용합니다.
-            for stock_code in stocks_to_trade:
-                # cache_minute_ohlcv (api + DB) 를 사용하여 전일(여유)에서 당일 의 분봉 데이터 로드 
-                # from_date는 prev_date로 설정하여 충분한 과거 데이터를 가져오도록 합니다.
-                # to_date는 current_date로 설정하여 오늘 데이터까지 가져옵니다.
-                minute_df_full = self.manager.cache_minute_ohlcv(
+                if not prev_date:
+                    prev_date = current_date 
+
+                # BacktestManager를 사용하여 분봉 데이터 로드 (전일~당일)
+                minute_df = self.manager.cache_minute_ohlcv(
                     stock_code,
-                    prev_date,      # 전일 영업일부터 (전략 계산을 위해)
+                    prev_date,      # 전일 영업일부터
                     current_date    # 당일까지
                 )
-                
-                if not minute_df_full.empty:
-                    self.data_store['minute'][stock_code] = minute_df_full # 전체 분봉 데이터 저장
-                    
+
+                # 기존 백테스터와 동일하게 날짜별로 분봉 데이터 저장
+                if not minute_df.empty:
+                    if stock_code not in self.data_store['minute']:
+                        self.data_store['minute'][stock_code] = {}
+                    for date in [prev_date, current_date]:
+                        date_data = minute_df[minute_df.index.normalize() == pd.Timestamp(date).normalize()]
+                        if not date_data.empty:
+                            self.data_store['minute'][stock_code][date] = date_data
+                            logging.debug(f"{stock_code} 종목의 {date} 분봉 데이터 로드 완료. 데이터 수: {len(date_data)}행")
+            
                     # 오늘 날짜에 해당하는 분봉 데이터만 _minute_data_cache에 저장
-                    today_minute_bars = minute_df_full[minute_df_full.index.date == current_date]
+                    today_minute_bars = minute_df[minute_df.index.date == current_date]
                     if not today_minute_bars.empty:
                         self._minute_data_cache[stock_code] = today_minute_bars
                         logging.debug(f"{stock_code} 종목의 {current_date} 분봉 데이터 캐시 완료. 데이터 수: {len(today_minute_bars)}행")
@@ -291,14 +305,28 @@ class Backtest:
                         logging.warning(f"{stock_code} 종목의 {current_date} 분봉 데이터가 없어 일봉 업데이트 캐시에 저장하지 않습니다.")
                 else:
                      logging.warning(f"{stock_code} 종목의 {prev_date} ~ {current_date} 분봉 데이터 로드 실패.")
+            
+            # for 분봉로드 끝 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+            
+            # 3-2. 분봉 매매 대상은 신호(매수/매도) 손절 파라미터 설정시 보유 종목
+            stocks_to_trade = set() # 매매대상
+            
+            # 매수/매도 신호가 있는 종목들 추가
+            for stock_code, signal_info in self.minute_strategy.signals.items():
+                if signal_info['signal'] in ['buy', 'sell']:
+                    stocks_to_trade.add(stock_code)
+            # 손절매 기능이 있다면, 보유 중인 종목들 추가 (손절매 체크용)
+            if has_stop_loss:
+                current_positions = set(self.broker.positions.keys())
+                stocks_to_trade.update(current_positions)
 
             ###################################
             # 오늘 장이 끝날때 까지 매분 반복 실행
-            ###################################
+            # vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
             open_time = time(9, 0) # 9시 정각
             market_open_dt = datetime.combine(current_date, open_time)
 
-            for minute_offset in range(391): # 9:00부터 15:30까지 (6시간 30분 = 390분 + 1분 (9:00분 포함))
+            for minute_offset in range(370): # 9:00부터 15:30까지 (6시간 30분 = 390분 - 20분 (9:00, 3:21~29분 포함))
                 current_dt = market_open_dt + timedelta(minutes=minute_offset)
                 
                 # 9:00은 건너뛰고 9:01부터 매매 로직 시작 (9시 0분 캔들은 9시 1분에 완성)
@@ -310,23 +338,10 @@ class Backtest:
                 
                 # 매분 오늘의 일봉 데이터를 업데이트하는 함수 호출 (최적의 위치)
                 self._update_daily_data_from_minute_bars(current_dt)
-
-                # 포트폴리오 손절 체크 (9시, 15시 20분)
-                # Broker의 check_and_execute_portfolio_stop_loss는 current_prices 딕셔너리를 받음
-                if self._should_check_portfolio(current_dt):
-                    # 현재 시점의 모든 보유 종목 가격을 가져와야 함
-                    current_prices_for_portfolio_check = self.get_current_market_prices(list(self.broker.positions.keys()), current_dt)
-                    if self.broker.check_and_execute_portfolio_stop_loss(current_prices_for_portfolio_check, current_dt):
-                        logging.warning(f"[{current_dt.isoformat()}] 포트폴리오 손절매 발동. 당일 추가 매매 중단.")
-                        self.portfolio_stop_flag = True # 당일 매매 중단 플래그 설정
-                        break # 당일 분봉 루프 종료
-
-                # 당일 매매 중단 플래그가 설정되었으면 더 이상 매매하지 않음
-                if self.portfolio_stop_flag:
-                    break
                 
-                # 매매 실행
+                # 매매 실행: MinuteStrategy를 사용하여 분봉 로직 실행 vvvvvvvvvvvvvvvvv
                 logging.debug(f"[{current_dt.isoformat()}] 분봉 매매 로직 실행 중...")
+                
                 # 매분마다 모든 보유 종목과 신호 종목에 대해 분봉 전략 실행
                 for stock_code in stocks_to_trade:
                     # 현재 시각의 분봉 데이터가 _minute_data_cache에 있는지 확인
@@ -340,12 +355,46 @@ class Backtest:
                         logging.debug(f"[{current_dt.isoformat()}] {stock_code}의 정확히 해당 시각 분봉 데이터가 없어 매매 로직을 건너깁니다.")
                         continue # 해당 분봉 데이터가 없으면 건너김
 
-                    # 분봉 처리 : 전략을 구현한 전략 파일 내의 run_trading_logic() 에서 발생한 시그널에 따라
-                    # 실제 매매를 처리한다.
-                    self.strategy.run_trading_logic(current_dt, stock_code)
+                    # 분봉 처리: run_minute_logic 호출
+                    # MinuteStrategy.run_minute_logic()을 호출하여 실제 매매 실행
+                    self.minute_strategy.run_minute_logic(current_dt, stock_code)
+                # 분봉 매매 끝 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                
+                # 포토폴리오 손절 vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
+                # 포트폴리오 손절을 위한 9:00, 15:20 시간 체크, 분봉마다하는 것이 정확하겠지만 속도상 
+                if self.broker.stop_loss_params is not None and self._should_check_portfolio(current_dt):
+                    
+                    current_prices = {}
+                    for code in list(self.broker.positions.keys()):
+                        # 캐시된 가격 사용
+                        if code in self.minute_strategy.last_prices:
+                            current_prices[code] = self.minute_strategy.last_prices[code]
+                        else:
+                            price_data = self.minute_strategy._get_bar_at_time('minute', code, current_dt)
+                            if price_data is not None:
+                                current_prices[code] = price_data['close']
+                                self.minute_strategy.last_prices[code] = price_data['close']
+                
+                        # 현재 가격이 없는 종목은 제외
+                        current_prices = {k: v for k, v in current_prices.items() if not np.isnan(v)}                                
+                    
+                    # 포트폴리오 손절은 Broker에 위임처리
+                    if self.broker.check_and_execute_portfolio_stop_loss(current_prices, current_dt):
+                        # 매도처리
+                        for code in list(self.minute_strategy.signals.keys()):
+                            # 매도된 것 신호 정리
+                            if code in self.broker.positions and self.broker.positions[code]['size'] == 0: # 매도 후 == 수량 0
+                                self.minute_strategy.reset_signal(stock_code)
+                        #self.portfolio_stop_flag = True # 당일 매매 중단 플래그 설정
+                        logging.info(f"[{current_dt.isoformat()}] 포트폴리오 손절매 실행 완료. 오늘의 매매 종료.")
+                        break # 분봉 루프를 종료, 일일 포트폴리오 처리 후 다음 "영업일"로 넘어감
+                # 포트폴리오 손절 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+            
+            # ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+            # 끝 매분 반복
+            ###################################
 
             logging.info(f"-------- {current_date.isoformat()} 매매 종료 --------")
-
 
             # 4. 하루 종료 후 보고서 생성 및 DB 저장 (TradingManager를 통해)
             # 일일 포트폴리오 가치 기록 (장 마감 시점)
@@ -368,14 +417,17 @@ class Backtest:
             self.broker.reset_daily_transactions() 
             
             # 수정: 다음날을 위해 모든 신호 초기화
-            # 1. 일봉 전략의 신호 완전 초기화
-            self.strategy._reset_all_signals()  # 모든 신호를 완전히 삭제
+            # DailyStrategy와 MinuteStrategy의 신호를 모두 초기화
+            self.daily_strategy._reset_all_signals()
             
             # 2. 백테스터의 신호 저장소 초기화 (다음날을 위해)
             self.last_portfolio_check = None # 다음 날을 위해 손절 체크 시간 초기화
-            self.portfolio_stop_flag = False  # 새로운 날짜마다 플래그 초기화
-            
+             
             logging.debug(f"[{current_date.isoformat()}] 일일 신호 초기화 완료 - 다음날을 위해 모든 신호 저장소 비움")
+
+        # ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        # 끝 매 영업일 반복
+        ###################################
 
 
         logging.info("백테스트 완료. 최종 보고서 생성 중...")
@@ -389,9 +441,13 @@ class Backtest:
             # 백테스트 기간이 너무 짧아 포트폴리오 가치 데이터가 없는 경우
             portfolio_value_series = pd.Series(dtype=float)
 
+
         # 전략 이름과 파라미터 추출
-        strategy_name = self.strategy.__class__.__name__ if self.strategy else "N/A"
-        
+        daily_strategy_name = self.daily_strategy.__class__.__name__ if self.daily_strategy else "N/A"
+        minute_strategy_name = self.minute_strategy.__class__.__name__ if self.minute_strategy else "N/A"
+        daily_strategy_params = self.daily_strategy.strategy_params if self.daily_strategy else {}
+        minute_strategy_params = self.minute_strategy.strategy_params if self.minute_strategy else {}
+
         # 모든 저장 로직을 self.report에게 위임
         self.report.generate_and_save_report(
             start_date=start_date,
@@ -399,8 +455,10 @@ class Backtest:
             initial_cash=self.initial_cash,
             portfolio_value_series=portfolio_value_series,
             transaction_log=self.broker.transaction_log,
-            strategy_name=self.strategy.strategy_name,    # 전략 이름
-            strategy_params=self.strategy.strategy_params # 전략 파라미터
+            daily_strategy_name=daily_strategy_name,
+            minute_strategy_name=minute_strategy_name,
+            daily_strategy_params=daily_strategy_params,
+            minute_strategy_params=minute_strategy_params
         )
         final_metrics = calculate_performance_metrics(portfolio_value_series)
         return portfolio_value_series, final_metrics
@@ -421,10 +479,21 @@ class Backtest:
     def load_stocks(self, start_date, end_date):
         from config.sector_stocks import sector_stocks
         # 모든 종목 데이터 로딩: 하나의 리스트로 변환
-        fetch_start = start_date - timedelta(days=max(self.strategy.strategy_params.get('long_sma_period', 0), 
-                                                      self.strategy.strategy_params.get('volume_ma_period', 0), 
-                                                      self.strategy.strategy_params.get('minute_rsi_period', 0)) * 2 
-                                                      + self.strategy.strategy_params.get('market_trend_sma_period', 0)) # 전략에 필요한 최대 기간 + 여유
+        # 전략 파라미터는 DailyStrategy에서 가져올 수도 있습니다.
+        if self.daily_strategy:
+             # DailyStrategy의 파라미터에서 필요한 기간을 계산
+             strategy_params = self.daily_strategy.strategy_params
+        elif self.minute_strategy:
+             # DailyStrategy가 없다면 MinuteStrategy의 파라미터를 사용
+             strategy_params = self.minute_strategy.strategy_params
+        else:
+            # 전략이 설정되지 않은 경우 기본값 사용
+            strategy_params = {'long_sma_period': 0, 'volume_ma_period': 0, 'minute_rsi_period': 0, 'market_trend_sma_period': 0}
+
+        fetch_start = start_date - timedelta(days=max(strategy_params.get('long_sma_period', 0), 
+                                                      strategy_params.get('volume_ma_period', 0), 
+                                                      strategy_params.get('minute_rsi_period', 0)) * 2 
+                                                      + strategy_params.get('market_trend_sma_period', 0)) # 전략에 필요한 최대 기간 + 여유
         stock_codes_to_load = []
         for sector, stocks in sector_stocks.items():
             for stock_name, _ in stocks:
@@ -448,20 +517,19 @@ class Backtest:
             # 분봉 데이터는 run 루프 내에서 필요한 시점에 로드되므로, 여기서는 미리 로드하지 않습니다.
             # 이전에 add_minute_data를 통해 전체 분봉을 로드하는 방식은 제거되었습니다.
 
+
 if __name__ == "__main__":
     """
     Backtest 클래스 테스트 실행 코드
     """
     from datetime import date, datetime
-    from strategies.sma_strategy import SMAStrategy
     # 설정 파일 로드
     from config.settings import (
-        DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD,
         TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
-        INITIAL_CASH,
         MARKET_OPEN_TIME, MARKET_CLOSE_TIME,
         DAILY_STRATEGY_RUN_TIME, PORTFOLIO_UPDATE_TIME,
-        SMA_PARAMS, STOP_LOSS_PARAMS,
+        SMA_DAILY_PARAMS, RSI_MINUTE_PARAMS, 
+        STOP_LOSS_PARAMS, INITIAL_CASH,
         LOG_LEVEL, LOG_FILE
     )    
 
@@ -483,7 +551,7 @@ if __name__ == "__main__":
         initial_cash = 10_000_000  # 1천만원
         
 
-        backtest_system = Backtest(
+        backtest_instance = Backtest(
             api_client=api_client,
             db_manager=db_manager,
             initial_cash=initial_cash,
@@ -492,30 +560,35 @@ if __name__ == "__main__":
         
         # 전략 인스턴스 생성
         # SMA 전략 설정 (최적화 결과 반영)
-        from strategies.sma_strategy import SMAStrategy
-        strategy_instance = SMAStrategy(broker=backtest_system.broker, 
-                                        manager=backtest_system.manager, 
-                                        data_store=backtest_system.data_store, 
-                                        strategy_params=SMA_PARAMS)
-        backtest_system.set_strategies(strategy=strategy_instance)
-        # 손절매 파라미터 설정 (선택사항)
-        backtest_system.set_broker_stop_loss_params(STOP_LOSS_PARAMS)
+        from strategies.sma_daily import SMADaily
+        daily_strategy = SMADaily(broker=backtest_instance.broker, data_store=backtest_instance.data_store, strategy_params=SMA_DAILY_PARAMS)
+
+        # RSI 분봉 전략 설정 (최적화 결과 반영)
+        from strategies.rsi_minute import RSIMinute
+        minute_strategy = RSIMinute(broker=backtest_instance.broker, data_store=backtest_instance.data_store, strategy_params=RSI_MINUTE_PARAMS)        
         
-        end_date = date(2025, 5, 7)
+        # # RSI 가상 분봉 전략 설정 (최적화 결과 반영)
+        # from strategies.open_minute import OpenMinute
+        # minute_strategy = OpenMinute(broker=backtest_instance.broker, data_store=backtest_instance.data_store, strategy_params=RSI_MINUTE_PARAMS)        
+        
+        # 일봉/분봉 전략 설정
+        backtest_instance.set_strategies(daily_strategy=daily_strategy, minute_strategy=minute_strategy)
+        # 손절매 파라미터 설정 (선택사항)
+        backtest_instance.set_broker_stop_loss_params(STOP_LOSS_PARAMS)
+        
+        end_date = date(2025, 3, 7)
         start_date = end_date - timedelta(days=60)
         # 일봉 데이터 로드
-        backtest_system.load_stocks(start_date, end_date)
+        backtest_instance.load_stocks(start_date, end_date)
 
         # 5. 백테스트 실행
-        
         try:
-            backtest_system.run(start_date, end_date)
+            backtest_instance.run(start_date, end_date)
         except KeyboardInterrupt:
             logger.info("사용자에 의해 시스템 종료 요청됨.")
         finally:
-            backtest_system.cleanup()
+            backtest_instance.cleanup()
             logger.info("시스템 종료 완료.")
 
     except Exception as e:
         logger.error(f"Backtest 테스트 중 오류 발생: {e}", exc_info=True)
-

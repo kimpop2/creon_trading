@@ -28,8 +28,10 @@ class BacktestReport:
                                  initial_cash: float,
                                  portfolio_value_series: pd.Series,
                                  transaction_log: list,
-                                 strategy_name: str,
-                                 strategy_params: dict) -> str:
+                                 daily_strategy_name: str,
+                                 minute_strategy_name: str,
+                                 daily_strategy_params: dict,
+                                 minute_strategy_params: dict) -> str:
         """
         백테스트의 최종 결과를 생성하고 데이터베이스에 저장합니다.
         
@@ -67,8 +69,10 @@ class BacktestReport:
             'total_profit_loss': portfolio_value_series.iloc[-1] - initial_cash,
             'cumulative_return': metrics['total_return'],
             'max_drawdown': metrics['mdd'],
-            'strategy': strategy_name,
-            'params_json_daily': json.dumps(strategy_params) if strategy_params else None
+            'strategy_daily': daily_strategy_name,
+            'strategy_minute': minute_strategy_name,
+            'params_json_daily': json.dumps(daily_strategy_params) if daily_strategy_params else None,
+            'params_json_minute': json.dumps(minute_strategy_params) if minute_strategy_params else None,
         }
         
         run_id = self.db_manager.save_backtest_run(run_data) # db_manager에서 run_id를 반환하지 않고, 여기서 생성하여 넘겨줌

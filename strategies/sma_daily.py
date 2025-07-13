@@ -1,0 +1,141 @@
+# strategies/sma_daily.py
+import logging
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+from typing import Dict, List, Tuple, Any
+from strategies.strategy import DailyStrategy
+from util.strategies_util import *
+
+logger = logging.getLogger(__name__)
+
+class SMADaily(DailyStrategy):
+    """
+    SMA(Simple Moving Average) 기반 일봉 전략입니다.
+    골든 크로스/데드 크로스와 거래량 조건을 활용하여 매매 신호를 생성합니다.
+    """
+    def __init__(self, broker, data_store, strategy_params: Dict[str, Any]):
+        # DailyStrategy 에서 trade의 broker, data_store 연결, signal 초기화 진행
+        super().__init__(broker, data_store, strategy_params)
+        #self.strategy_params = strategy_params
+        self._validate_strategy_params() # 전략 파라미터 검증
+
+        # SMA 누적 계산을 위한 캐시 추가
+        self.sma_cache = {}  # SMA 캐시
+        self.volume_cache = {}  # 거래량 MA 캐시
+        self.last_prices = {}  # 마지막 가격 캐시
+        self.last_volumes = {}  # 마지막 거래량 캐시
+
+        self.strategy_name = "SMADaily"
+        
+    def _validate_strategy_params(self):
+        """전략 파라미터의 유효성을 검증합니다."""
+        required_params = ['short_sma_period', 'long_sma_period', 'volume_ma_period', 'num_top_stocks']
+        
+        for param in required_params:
+            if param not in self.strategy_params:
+                raise ValueError(f"SMA 전략에 필요한 파라미터 '{param}'이 설정되지 않았습니다.")
+        
+        # SMA 기간 검증
+        if self.strategy_params['short_sma_period'] >= self.strategy_params['long_sma_period']:
+            raise ValueError("단기 SMA 기간은 장기 SMA 기간보다 짧아야 합니다.")
+            
+        logging.info(f"SMA 전략 파라미터 검증 완료: "
+                   f"단기SMA={self.strategy_params['short_sma_period']}, "
+                   f"장기SMA={self.strategy_params['long_sma_period']}, "
+                   f"거래량MA={self.strategy_params['volume_ma_period']}, "
+                   f"선택종목수={self.strategy_params['num_top_stocks']}")
+
+    def run_daily_logic(self, current_date: datetime.date):
+        """
+        듀얼 모멘텀 스타일로 리팩터링: SMA 신호 점수 계산 → 상위 N개 종목 선정 → _generate_signals → _log_rebalancing_summary 호출
+        수정: 전일 데이터까지만 사용하여 장전 판단이 가능하도록 함
+        수정: 매도 신호도 생성하도록 데드크로스 조건 추가
+        """
+        logging.info(f"{current_date} - --- 일간 SMA 로직 실행 중 (전일 데이터 기준) ---")
+        
+        # 1. SMA 신호 점수 계산 (전일 데이터까지만 사용)
+        buy_scores = {}  # 매수 점수
+        sell_scores = {}  # 매도 점수 (새로 추가)
+        stock_target_prices = {} # 크로스오버 가격을 저장할 딕셔너리 추가
+        all_stock_codes = list(self.data_store['daily'].keys())
+        short_sma_period = self.strategy_params['short_sma_period']
+        long_sma_period = self.strategy_params['long_sma_period']
+
+        for stock_code in all_stock_codes:
+            historical_data = self._get_historical_data_up_to('daily', stock_code, current_date, lookback_period=max(self.strategy_params['long_sma_period'], self.strategy_params['volume_ma_period']) + 1)
+            if historical_data.empty or len(historical_data) < max(long_sma_period, self.strategy_params['volume_ma_period']) + 1:
+                continue
+                
+            short_sma = calculate_sma_incremental(historical_data, short_sma_period, self.sma_cache)[0]
+            long_sma = calculate_sma_incremental(historical_data, long_sma_period, self.sma_cache)[0]
+            prev_short_sma = calculate_sma_incremental(historical_data.iloc[:-1], short_sma_period, self.sma_cache)[0]
+            prev_long_sma = calculate_sma_incremental(historical_data.iloc[:-1], long_sma_period, self.sma_cache)[0]
+            current_volume = historical_data['volume'].iloc[-1]
+            volume_ma = calculate_volume_ma_incremental(historical_data, self.strategy_params['volume_ma_period'], self.volume_cache)[0]
+            
+            # 미리 모든 종목의 크로스오버 가격 계산 vvvvvvvvvvvvvvvvvvvvvvvvvvvv
+            sum_short_prev = prev_short_sma * short_sma_period
+            sum_long_prev = prev_long_sma * long_sma_period
+            close_oldest_short = historical_data['close'].iloc[-(short_sma_period + 1)]
+            close_oldest_long = historical_data['close'].iloc[-(long_sma_period + 1)]
+            A = (sum_short_prev - close_oldest_short) / short_sma_period
+            B = (sum_long_prev - close_oldest_long) / long_sma_period
+            if long_sma_period != short_sma_period:
+                target_price = (B - A) * (short_sma_period * long_sma_period) / (long_sma_period - short_sma_period)
+            else:
+                # Handle case where periods are identical (no cross possible)
+                target_price = None 
+            # 계산된 target_price를 딕셔너리에 저장
+            if target_price is not None:
+                stock_target_prices[stock_code] = target_price
+            # 매매가를 미리 정해 둔다 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+            
+            # 골든크로스 + 거래량 조건 완화 (1.0배 이상)
+            if short_sma > long_sma and prev_short_sma <= prev_long_sma and current_volume > volume_ma * 1.0:
+                score = (short_sma - long_sma) / long_sma * 100
+                buy_scores[stock_code] = score
+            # 추가 매수 조건(강한 상승 완화)
+            elif short_sma > long_sma and current_volume > volume_ma * 1.2:
+                score = (short_sma - long_sma) / long_sma * 50
+                buy_scores[stock_code] = score
+            
+            # 데드크로스 + 거래량 조건이 모두 충족될 때만 매도 신호
+            if short_sma < long_sma and prev_short_sma >= prev_long_sma and current_volume > volume_ma * 1.0:
+                score = (long_sma - short_sma) / long_sma * 100
+                sell_scores[stock_code] = score
+            # 강한 하락(추가 매도)은 제외(신호 완화)
+
+        # 2. 매수 후보 종목 선정
+        sorted_buy_stocks = sorted(buy_scores.items(), key=lambda x: x[1], reverse=True)
+        buy_candidates = set()
+        for rank, (stock_code, _) in enumerate(sorted_buy_stocks, 1):
+            if rank <= self.strategy_params['num_top_stocks'] and buy_scores[stock_code] > 5:
+                buy_candidates.add(stock_code)
+                
+        # 매도 후보 종목 선정 (보유 중인데 매수 후보에 없는 종목은 일정 기간(3일) 이상 홀딩 후에만 매도 후보로 추가)
+        current_positions = set(self.broker.positions.keys())
+        sell_candidates = set()
+        min_holding_days = self.strategy_params.get('min_holding_days', 3)
+        for stock_code in current_positions:
+            # 데드크로스+거래량 조건이 충족된 경우
+            if stock_code in sell_scores:
+                sell_candidates.add(stock_code)
+                logging.info(f"데드크로스+거래량 매도 후보 추가: {stock_code}")
+            # 매수 후보에서 빠진 종목은 일정 기간 홀딩 후 매도 후보
+            elif stock_code not in buy_candidates:
+                position_info = self.broker.positions.get(stock_code, {})
+                entry_date = position_info.get('entry_date', current_date)
+                holding_days = (current_date - entry_date).days if entry_date else 0
+                if holding_days >= min_holding_days:
+                    sell_candidates.add(stock_code)
+                    logging.info(f"매수 후보 제외+홀딩기간 경과로 매도 후보 추가: {stock_code}")
+
+        logging.info(f"매도 후보 최종 선정: {sorted(sell_candidates)}")
+        
+        # 3. 신호 생성 및 업데이트 (부모 메서드) - 전일 데이터 기준
+        # 수정: buy_candidates와 sell_candidates를 모두 전달
+        final_positions = self._generate_signals(current_date, buy_candidates, sorted_buy_stocks, stock_target_prices, sell_candidates)
+        
+        # 4. 리밸런싱 요약 로그
+        self._log_rebalancing_summary(current_date, buy_candidates, final_positions, sell_candidates)
