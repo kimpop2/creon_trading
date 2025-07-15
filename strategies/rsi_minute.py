@@ -4,13 +4,6 @@ import pandas as pd
 import numpy as np 
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Any
-import sys
-import os
-# 프로젝트 루트 경로를 sys.path에 추가 (manager 디렉토리에서 실행 가능하도록)
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
-
 from strategies.strategy import MinuteStrategy
 from util.strategies_util import *
 
@@ -20,20 +13,21 @@ logger = logging.getLogger(__name__)
 class RSIMinute(MinuteStrategy): 
     """
     RSIMinute 전략
-    - 
-    - 
-    - 
+    - RSI 기반 분봉 매매 전략
+    - 과매수/과매도 구간에서 매매 신호 생성
+    - 타임컷 강제매매 기능 포함
     """
     def __init__(self, broker, data_store, strategy_params: Dict[str, Any]):
         super().__init__(broker, data_store, strategy_params)
+        self.strategy_name = "RSIMinute"
         
-        self._validate_strategy_params() # 전략 파라미터 검증
+        # 전략 파라미터 검증
+        self._validate_strategy_params()
 
+        # RSI 캐시 추가
         self.rsi_cache = {}  # RSI 캐시 추가
         self.last_prices = {}  # 마지막 가격 캐시 추가
         self.last_rsi_values = {}  # 마지막 RSI 값 캐시 추가
-
-        self.strategy_name = "RSIMinute"
 
     def _validate_strategy_params(self):
         """전략 파라미터의 유효성을 검증합니다."""
@@ -129,7 +123,7 @@ class RSIMinute(MinuteStrategy):
             return
         
         signal_info = self.signals[stock_code]
-        order_signal = signal_info.get('signal')
+        order_signal = signal_info.get('signal_type')
         
         # 당일 이미 거래가 발생했으면 추가 거래 방지
         if signal_info.get('traded_today', False):

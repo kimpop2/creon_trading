@@ -22,6 +22,8 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
+from api.creon_api import CreonAPIClient
+from manager.db_manager import DBManager
 from manager.backtest_manager import BacktestManager
 
 # 로깅 설정
@@ -43,7 +45,9 @@ def daily_setup_job():
     logger.info("=== 일일 데이터 셋업 작업 시작 ===")
     
     try:
-        backtest_manager = BacktestManager()
+        api_client = CreonAPIClient()
+        db_manager = DBManager()
+        backtest_manager = BacktestManager(api_client, db_manager)
         
         # 1. 모든 종목 기본 정보 업데이트 (stock_info 테이블)
         logger.info("1. 종목 기본 정보 업데이트 시작 (stock_info 테이블)")

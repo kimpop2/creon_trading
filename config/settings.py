@@ -50,26 +50,93 @@ PORTFOLIO_UPDATE_TIME = "16:00:00"
 
 # --- 전략 파라미터 ---
 # 각 전략에 대한 파라미터를 딕셔너리 형태로 정의합니다.
-# SMA 전략 파라미터 설정 예시
+
+# SMA 일봉 전략 파라미터
 SMA_DAILY_PARAMS = {
     'short_sma_period': 5,          # 단기 이동평균선 기간 (일봉)
     'long_sma_period': 20,          # 장기 이동평균선 기간 (일봉)
     'volume_ma_period': 20,         # 거래량 이동평균선 기간 (일봉)
     'num_top_stocks': 5,            # 매매 대상 상위 종목 수
+    'safe_asset_code': 'A001',      # 안전자산 코드 (KOSPI)
 }
 
+# RSI 분봉 전략 파라미터
 RSI_MINUTE_PARAMS = {
     'minute_rsi_period': 14,                # 분봉 RSI 계산 기간
     'minute_rsi_oversold': 30,              # RSI 과매도 기준
     'minute_rsi_overbought': 70,            # RSI 과매수 기준
-
-    # 'minute_lookback': 120,                 # 분봉 데이터 조회 기간 (분)
-    # 'time_cut_sell_after_minutes': (15 * 60) + 5, # 장 시작 후 15시 5분 (분 단위, 즉 9시부터 6시간 5분 = 365분)
-    #                                             # 이 시간 이후 미체결 매수 주문에 대한 타임컷 검토
-    # 'max_price_diff_ratio_for_timecut': 0.01 # 타임컷 매도 허용 괴리율 (1%)
+    'num_top_stocks': 5,                    # 매매 대상 상위 종목 수
 }
 
+# OpenMinute 전략 파라미터 (RSI 기반)
 OPEN_MINUTE_PARAMS = {
+    'minute_rsi_period': 14,                # 분봉 RSI 계산 기간
+    'minute_rsi_oversold': 30,              # RSI 과매도 기준
+    'minute_rsi_overbought': 70,            # RSI 과매수 기준
+    'num_top_stocks': 5,                    # 매매 대상 상위 종목 수
+}
+
+# Breakout 일봉 전략 파라미터
+BREAKOUT_DAILY_PARAMS = {
+    'breakout_period': 20,                  # 돌파 기간 (일봉)
+    'volume_ma_period': 20,                 # 거래량 이동평균 기간
+    'volume_multiplier': 1.5,               # 거래량 배수
+    'num_top_stocks': 5,                    # 매매 대상 상위 종목 수
+    'min_holding_days': 3,                  # 최소 보유 기간
+}
+
+# Breakout 분봉 전략 파라미터
+BREAKOUT_MINUTE_PARAMS = {
+    'minute_breakout_period': 10,           # 분봉 돌파 기간
+    'minute_volume_multiplier': 1.2,        # 분봉 거래량 배수
+}
+
+# Dual Momentum 일봉 전략 파라미터
+DUAL_MOMENTUM_DAILY_PARAMS = {
+    'momentum_period': 20,                  # 모멘텀 계산 기간
+    'rebalance_weekday': 0,                 # 리밸런싱 요일 (0=월요일)
+    'num_top_stocks': 5,                    # 매매 대상 상위 종목 수
+    'safe_asset_code': 'A001',              # 안전자산 코드 (KOSPI)
+}
+
+# Sector Rotation 일봉 전략 파라미터
+SECTOR_ROTATION_DAILY_PARAMS = {
+    'momentum_period': 20,                  # 모멘텀 계산 기간
+    'rebalance_weekday': 0,                 # 리밸런싱 요일 (0=월요일)
+    'num_top_sectors': 3,                   # 상위 섹터 수
+    'stocks_per_sector': 2,                 # 섹터당 종목 수
+    'safe_asset_code': 'A001',              # 안전자산 코드 (KOSPI)
+}
+
+# Triple Screen 일봉 전략 파라미터
+TRIPLE_SCREEN_DAILY_PARAMS = {
+    'trend_ma_period': 50,                  # 추세 이동평균 기간
+    'momentum_rsi_period': 14,              # 모멘텀 RSI 기간
+    'momentum_rsi_oversold': 30,            # RSI 과매도 기준
+    'momentum_rsi_overbought': 70,          # RSI 과매수 기준
+    'volume_ma_period': 20,                 # 거래량 이동평균 기간
+    'num_top_stocks': 5,                    # 매매 대상 상위 종목 수
+    'safe_asset_code': 'A001',              # 안전자산 코드 (KOSPI)
+    'min_trend_strength': 0.02,             # 최소 추세 강도
+}
+
+# Bollinger RSI 일봉 전략 파라미터
+BOLLINGER_RSI_DAILY_PARAMS = {
+    'bb_period': 20,                        # 볼린저 밴드 기간
+    'bb_std': 2,                            # 볼린저 밴드 표준편차
+    'rsi_period': 14,                       # RSI 기간
+    'rsi_oversold': 30,                     # RSI 과매도 기준
+    'rsi_overbought': 70,                   # RSI 과매수 기준
+    'volume_ma_period': 20,                 # 거래량 이동평균 기간
+    'num_top_stocks': 5,                    # 매매 대상 상위 종목 수
+    'safe_asset_code': 'A001',              # 안전자산 코드 (KOSPI)
+}
+
+# Templet 일봉 전략 파라미터 (기본 모멘텀)
+TEMPLET_DAILY_PARAMS = {
+    'momentum_period': 20,                  # 모멘텀 계산 기간
+    'num_top_stocks': 5,                    # 매매 대상 상위 종목 수
+    'safe_asset_code': 'A001',              # 안전자산 코드 (KOSPI)
 }
 
 # 손절매 파라미터 설정 예시 (선택 사항)

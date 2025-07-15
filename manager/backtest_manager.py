@@ -513,42 +513,66 @@ class BacktestManager:
         :param end_date: 종료 날짜 (기본값: 1년 후)
         """
         logger.info("주식시장 캘린더 업데이트를 시작합니다.")
-        
+
         if not start_date:
             start_date = date.today() - timedelta(days=365)
         if not end_date:
             end_date = date.today() + timedelta(days=365)
-            
+
         try:
-            # Creon API에서 거래일 정보 가져오기
+            # Creon API에서 거래일 정보 가져오기 (기존 로직 유지)
             trading_days = self.api_client.get_all_trading_days_from_api(start_date, end_date)
-            # [datetime.date(2025, 1, 24), datetime.date(2025, 1, 31), datetime.date(2025, 2, 3)]
+            
             calendar_data = []
+
+            # 1. API로부터 받은 거래일 데이터 처리 (과거 및 미래)
             for current_date in trading_days:
-                is_holiday = False #current_date not in trading_days
+                # Creon API에서 가져온 날짜는 이미 거래일로 간주
                 calendar_data.append({
                     'date': current_date,
-                    'is_holiday': is_holiday,
-                    'description': '공휴일' if is_holiday else '거래일'
+                    'is_holiday': False,
+                    'description': '거래일'
                 })
-            if self.db_manager.save_market_calendar(calendar_data):
-                logger.info(f"주식시장 캘린더 {len(calendar_data)}개 데이터를 성공적으로 업데이트했습니다.")
+            
+            # 2. end_date가 오늘보다 크다면, 오늘 이후의 토/일요일을 공휴일로 추가
+            if end_date > date.today():
+                current_date = date.today() + timedelta(days=1)
+                
+                while current_date <= end_date:
+                    # 이미 API 데이터에 포함된 날짜는 건너뛰기
+                    if current_date not in trading_days:
+                        # 토요일 (weekday() == 5) 또는 일요일 (weekday() == 6)인지 확인
+                        is_weekend = current_date.weekday() >= 5
+                        
+                        if is_weekend:
+                            # 주말은 공휴일로 처리
+                            calendar_data.append({
+                                'date': current_date,
+                                'is_holiday': True,
+                                'description': '주말 (공휴일)'
+                            })
+                        else:
+                            # 평일이지만 API에 없는 경우 (임시로 '미정' 또는 '거래일'로 설정 가능)
+                            # 여기서는 평일을 기본적으로 거래일로 추가
+                            calendar_data.append({
+                                'date': current_date,
+                                'is_holiday': False,
+                                'description': '거래일'
+                            })
+                    
+                    current_date += timedelta(days=1)
+
+            # 중복 제거 (API 데이터와 계산된 주말/평일 데이터 병합 시 중복 방지)
+            # 딕셔너리를 사용하여 날짜를 키로 설정해 중복을 방지하고 리스트로 다시 변환
+            unique_calendar_data = {item['date']: item for item in calendar_data}.values()
+
+            if self.db_manager.save_market_calendar(list(unique_calendar_data)):
+                logger.info(f"주식시장 캘린더 {len(unique_calendar_data)}개 데이터를 성공적으로 업데이트했습니다.")
                 return True
             else:
                 logger.error("주식시장 캘린더 DB 저장에 실패했습니다.")
                 return False
-            # if calendar_data:
-            #     # 리스트를 DataFrame으로 변환하고 중복 키 오류 방지를 위해 "replace" 옵션 사용
-            #     calendar_df = pd.DataFrame(calendar_data)
-            #     if self.db_manager.save_market_calendar(calendar_df, option="replace"):
-            #         logger.info(f"주식시장 캘린더 {len(calendar_data)}개 데이터를 성공적으로 업데이트했습니다.")
-            #         return True
-            #     else:
-            #         logger.error("주식시장 캘린더 DB 저장에 실패했습니다.")
-            #         return False
-            # else:
-            #     logger.warning("업데이트할 캘린더 데이터가 없습니다.")
-                return True
+
         except Exception as e:
             logger.error(f"주식시장 캘린더 업데이트 중 오류 발생: {e}", exc_info=True)
             return False

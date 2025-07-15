@@ -29,6 +29,9 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from optimizer.progressive_refinement_optimizer import OptimizationStrategy
+from trading.backtest import Backtest
+from api.creon_api import CreonAPIClient
+from manager.db_manager import DBManager
 
 logger = logging.getLogger(__name__)
 
@@ -451,3 +454,144 @@ def norm_cdf(x):
 
 def norm_pdf(x):
     return np.exp(-0.5 * x**2) / np.sqrt(2 * np.pi) 
+
+def run_bayesian_backtest(params: Dict[str, Any], 
+                         api_client: CreonAPIClient,
+                         db_manager: DBManager,
+                         start_date: datetime.date, 
+                         end_date: datetime.date,
+                         sector_stocks: Dict[str, List[Tuple[str, str]]],
+                         initial_cash: float = 10_000_000) -> Dict[str, Any]:
+    """
+    베이지안 최적화를 위한 백테스트 실행 함수
+    
+    Args:
+        params: 최적화된 파라미터 조합
+        api_client: Creon API 클라이언트
+        db_manager: DB 매니저
+        start_date: 백테스트 시작일
+        end_date: 백테스트 종료일
+        sector_stocks: 섹터별 종목 정보
+        initial_cash: 초기 자본금
+        
+    Returns:
+        백테스트 결과
+    """
+    try:
+        # 백테스터 초기화 (새로운 생성자 사용)
+        backtest = Backtest(
+            api_client=api_client,
+            db_manager=db_manager,
+            initial_cash=initial_cash,
+            save_to_db=True
+        )
+        
+        # 일봉 전략 생성
+        daily_strategy = None
+        num_top_stocks = 5  # 기본값
+        
+        if 'sma_params' in params:
+            from strategies.sma_daily import SMADaily
+            daily_strategy = SMADaily(
+                broker=backtest.broker,
+                data_store=backtest.data_store,
+                strategy_params=params['sma_params']
+            )
+            num_top_stocks = params['sma_params']['num_top_stocks']
+        elif 'dual_momentum_params' in params:
+            from strategies.dual_momentum_daily import DualMomentumDaily
+            daily_strategy = DualMomentumDaily(
+                broker=backtest.broker,
+                data_store=backtest.data_store,
+                strategy_params=params['dual_momentum_params']
+            )
+            num_top_stocks = params['dual_momentum_params']['num_top_stocks']
+        elif 'triple_screen_params' in params:
+            from strategies.triple_screen_daily import TripleScreenDaily
+            daily_strategy = TripleScreenDaily(
+                broker=backtest.broker,
+                data_store=backtest.data_store,
+                strategy_params=params['triple_screen_params']
+            )
+            num_top_stocks = params['triple_screen_params']['num_top_stocks']
+        
+        if daily_strategy is None:
+            raise ValueError("지원하는 일봉 전략 파라미터가 없습니다.")
+        
+        # 분봉 전략 생성
+        minute_strategy = None
+        if 'rsi_params' in params:
+            from strategies.rsi_minute import RSIMinute
+            minute_params = {
+                'num_top_stocks': num_top_stocks,
+                **params['rsi_params']
+            }
+            minute_strategy = RSIMinute(
+                broker=backtest.broker,
+                data_store=backtest.data_store,
+                strategy_params=minute_params
+            )
+        else:
+            # OpenMinute 전략 사용
+            from strategies.open_minute import OpenMinute
+            minute_params = {
+                'num_top_stocks': num_top_stocks
+            }
+            minute_strategy = OpenMinute(
+                broker=backtest.broker,
+                data_store=backtest.data_store,
+                strategy_params=minute_params
+            )
+        
+        # 전략 설정 (새로운 방식)
+        backtest.set_strategies(
+            daily_strategy=daily_strategy,
+            minute_strategy=minute_strategy
+        )
+        
+        # 손절매 파라미터 설정
+        if 'stop_loss_params' in params:
+            backtest.set_broker_stop_loss_params(params['stop_loss_params'])
+        
+        # 데이터 로딩
+        backtest.load_stocks(start_date, end_date)
+        
+        # 백테스트 실행
+        portfolio_values, metrics = backtest.run(start_date, end_date)
+        
+        # 결과 정리
+        result = {
+            'params': params,
+            'metrics': metrics,
+            'portfolio_values': portfolio_values,
+            'success': True
+        }
+        
+        logger.info(f"베이지안 백테스트 성공: 수익률 {metrics.get('total_return', 0)*100:.2f}%, "
+                   f"샤프지수 {metrics.get('sharpe_ratio', 0):.2f}")
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"베이지안 백테스트 실패: {str(e)}")
+        return {
+            'params': params,
+            'metrics': {},
+            'portfolio_values': pd.DataFrame(),
+            'success': False,
+            'error': str(e)
+        }
+
+# def load_backtest_data_for_bayesian(backtest: Backtest, 
+#                                    api_client: CreonAPIClient,
+#                                    db_manager: DBManager,
+#                                    start_date: datetime.date, 
+#                                    end_date: datetime.date,
+#                                    sector_stocks: Dict[str, List[Tuple[str, str]]]):
+#     """
+#     베이지안 최적화를 위한 백테스트 데이터 로딩
+#     새로운 backtest.load_stocks() 방식을 사용합니다.
+#     """
+#     # backtest.load_stocks() 메서드를 사용하여 데이터 로딩
+#     # 이 메서드는 전략 파라미터를 기반으로 필요한 기간을 자동으로 계산합니다.
+#     backtest.load_stocks(start_date, end_date) 

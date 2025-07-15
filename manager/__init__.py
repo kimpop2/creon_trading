@@ -1,7 +1,7 @@
 from .db_manager import DBManager
 from .backtest_manager import BacktestManager
-from .trader_manager import TraderManager
+from .trading_manager import TradingManager
 
 __all__ = [
-    'DBManager', 'BacktestManager', 'TraderManager'
+    'DBManager', 'BacktestManager', 'TradingManager'
 ]

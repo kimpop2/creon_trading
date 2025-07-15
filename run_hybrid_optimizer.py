@@ -3,7 +3,7 @@
 그리드서치 + 베이지안 최적화 조합
 """
 
-import datetime
+from datetime import datetime
 import logging
 import sys
 import os
@@ -13,16 +13,13 @@ from dateutil.relativedelta import relativedelta
 # 현재 스크립트의 경로를 sys.path에 추가
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from trade.backtest import Backtest
+from trading.backtest import Backtest
 from api.creon_api import CreonAPIClient
 from manager.backtest_manager import BacktestManager
 from manager.db_manager import DBManager
-from trade.backtest_report import BacktestReport
-from selector.stock_selector import StockSelector
+from trading.backtest_report import BacktestReport
 from optimizer.progressive_refinement_optimizer import ProgressiveRefinementOptimizer, GridSearchStrategy
 from optimizer.bayesian_optimizer import BayesianOptimizationStrategy
-
-from config.sector_config import sector_stocks  # 공통 설정 파일에서 import
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO,
@@ -37,19 +34,18 @@ logger = logging.getLogger(__name__)
 class HybridOptimizer:
     """하이브리드 최적화 클래스"""
     
-    def __init__(self, api_client, backtest_manager, report, stock_selector):
+    def __init__(self, api_client, backtest_manager, report):
         self.api_client = api_client
         self.backtest_manager = backtest_manager
         self.report = report
-        self.stock_selector = stock_selector
         
-    def run_hybrid_optimization(self, start_date, end_date, sector_stocks, daily_strategy_name='sma_daily'):
+    def run_hybrid_optimization(self, start_date, end_date, daily_strategy_name='sma_daily'):
         """하이브리드 최적화 실행"""
         logger.info("=== 하이브리드 최적화 시작 ===")
         
         # 1단계: 그리드서치로 대략적인 최적 영역 찾기
         logger.info("1단계: 그리드서치 최적화 시작")
-        grid_results = self._run_grid_search(start_date, end_date, sector_stocks, daily_strategy_name)
+        grid_results = self._run_grid_search(start_date, end_date, daily_strategy_name)
         
         if not grid_results or not grid_results.get('best_params'):
             logger.error("그리드서치에서 최적 파라미터를 찾지 못했습니다.")
@@ -58,7 +54,7 @@ class HybridOptimizer:
         # 2단계: 베이지안으로 최적점 주변 세밀 탐색
         logger.info("2단계: 베이지안 세밀 최적화 시작")
         bayesian_results = self._run_bayesian_refinement(
-            grid_results['best_params'], start_date, end_date, sector_stocks, daily_strategy_name
+            grid_results['best_params'], start_date, end_date, daily_strategy_name
         )
         
         # 3단계: 결과 비교 및 최종 선택
@@ -66,7 +62,7 @@ class HybridOptimizer:
         
         return final_results
     
-    def _run_grid_search(self, start_date, end_date, sector_stocks, daily_strategy_name='sma_daily'):
+    def _run_grid_search(self, start_date, end_date, daily_strategy_name='sma_daily'):
         """그리드서치 최적화 실행"""
         grid_strategy = GridSearchStrategy()
         optimizer = ProgressiveRefinementOptimizer(
@@ -74,14 +70,12 @@ class HybridOptimizer:
             api_client=self.api_client,
             backtest_manager=self.backtest_manager,
             report=self.report,
-            stock_selector=self.stock_selector,
             initial_cash=10_000_000
         )
         
         results = optimizer.run_progressive_optimization(
             start_date=start_date,
             end_date=end_date,
-            sector_stocks=sector_stocks,
             refinement_levels=2,
             initial_combinations=30,
             daily_strategy_name=daily_strategy_name,
@@ -90,7 +84,7 @@ class HybridOptimizer:
         
         return results
     
-    def _run_bayesian_refinement(self, best_params, start_date, end_date, sector_stocks, daily_strategy_name='sma_daily'):
+    def _run_bayesian_refinement(self, best_params, start_date, end_date, daily_strategy_name='sma_daily'):
         """베이지안 세밀 최적화 실행"""
         # 최적 파라미터 주변으로 범위 설정
         refined_ranges = self._create_refined_ranges(best_params, daily_strategy_name)
@@ -107,14 +101,12 @@ class HybridOptimizer:
             api_client=self.api_client,
             backtest_manager=self.backtest_manager,
             report=self.report,
-            stock_selector=self.stock_selector,
             initial_cash=10_000_000
         )
         
         results = optimizer.run_progressive_optimization(
             start_date=start_date,
             end_date=end_date,
-            sector_stocks=sector_stocks,
             refinement_levels=1,  # 베이지안은 1단계만
             initial_combinations=None,
             daily_strategy_name=daily_strategy_name,
@@ -243,39 +235,21 @@ def main():
         logger.error("Creon API에 연결할 수 없습니다.")
         return
     
-    backtest_manager = BacktestManager()
     db_manager = DBManager()
+    backtest_manager = BacktestManager(api_client, db_manager)
     report = BacktestReport(db_manager=db_manager)
-    
-    # 공통 설정 파일에서 sector_stocks 가져오기
-    stock_selector = StockSelector(
-        backtest_manager=backtest_manager, 
-        api_client=api_client, 
-        sector_stocks_config=sector_stocks
-    )
-    
-    # 백테스터 초기화 - DB 저장 비활성화 (최적화 시 DB 저장 비활성화)
-    backtest_instance = Backtest(
-        backtest_manager=backtest_manager, 
-        api_client=api_client, 
-        backtest_report=report, 
-        stock_selector=stock_selector,
-        initial_cash=10_000_000,
-        save_to_db=False  # 최적화 시 DB 저장 비활성화
-    )
     
     # 하이브리드 최적화 실행
     hybrid_optimizer = HybridOptimizer(
         api_client=api_client,
         backtest_manager=backtest_manager,
-        report=report,
-        stock_selector=stock_selector
+        report=report
     )
     
     # ===========================================================
     # 백테스트 기간 설정
-    start_date = datetime.datetime(2025, 4, 1).date()
-    end_date = datetime.datetime(2025, 6, 15).date()
+    start_date = datetime(2025, 4, 1).date()
+    end_date = datetime(2025, 6, 15).date()
     
     logger.info(f"최적화 기간: {start_date} ~ {end_date}")
 
@@ -283,14 +257,13 @@ def main():
     results = hybrid_optimizer.run_hybrid_optimization(
         start_date=start_date,
         end_date=end_date,
-        sector_stocks=sector_stocks,
         daily_strategy_name='sma_daily'  ################ 전략 사용
     )
     # ===========================================================
     
     if results:
         # 결과 저장 및 출력
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"hybrid_optimization_results_{timestamp}.json"
         
         # optimizer/results 폴더에 저장
@@ -314,10 +287,8 @@ def main():
         print(f"백테스팅 기간: {start_date} ~ {end_date} ({days_diff}일)")
         
         # 대상 종목수 계산 (공통 설정 파일 사용)
-        from config.sector_config import get_total_stock_count, get_sector_names
-        total_stocks = get_total_stock_count()
-        sector_names = get_sector_names()
-        print(f"대상 종목수: {total_stocks}개 ({', '.join(sector_names)} 섹터)")
+        # total_stocks = len(sector_stocks)
+        # print(f"대상 종목수: {total_stocks}개 ")
         
         if results.get('best_metrics'):
             metrics = results['best_metrics']

@@ -2,6 +2,7 @@ import datetime
 import logging
 from typing import Dict
 from trading.abstract_broker import AbstractBroker
+from manager.backtest_manager import BacktestManager
 # --- 로거 설정 (스크립트 최상단에서 설정하여 항상 보이도록 함) ---
 logger = logging.getLogger(__name__)
 # logger.setLevel(logging.DEBUG) # 테스트 시 DEBUG로 설정하여 모든 로그 출력 - 제거
@@ -11,11 +12,14 @@ class Broker(AbstractBroker):
     실제 증권사 API (Creon)를 통해 매매를 실행하는 브로커 구현체입니다.
     AbstractBroker를 상속받아 실제 주문, 잔고 조회, 포지션 관리를 수행합니다.
     """
-    def __init__(self, manager, initial_cash:float=10_000_000):
+    def __init__(self, manager:BacktestManager, initial_cash:float=10_000_000):
         super().__init__()
         self.initial_cash = initial_cash
         self.commission_rate = 0.00165 # 매도시에만 부과
+        self.manager = manager
         self.stop_loss_params = None
+        self._current_cash_balance: float = self.initial_cash
+
         self.initial_portfolio_value = initial_cash # 포트폴리오 손절을 위한 초기값
         self.positions = {}  # {stock_code: {'size': int, 'avg_price': float, 'entry_date': datetime.date, 'highest_price': float}}
         self.transaction_log = [] # (date, stock_code, type, price, quantity, commission, net_amount)
@@ -41,7 +45,7 @@ class Broker(AbstractBroker):
 
         if order_type == 'buy':
             total_cost = effective_price * quantity  # 커미션 없이
-            if self.initial_cash >= total_cost:
+            if self._current_cash_balance >= total_cost:
                 # 기존 포지션이 있으면 평균 단가 계산
                 if stock_code in self.positions and self.positions[stock_code]['size'] > 0:
                     current_size = self.positions[stock_code]['size']
@@ -58,13 +62,13 @@ class Broker(AbstractBroker):
                         'entry_date': current_dt.date(),
                         'highest_price': effective_price
                     }
-                self.initial_cash -= total_cost
+                self._current_cash_balance -= total_cost
                 commission = 0  # 매수 시 커미션 없음
                 self.transaction_log.append((current_dt, stock_code, 'buy', price, quantity, commission, total_cost))
                 logging.info(f"[{current_dt.isoformat()}] {stock_code}: {quantity}주 매수. 실제 가격: {effective_price:,.0f}원, 수수료: {commission:,.0f}원, 매매대금: {total_cost:,.0f}원, ")
                 return True
             else:
-                logging.warning(f"[{current_dt.isoformat()}] {stock_code}: 현금 부족으로 매수 불가. 필요: {total_cost:,.0f}원, 현재: {self.initial_cash:,.0f}원")
+                logging.warning(f"[{current_dt.isoformat()}] {stock_code}: 현금 부족으로 매수 불가. 필요: {total_cost:,.0f}원, 현재: {self._current_cash_balance:,.0f}원")
                 return False
         
         elif order_type == 'sell':
@@ -76,7 +80,7 @@ class Broker(AbstractBroker):
                 avg_price = self.positions[stock_code]['avg_price']
                 profit = (effective_price - avg_price) * actual_quantity
                 profit_rate = ((effective_price - avg_price) / avg_price * 100) if avg_price > 0 else 0
-                self.initial_cash += revenue
+                self._current_cash_balance += revenue
                 self.transaction_log.append((current_dt, stock_code, 'sell', price, actual_quantity, commission, revenue))
                 self.positions[stock_code]['size'] -= actual_quantity
                 if self.positions[stock_code]['size'] == 0:
@@ -194,7 +198,21 @@ class Broker(AbstractBroker):
             #         logging.warning(f"[포트폴리오 청산] {stock_code}의 현재가 정보가 없어 매도 실행을 건너뜁니다.")
             #         return False
 
-
+    def get_current_cash_balance(self) -> float:
+        """
+        실시간 계좌 현금 잔고를 조회하고 반환합니다.
+        내부 캐시를 반환하며, 이 캐시는 sync_account_status()를 통해 주기적으로 업데이트됩니다.
+        """
+        return self._current_cash_balance
+        
+    def get_position_size(self, stock_code):
+        """특정 종목의 보유 수량을 반환합니다."""
+        return self.positions.get(stock_code, {}).get('size', 0)
+    
+    # FIX: 누락된 get_current_positions 메서드 추가
+    def get_current_positions(self) -> Dict:
+        """현재 보유중인 모든 포지션 정보를 반환합니다."""
+        return self.positions
 
     def get_position_size(self, stock_code):
         """특정 종목의 보유 수량을 반환합니다."""
@@ -211,7 +229,12 @@ class Broker(AbstractBroker):
                 logging.warning(f"경고: {stock_code}의 현재 가격 데이터가 없습니다. 보유 포지션 가치 계산에 문제 발생 가능.")
                 holdings_value += pos_info['size'] * pos_info['avg_price'] # 대안으로 평균 단가 사용
 
-        return self.initial_cash + holdings_value
+        return self._current_cash_balance + holdings_value
+
+    def _execute_portfolio_sellout(self, current_prices: Dict[str, float], current_dt: datetime):
+        """포트폴리오 전체 청산을 실행합니다."""
+        for stock_code in list(self.positions.keys()):
+            self.execute_order(stock_code, 'sell', current_prices[stock_code], self.positions[stock_code]['size'], current_dt)
 
     def _update_highest_price(self, stock_code, current_price):
         """포지션의 최고가를 업데이트합니다 (트레일링 스탑을 위해)."""

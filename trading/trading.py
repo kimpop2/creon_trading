@@ -19,7 +19,8 @@ from trading.trading_report import TradingReport # Reporter 타입 힌트를 위
 from api.creon_api import CreonAPIClient
 from manager.db_manager import DBManager
 from manager.trading_manager import TradingManager
-from strategies.strategy import Strategy
+from strategies.strategy import DailyStrategy
+from strategies.strategy import MinuteStrategy
 from util.notifier import Notifier
 # --- 로거 설정 ---
 logger = logging.getLogger(__name__)
@@ -33,7 +34,7 @@ class Trading:
                  api_client: CreonAPIClient,
                  db_manager: DBManager,
                  notifier: Notifier,
-                 initial_cash: float = 10_000_000 # 초기 예수금 설정 (Brokerage 로 전달)
+                 initial_cash: float = 1_000_000 # 초기 예수금 설정 (Brokerage 로 전달)
                  ):
         self.api_client = api_client
         self.db_manager = db_manager
@@ -43,7 +44,8 @@ class Trading:
         self.manager = TradingManager(self.api_client, self.db_manager) # initial_cash ???
         self.broker = Brokerage(self.api_client, self.manager, self.notifier, self.initial_cash)
         self.report = TradingReport(self.db_manager)
-        self.strategy = None
+        self.daily_strategy = None
+        self.minute_strategy = None
         
         self.data_store = {'daily': {}, 'minute': {}} # {stock_code: DataFrame}
         
@@ -53,21 +55,19 @@ class Trading:
         self.daily_strategy_run_time = time(8, 30, 0) # 일봉 전략 실행 시간 (장 시작 전)
         self.portfolio_update_time = time(16, 0, 0) # 포트폴리오 업데이트 시간 (장 마감 후)
         self.current_trading_date = datetime.now().date
+        # _minute_data_cache는 이제 각 종목별로 당일의 분봉 데이터를 저장합니다.
+        self._minute_data_cache = {}   # {stock_code: DataFrame (오늘치 분봉 데이터)}
 
         # Creon API의 실시간 체결/주문 응답 콜백 등록
         self.api_client.set_conclusion_callback(self.broker.handle_order_conclusion)
         
         logger.info("Trading 시스템 초기화 완료.")
 
-    def set_strategies(self, strategy) -> None:
-        """
-        사용할 일봉 및 분봉 전략을 설정합니다.
-        """
-        self.strategy = strategy
-        
-        if self.strategy:
-            logger.info(f"매매 전략 설정: {self.strategy.strategy_name}")
-
+    def set_strategies(self, daily_strategy: DailyStrategy, minute_strategy: MinuteStrategy):
+            self.daily_strategy = daily_strategy
+            self.minute_strategy = minute_strategy
+            logging.info(f"일봉 전략 '{daily_strategy.__class__.__name__}' 및 분봉 전략 '{minute_strategy.__class__.__name__}' 설정 완료.")
+ 
     def set_broker_stop_loss_params(self, params: dict = None):
         self.broker.set_stop_loss_params(params)
         logging.info("브로커 손절매 파라미터 설정 완료.")
@@ -80,16 +80,16 @@ class Trading:
         else:
             logging.warning(f"빈 데이터프레임이므로 {stock_code}의 일봉 데이터를 추가하지 않습니다.")
 
-    def add_minute_data(self, stock_code: str, df: pd.DataFrame):
-        """백테스트를 위한 분봉 데이터를 추가합니다."""
-        if not df.empty:
-            self.data_store['minute'][stock_code] = df
-            logging.debug(f"분봉 데이터 추가: {stock_code}, {len(df)}행")
-        else:
-            logging.warning(f"빈 데이터프레임이므로 {stock_code}의 분봉 데이터를 추가하지 않습니다.")
+    # def add_minute_data(self, stock_code: str, df: pd.DataFrame):
+    #     """백테스트를 위한 분봉 데이터를 추가합니다."""
+    #     if not df.empty:
+    #         self.data_store['minute'][stock_code] = df
+    #         logging.debug(f"분봉 데이터 추가: {stock_code}, {len(df)}행")
+    #     else:
+    #         logging.warning(f"빈 데이터프레임이므로 {stock_code}의 분봉 데이터를 추가하지 않습니다.")
 
 
-    # 자동매매
+    # 자동매매 전용
     def add_signal(self, stock_code: str, signal_type: str, target_price: float, target_quantity: int, strategy_name: str) -> None:
         """
         새로운 매매 신호를 self.signals에 추가하고 DB에 저장합니다.
@@ -117,7 +117,7 @@ class Trading:
         else:
             logger.error(f"신호 DB 저장 실패: {stock_code}, 타입: {signal_type}")
 
-
+    # 자동매매 전용
     def load_active_signals(self, signal_date: date) -> None:
         """
         특정 날짜에 유효한(아직 실행되지 않은) 신호들을 DB에서 로드하여 self.signals에 설정합니다.
@@ -131,7 +131,7 @@ class Trading:
             logger.info(f"{signal_date}에 로드할 활성 신호가 없습니다.")
 
 
-    # 필수 : 포트폴리오 손절시각 체크, 없으면 매분마다 보유종목 손절 체크로 비효율적
+    # 포트폴리오 손절시각 체크, 없으면 매분마다 보유종목 손절 체크로 비효율적
     def _should_check_portfolio(self, current_dt:datetime):
         """포트폴리오 체크가 필요한 시점인지 확인합니다."""
         if self.last_portfolio_check is None:
@@ -193,78 +193,47 @@ class Trading:
     def _update_daily_data_from_minute_bars(self, current_dt: datetime):
         """
         매분 현재 시각까지의 1분봉 데이터를 집계하여 일봉 데이터를 생성하거나 업데이트합니다.
-        캐시를 사용하여 성능을 개선합니다.
+        _minute_data_cache를 활용하여 성능을 개선합니다.
         :param current_dt: 현재 시각 (datetime 객체)
         """
         current_date = current_dt.date()
         
         for stock_code in self.data_store['daily'].keys():
-            minute_data_for_today = self.data_store['minute'].get(stock_code)
+            # _minute_data_cache에서 해당 종목의 오늘치 전체 분봉 데이터를 가져옵니다.
+            # 이 데이터는 run 함수 진입 시 cache_minute_ohlcv를 통해 이미 로드되어 있어야 합니다.
+            today_minute_bars = self._minute_data_cache.get(stock_code)
 
-            if minute_data_for_today is not None:
-                # 캐시 키 생성
-                cache_key = f"{stock_code}_{current_date}"
+            if today_minute_bars is not None and not today_minute_bars.empty:
+                # 현재 시각까지의 분봉 데이터만 필터링 (슬라이싱)
+                # 이 부분에서 불필요한 복사를 줄이기 위해 .loc을 사용합니다.
+                filtered_minute_bars = today_minute_bars.loc[today_minute_bars.index <= current_dt]
                 
-                # 캐시된 데이터가 있고, 마지막 업데이트 시간이 현재 시각과 같거나 최신이면 스킵
-                if cache_key in self._daily_update_cache:
-                    last_update = self._daily_update_cache[cache_key]
-                    if last_update >= current_dt:
-                        continue
-                
-                # minute_data_for_today는 {date: DataFrame} dict 구조
-                # current_date에 해당하는 DataFrame을 가져옴
-                today_minute_bars = minute_data_for_today.get(current_date)
+                if not filtered_minute_bars.empty:
+                    # 현재 시각까지의 일봉 데이터 계산
+                    daily_open = filtered_minute_bars.iloc[0]['open']  # 첫 분봉 시가
+                    daily_high = filtered_minute_bars['high'].max()    # 현재까지 최고가
+                    daily_low = filtered_minute_bars['low'].min()      # 현재까지 최저가
+                    daily_close = filtered_minute_bars.iloc[-1]['close']  # 현재 시각 종가
+                    daily_volume = filtered_minute_bars['volume'].sum()   # 현재까지 누적 거래량
 
-                if today_minute_bars is not None and not today_minute_bars.empty:
-                    # 현재 시각까지의 분봉 데이터만 필터링
-                    # current_dt 이하의 분봉 데이터만 사용
-                    filtered_minute_bars = today_minute_bars[today_minute_bars.index <= current_dt]
+                    # 새로운 일봉 데이터 생성 (Series로 생성하여 성능 개선)
+                    new_daily_bar = pd.Series({
+                        'open': daily_open,
+                        'high': daily_high,
+                        'low': daily_low,
+                        'close': daily_close,
+                        'volume': daily_volume
+                    }, name=pd.Timestamp(current_date)) # 인덱스를 날짜로 설정
+
+                    # 일봉 데이터가 존재하면 업데이트, 없으면 추가
+                    # .loc을 사용하여 직접 업데이트 (기존 DataFrame의 인덱스를 활용)
+                    self.data_store['daily'][stock_code].loc[pd.Timestamp(current_date)] = new_daily_bar
                     
-                    if not filtered_minute_bars.empty:
-                        # 캐시된 필터링된 데이터가 있는지 확인
-                        if cache_key in self._minute_data_cache:
-                            cached_filtered_data = self._minute_data_cache[cache_key]
-                            # 캐시된 데이터가 현재 시각까지의 데이터를 포함하는지 확인
-                            if cached_filtered_data.index.max() >= current_dt:
-                                filtered_minute_bars = cached_filtered_data[cached_filtered_data.index <= current_dt]
-                            else:
-                                # 캐시 업데이트
-                                self._minute_data_cache[cache_key] = filtered_minute_bars
-                        else:
-                            # 캐시에 저장
-                            self._minute_data_cache[cache_key] = filtered_minute_bars
-                        
-                        # 현재 시각까지의 일봉 데이터 계산
-                        daily_open = filtered_minute_bars.iloc[0]['open']  # 첫 분봉 시가
-                        daily_high = filtered_minute_bars['high'].max()    # 현재까지 최고가
-                        daily_low = filtered_minute_bars['low'].min()      # 현재까지 최저가
-                        daily_close = filtered_minute_bars.iloc[-1]['close']  # 현재 시각 종가
-                        daily_volume = filtered_minute_bars['volume'].sum()   # 현재까지 누적 거래량
-
-                        # 새로운 일봉 데이터 생성
-                        new_daily_bar = pd.Series({
-                            'open': daily_open,
-                            'high': daily_high,
-                            'low': daily_low,
-                            'close': daily_close,
-                            'volume': daily_volume
-                        }, name=pd.Timestamp(current_date))
-
-                        # 일봉 데이터가 존재하면 업데이트, 없으면 추가
-                        if pd.Timestamp(current_date) in self.data_store['daily'][stock_code].index:
-                            # 기존 일봉 데이터 업데이트
-                            self.data_store['daily'][stock_code].loc[pd.Timestamp(current_date)] = new_daily_bar
-                        else:
-                            # 새로운 일봉 데이터 추가
-                            self.data_store['daily'][stock_code] = pd.concat([
-                                self.data_store['daily'][stock_code], 
-                                pd.DataFrame([new_daily_bar])
-                            ])
-                            # 인덱스 정렬
-                            self.data_store['daily'][stock_code].sort_index(inplace=True)
-                        
-                        # 업데이트 시간 캐시
-                        self._daily_update_cache[cache_key] = current_dt
+                    # 일봉 데이터가 추가되거나 업데이트될 때 인덱스 정렬은 필요 없음 (loc으로 특정 위치 업데이트)
+                    # 단, 새로운 날짜가 추가될 경우 기존 DataFrame에 없던 인덱스가 추가되므로 sort_index는 필요할 수 있습니다.
+                    # 하지만 백테스트에서는 날짜 순서대로 진행되므로 대부분의 경우 문제가 되지 않습니다.
+            else:
+                logging.debug(f"[{current_dt.isoformat()}] {stock_code}의 오늘치 분봉 데이터가 없거나 비어있어 일봉 업데이트를 건너킵니다.")
 
     def _clear_daily_update_cache(self):
         """
@@ -276,104 +245,171 @@ class Trading:
     def run(self) -> None:
         """
         자동매매의 메인 루프를 시작합니다.
-        이 함수는 블로킹 방식으로 실행되며, Ctrl+C 등으로 종료될 때까지 반복됩니다.
+        (수정) 장중에 10분 간격으로 전략을 재실행합니다.
         """
+        if not self.daily_strategy or not self.minute_strategy:
+            logger.error("일봉 또는 분봉 전략이 설정되지 않았습니다. 자동매매를 중단합니다.")
+            return
+
         self.is_running = True
-        self.notifier.send_message("🚀 자동매매 시스템이 시작되었습니다!")
+        self.notifier.send_message("🚀 자동매매 시스템이 시작되었습니다! (10분 주기 스캔)")
         logger.info("자동매매 루프 시작...")
+        
+        self.current_trading_date = None
 
         while self.is_running:
-            now = datetime.now()
-            current_date = now.date()
-            current_time = now.time()
+            try:
+                now = datetime.now()
+                current_date = now.date()
+                current_time = now.time()
+                # 1. 장 마감 시간 이후 자동 종료
+                if current_time > self.market_close_time and current_date == self.current_trading_date:
+                    logger.info(f"[{now.strftime('%H:%M:%S')}] 장 마감 시간 도달. 포트폴리오 결산을 진행합니다.")
+                    if not getattr(self, '_portfolio_updated_today', False):
+                        current_prices = self.get_current_market_prices(list(self.broker.get_current_positions().keys()))
+                        self.broker.update_portfolio_status(now, current_prices)
+                        setattr(self, '_portfolio_updated_today', True)
+                    
+                    logger.info("오늘의 모든 작업을 종료합니다. 다음 거래일까지 대기합니다.")
+                    pytime.sleep(60) # 1분 후 다음 날짜 체크
+                    continue
 
-            # 장 마감 시간 체크 및 자체 종료
-            if current_time >= self.market_close_time:
-                logger.info(f"[{now.strftime('%H:%M:%S')}] 장 마감 시간({self.market_close_time}) 도달. 시스템 자체 종료 시작.")
-                self.is_running = False # 루프 종료 플래그 설정
-                break # 즉시 루프 종료
+                # 2. 새로운 거래일 준비
+                if self.current_trading_date != current_date:
+                    if now.weekday() >= 5: # 토, 일
+                        logger.info(f"주말입니다. 다음 거래일까지 대기합니다.")
+                        pytime.sleep(60)
+                        continue
+                    
+                    self._daily_reset_and_preparation(current_date)
+                    self.current_trading_date = current_date
+                    self.last_strategy_run_time = None # 새 날짜가 되면 마지막 실행 시간 초기화
 
-            # 매매일이 변경되었는지 확인 및 초기화
-            if self.current_trading_date != current_date:
-                self.current_trading_date = current_date
-                self._daily_reset_and_preparation(now)
+                # 💡 [수정된 핵심 로직] 장중(9:00 ~ 15:30)에 주기적으로 전략 실행
+                if self.market_open_time <= current_time <= self.market_close_time:
+                    
+                    # 마지막 실행 후 10분이 경과했거나, 오늘 처음 실행하는 경우
+                    should_run_strategy = (
+                        self.last_strategy_run_time is None or
+                        (now - self.last_strategy_run_time).total_seconds() >= 60 # 10분 = 600초
+                    )
 
-            # 1. 전략 실행 (매일 장 시작 전)
-            if current_time >= self.daily_strategy_run_time and \
-               current_time < self.market_open_time and \
-               not getattr(self, '_strategy_run_today', False): # 오늘 실행 여부 플래그
-                logger.info(f"[{now.strftime('%H:%M:%S')}] 전략 로직 실행...")
-                if self.strategy:
-                    try:
-                        self.strategy.run_strategy_logic(now)
-                        logger.info(f"전략 '{self.strategy.strategy_name}' 실행 완료.")
-                    except Exception as e:
-                        logger.error(f"전략 실행 중 오류 발생: {e}", exc_info=True)
-                        self.notifier.send_message(f"❗전략 오류: {self.strategy.strategy_name} - {e}")
-                else:
-                    logger.info("설정된 전략이 없습니다.")
-                setattr(self, '_strategy_run_today', True) # 오늘 실행 완료 플래그 설정
+                    if should_run_strategy:
+                        logger.info(f"[{now.strftime('%H:%M:%S')}] 10분 주기 도래. 일봉 전략 재실행 및 신호 업데이트...")
+                        self._run_daily_strategy_and_prepare_data(current_date)
+                        self.last_strategy_run_time = now # 마지막 실행 시간 기록
+                    
+                    # 분봉 전략 및 실시간 체크는 매 루프마다 실행
+                    logger.debug(f"[{now.strftime('%H:%M:%S')}] 장중 매매 로직 실행...")
+                    self._run_minute_strategy_and_realtime_checks(now)
+                    
+                    pytime.sleep(10) # 10초마다 장중 로직 반복
+                    continue
 
-            # 2. 장 중 분봉/실시간 데이터 기반 로직 (개장 시간 동안)
-            if self.market_open_time <= current_time < self.market_close_time:
-                # 장 시작 후 실시간 데이터 구독 및 분봉 로직 실행
-                self._run_minute_strategy_and_realtime_checks(now)
-                pytime.sleep(10) # 10초마다 체크 (실시간 데이터 처리량에 따라 조정)
-            elif current_time >= self.market_close_time and \
-                 current_time < self.portfolio_update_time and \
-                 getattr(self, '_strategy_run_today', False) and \
-                 not getattr(self, '_portfolio_updated_today', False):
-                # 3. 장 마감 후 포트폴리오 업데이트 및 일일 결산
-                logger.info(f"[{now.strftime('%H:%M:%S')}] 장 마감 후 포트폴리오 업데이트 및 결산...")
-                self.broker.update_portfolio_status(now)
-                setattr(self, '_portfolio_updated_today', True)
-                setattr(self, '_strategy_run_today', False) # 다음날을 위해 초기화
-            elif current_time >= self.portfolio_update_time:
-                # 다음날을 위해 포트폴리오 업데이트 플래그 초기화
-                setattr(self, '_portfolio_updated_today', False)
+                # 5. 그 외 시간 (대기)
+                logger.debug(f"[{now.strftime('%H:%M:%S')}] 현재는 매매 관련 활동 시간이 아닙니다. 대기합니다.")
+                pytime.sleep(30)
 
-            # 비 영업시간 및 장 마감 후 대기
-            if not (self.market_open_time <= current_time < self.market_close_time) and \
-               not (self.daily_strategy_run_time <= current_time < self.market_open_time):
-                # 다음 주요 시간까지 대기 (예: 다음 분 또는 다음 일봉 전략 실행 시간)
-                next_check_time = now + timedelta(minutes=1)
-                if current_time < self.daily_strategy_run_time:
-                    next_check_time = datetime.combine(current_date, self.daily_strategy_run_time)
-                elif current_time < self.market_open_time:
-                    next_check_time = datetime.combine(current_date, self.market_open_time)
-                elif current_time < self.market_close_time:
-                    next_check_time = datetime.combine(current_date, self.market_close_time)
-                elif current_time < self.portfolio_update_time:
-                    next_check_time = datetime.combine(current_date, self.portfolio_update_time)
-                else: # 오늘 모든 작업이 끝났다면 다음 날 장 시작 시간까지 대기
-                    next_check_time = datetime.combine(current_date + timedelta(days=1), self.daily_strategy_run_time)
+            except KeyboardInterrupt:
+                logger.info("사용자에 의해 시스템 종료 요청됨.")
+                self.is_running = False
+            except Exception as e:
+                logger.error(f"메인 루프에서 예외 발생: {e}", exc_info=True)
+                self.notifier.send_message(f"🚨 시스템 오류 발생: {e}")
+                pytime.sleep(60)
 
-                wait_seconds = (next_check_time - now).total_seconds()
-                if wait_seconds > 0:
-                    logger.info(f"[{now.strftime('%H:%M:%S')}] 다음 주요 시간까지 대기: {int(wait_seconds)}초")
-                    pytime.sleep.sleep(min(wait_seconds, 60)) # 최대 1분씩 대기하며 주기적으로 재확인
-                else:
-                    pytime.sleep.sleep(1) # 시간 역전 방지
-            
-            # 주말 체크 (실제 환경에서는 별도의 휴장일 API 연동 필요)
-            if now.weekday() >= 5: # 토요일(5), 일요일(6)
-                logger.info(f"[{now.strftime('%H:%M:%S')}] 주말입니다. 다음 월요일까지 대기...")
-                # 다음 월요일까지 대기 (예시)
-                days_until_monday = (7 - now.weekday()) % 7
-                if days_until_monday == 0: # 현재가 일요일이면 다음 월요일은 1일 후
-                    days_until_monday = 1
-                next_monday = current_date + timedelta(days=days_until_monday)
-                sleep_duration = (datetime.combine(next_monday, self.daily_strategy_run_time) - now).total_seconds()
-                if sleep_duration > 0:
-                    pytime.sleep.sleep(sleep_duration)
-                continue # 루프 재시작
-
-            # 시스템 종료 조건 (예: 특정 시간, 외부 신호)
-            # 여기서는 무한 루프이므로, 외부에서 self.is_running을 False로 설정해야 종료됨
-            
-        logger.info("자동매매 루프 종료.")
-        self.notifier.send_message("🛑 자동매매 시스템이 종료되었습니다.")
+        logger.info("자동매매 루프가 정상적으로 종료되었습니다.")
         self.cleanup()
+
+    def _daily_reset_and_preparation(self, current_date: date) -> None:
+        """
+        매일 새로운 거래일을 시작할 때 필요한 초기화 및 준비 작업을 수행합니다.
+        """
+        logger.info(f"--- {current_date} 새로운 거래일 준비 시작 ---")
+        self.notifier.send_message(f"--- {current_date} 새로운 거래일 준비 시작 ---")
+        
+        setattr(self, '_strategy_run_today', False)
+        setattr(self, '_portfolio_updated_today', False)
+
+        # Creon API 연결 상태 확인
+        if not self.api_client.is_connected():
+            logger.error("Creon API 연결이 끊어졌습니다. 자동매매를 진행할 수 없습니다.")
+            self.notifier.send_message("❌ Creon API 연결 실패. 시스템 종료 필요.")
+            self.stop_trading()
+            return
+
+        self.broker.sync_account_status()
+        self.load_active_signals(current_date)
+        logger.info(f"--- {current_date} 새로운 거래일 준비 완료 ---")
+    
+    def _run_daily_strategy_and_prepare_data(self, current_date: date) -> None:
+        """
+        [최종 수정] 일봉 전략 실행 후, 유효한 신호만 필터링하여 DB에 저장하고 분봉 전략에 전달합니다.
+        """
+        now = datetime.now()
+        logger.info(f"[{now.strftime('%H:%M:%S')}] 일봉 전략 실행 및 데이터 준비 시작...")
+
+        if now.time() >= self.market_open_time:
+            self._update_daily_data_from_minute_bars(now)
+
+        # 1. 일봉 전략 실행하여 모든 분석 대상에 대한 신호 생성
+        try:
+            self.daily_strategy.run_daily_logic(current_date)
+            logger.info(f"일봉 전략 '{self.daily_strategy.__class__.__name__}' 실행 완료.")
+        except Exception as e:
+            logger.error(f"일봉 전략 실행 중 오류 발생: {e}", exc_info=True)
+            self.notifier.send_message(f"❗전략 오류: {self.daily_strategy.__class__.__name__} - {e}")
+            return
+            
+        # 2. 💡 [핵심 수정] 유효한 신호('buy', 'sell', 'hold')만 필터링
+        all_signals = self.daily_strategy.signals
+        valid_signals = {
+            code: info for code, info in all_signals.items()
+            if info.get('signal_type') in ['buy', 'sell', 'hold']
+        }
+
+        # 3. 필터링된 유효 신호만 DB에 저장
+        if valid_signals:
+            logger.info(f"생성된 유효 신호 {len(valid_signals)}건을 DB에 저장합니다.")
+            for stock_code, signal_info in valid_signals.items():
+                if 'strategy_name' not in signal_info:
+                    signal_info['strategy_name'] = self.daily_strategy.strategy_name
+                if 'stock_name' not in signal_info:
+                    signal_info['stock_name'] = self.manager.get_stock_name(stock_code)
+                
+                self.manager.save_daily_signals(signal_info)
+        
+        # 4. 필터링된 유효 신호만 분봉 전략으로 전달
+        self.minute_strategy.update_signals(valid_signals)
+        
+        # 5. 분봉 데이터가 필요한 종목 목록 취합 (보유종목 + 유효 신호 종목)
+        stocks_to_load = set(self.broker.get_current_positions().keys()) | set(valid_signals.keys())
+        
+        if not stocks_to_load:
+            logger.info("금일 거래 대상 종목이 없어 데이터 로드를 건너뜁니다.")
+            return
+
+        # 6. 필요한 종목들의 분봉 데이터 로드 및 캐시
+        logger.info(f"총 {len(stocks_to_load)}개 종목의 분봉 데이터를 로드합니다: {list(stocks_to_load)}")
+        prev_trading_day = current_date - timedelta(days=1) 
+        
+        for stock_code in stocks_to_load:
+            minute_df = self.manager.cache_minute_ohlcv(stock_code, prev_trading_day, current_date)
+            
+            if not minute_df.empty:
+                if stock_code not in self.data_store['minute']:
+                    self.data_store['minute'][stock_code] = {}
+                for date_key in [prev_trading_day, current_date]:
+                    date_data = minute_df[minute_df.index.date == date_key]
+                    if not date_data.empty:
+                        self.data_store['minute'][stock_code][date_key] = date_data
+
+                today_minute_bars = minute_df[minute_df.index.date == current_date]
+                if not today_minute_bars.empty:
+                    self._minute_data_cache[stock_code] = today_minute_bars
+            else:
+                logger.warning(f"{stock_code}의 분봉 데이터 로드 실패.")
+        logger.info("분봉 데이터 준비 완료.")
 
     def _daily_reset_and_preparation(self, current_date: date) -> None:
         """
@@ -405,8 +441,6 @@ class Trading:
 
         logger.info(f"--- {current_date} 새로운 거래일 준비 완료 ---")
 
-
-
     def _run_minute_strategy_and_realtime_checks(self, current_dt: datetime) -> None:
         """
         분봉 전략 및 실시간 데이터를 기반으로 매매 로직을 실행합니다.
@@ -423,12 +457,12 @@ class Trading:
         current_prices = self.get_current_market_prices(list(self.broker.get_current_positions().keys()) + \
                                                                         list(active_buy_signals.keys()))
         # 분봉 전략 실행
-        if self.strategy:
+        if self.minute_strategy:
             for stock_code, signal_info in active_buy_signals.items():
                 if signal_info['stock_code'] == stock_code and signal_info['is_executed'] == False: # 아직 체결되지 않은 매수 신호
                     try:
                         # 분봉 전략에 현재 시간과 종목 코드를 전달하여 매매 판단
-                        self.strategy.run_trading_logic(current_dt, stock_code)
+                        self.minute_strategy.run_minute_logic(current_dt, stock_code)
                     except Exception as e:
                         logger.error(f"분봉 전략 '{self.minute_strategy.strategy_name}' 실행 중 오류 발생 ({stock_code}): {e}", exc_info=True)
                         self.notifier.send_message(f"❗ 분봉 전략 오류: {stock_code} - {e}")
@@ -490,52 +524,71 @@ class Trading:
 # 예시:
 if __name__ == "__main__":
     from datetime import date, datetime
-    from strategies.sma_strategy import SMAStrategy
+    from strategies.sma_daily import SMADaily
+    from strategies.rsi_minute import RSIMinute
     # 설정 파일 로드
     from config.settings import (
-        DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD,
         TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
         INITIAL_CASH,
         MARKET_OPEN_TIME, MARKET_CLOSE_TIME,
         DAILY_STRATEGY_RUN_TIME, PORTFOLIO_UPDATE_TIME,
-        SMA_PARAMS, STOP_LOSS_PARAMS,
+        SMA_DAILY_PARAMS, RSI_MINUTE_PARAMS, STOP_LOSS_PARAMS,
         LOG_LEVEL, LOG_FILE
     )   
     logging.basicConfig(level=logging.INFO,
                         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                         handlers=[logging.StreamHandler()])
-    # Creon API 연결
-    api_client = CreonAPIClient()
-    # DBManager, Notifier 초기화
-    db_manager = DBManager()
-    # 실제 텔레그램 토큰 및 채팅 ID 설정 필요
-    notifier = Notifier(telegram_token=TELEGRAM_BOT_TOKEN, telegram_chat_id=TELEGRAM_CHAT_ID)
-
-    # Trading 시스템 초기화
-    trading_system = Trading(api_client=api_client, 
-                             db_manager=db_manager, 
-                             notifier=notifier, 
-                             initial_cash=INITIAL_CASH)
-
-    # 전략 설정 (예시) - 실제로는 config 등에서 로드하여 인스턴스 생성
-    # 전략 인스턴스 생성
-    from strategies.sma_strategy import SMAStrategy
-    strategy_instance = SMAStrategy(broker=trading_system.broker, 
-                                    manager=trading_system.manager, 
-                                    data_store=trading_system.data_store, 
-                                    strategy_params=SMA_PARAMS)
-    trading_system.set_strategies(strategy=strategy_instance) # 임시로 전략 없음
-    # 손절매 파라미터 설정 (선택사항)
-    trading_system.set_broker_stop_loss_params(STOP_LOSS_PARAMS)
-    # 일봉 데이터 로드
-    end_date = date.today()
-    start_date = end_date - timedelta(days=30)
-    trading_system.load_stocks(start_date, end_date)
-
     try:
-        trading_system.run()
-    except KeyboardInterrupt:
-        logger.info("사용자에 의해 시스템 종료 요청됨.")
-    finally:
-        trading_system.cleanup()
-        logger.info("시스템 종료 완료.")
+        # 1. 필요한 인스턴스들 생성
+        logger.info("=== 자동매매 시작 ===")
+        # API 클라이언트 (실제 거래용이 아닌 테스트용)
+        api_client = CreonAPIClient()
+        # DB 매니저
+        db_manager = DBManager()
+        # 실제 텔레그램 토큰 및 채팅 ID 설정 필요
+        notifier = Notifier(telegram_token=TELEGRAM_BOT_TOKEN, telegram_chat_id=TELEGRAM_CHAT_ID)
+
+        # 2. 자동매매 인스턴스 생성
+        initial_cash = 50_000  # 1천만원
+
+        trading_system = Trading(
+            api_client=api_client,
+            db_manager=db_manager,
+            notifier=notifier, 
+            initial_cash=initial_cash
+        )
+        
+        # 전략 인스턴스 생성
+        # SMA 전략 설정 (최적화 결과 반영)
+        from strategies.sma_daily import SMADaily
+        daily_strategy = SMADaily(broker=trading_system.broker, data_store=trading_system.data_store, strategy_params=SMA_DAILY_PARAMS)
+
+        # RSI 분봉 전략 설정 (최적화 결과 반영)
+        # from strategies.rsi_minute import RSIMinute
+        # minute_strategy = RSIMinute(broker=trading_system.broker, data_store=trading_system.data_store, strategy_params=RSI_MINUTE_PARAMS)        
+        
+        # # RSI 가상 분봉 전략 설정 (최적화 결과 반영)
+        from strategies.open_minute import OpenMinute
+        minute_strategy = OpenMinute(broker=trading_system.broker, data_store=trading_system.data_store, strategy_params=RSI_MINUTE_PARAMS)        
+        
+        # 일봉/분봉 전략 설정
+        trading_system.set_strategies(daily_strategy=daily_strategy, minute_strategy=minute_strategy)
+        # 손절매 파라미터 설정 (선택사항)
+        trading_system.set_broker_stop_loss_params(STOP_LOSS_PARAMS)
+
+        # 일봉 데이터 로드
+        end_date = date.today()
+        start_date = end_date - timedelta(days=60)
+
+        trading_system.load_stocks(start_date, end_date)
+
+        try:
+            trading_system.run()
+        except KeyboardInterrupt:
+            logger.info("사용자에 의해 시스템 종료 요청됨.")
+        finally:
+            trading_system.cleanup()
+            logger.info("시스템 종료 완료.")
+
+    except Exception as e:
+        logger.error(f"Backtest 테스트 중 오류 발생: {e}", exc_info=True)            

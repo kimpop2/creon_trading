@@ -3,7 +3,7 @@
 import logging
 import pandas as pd
 from datetime import datetime, date, timedelta, time
-import time as time_module # time.sleep 사용을 위해 임포트
+import time as pytime # time.sleep 사용을 위해 임포트
 import sys
 import os
 import json
@@ -189,7 +189,7 @@ class TradingManager:
                 api_df_part = self.api_client.get_minute_ohlcv(stock_code, start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d'))
                 # 분봉 데이터 API 호출 시 지연 적용
                 if not api_df_part.empty:
-                    time.sleep(0.1)  # 0.1초로 변경
+                    pytime.sleep(0.1)  # 0.1초로 변경
             else:
                 logger.error(f"알 수 없는 data_type: {data_type}")
                 return pd.DataFrame()
@@ -556,4 +556,14 @@ class TradingManager:
         else:
             logger.warning(f"종목 {stock_codes}의 현재 시장 가격을 가져올 수 없습니다.")
 
-            
+    def save_trading_log(self, log_data: Dict[str, Any]) -> bool:
+        """거래 로그를 DB에 저장하도록 요청합니다."""
+        return self.db_manager.save_trading_log(log_data)
+
+    def save_daily_portfolio(self, portfolio_data: Dict[str, Any]) -> bool:
+        """일별 포트폴리오 정보를 DB에 저장하도록 요청합니다."""
+        return self.db_manager.save_daily_portfolio(portfolio_data)  
+              
+    def save_current_position(self, position_data: Dict[str, Any]) -> bool:
+        """일별 포트폴리오 정보를 DB에 저장하도록 요청합니다."""
+        return self.db_manager.save_current_position(position_data)

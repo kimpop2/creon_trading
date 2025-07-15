@@ -13,12 +13,12 @@ import os
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, project_root)
 
-from feeds.db_feed import DBFeed
+from manager.db_manager import DBManager
 
 class TestDBManager(unittest.TestCase):
     def setUp(self):
         """테스트 설정"""
-        self.db_feed = DBFeed()
+        self.db_manager = DBManager()
         
         # 테스트용 데이터 준비
         self.test_stock_info_data = [
@@ -135,39 +135,39 @@ class TestDBManager(unittest.TestCase):
 
     def tearDown(self):
         """테스트 정리"""
-        if hasattr(self, 'db_feed'):
-            self.db_feed.close()
+        if hasattr(self, 'db_manager'):
+            self.db_manager.close()
 
     def test_01_create_and_drop_feeds_tables(self):
         """종목 관련 테이블 생성 및 삭제 테스트"""
         # 테이블 삭제
-        result = self.db_feed.drop_stock_tables()
+        result = self.db_manager.drop_stock_tables()
         self.assertTrue(result)
         
         # 테이블 생성
-        result = self.db_feed.create_stock_tables()
+        result = self.db_manager.create_stock_tables()
         self.assertTrue(result)
 
     def test_02_save_and_fetch_stock_info(self):
         """종목 정보 저장 및 조회 테스트"""
         # 종목 정보 저장
-        result = self.db_feed.save_stock_info(self.test_stock_info_data)
+        result = self.db_manager.save_stock_info(self.test_stock_info_data)
         self.assertTrue(result)
         
         # 전체 종목 정보 조회
-        fetched_data = self.db_feed.fetch_stock_info()
+        fetched_data = self.db_manager.fetch_stock_info()
         self.assertIsInstance(fetched_data, pd.DataFrame)
         self.assertGreater(len(fetched_data), 0)
         
         # 특정 종목 정보 조회
-        fetched_specific = self.db_feed.fetch_stock_info(stock_codes=['A005930'])
+        fetched_specific = self.db_manager.fetch_stock_info(stock_codes=['A005930'])
         self.assertIsInstance(fetched_specific, pd.DataFrame)
         self.assertEqual(len(fetched_specific), 1)
         self.assertEqual(fetched_specific.iloc[0]['stock_code'], 'A005930')
 
     def test_03_get_all_stock_codes(self):
         """모든 종목 코드 조회 테스트"""
-        codes = self.db_feed.get_all_stock_codes()
+        codes = self.db_manager.get_all_stock_codes()
         self.assertIsInstance(codes, list)
         self.assertGreater(len(codes), 0)
         self.assertIn('A005930', codes)
@@ -175,26 +175,26 @@ class TestDBManager(unittest.TestCase):
     def test_04_fetch_stock_codes_by_criteria(self):
         """조건부 종목 코드 조회 테스트"""
         # EPS 3000 이상 종목 조회
-        filtered_codes = self.db_feed.fetch_stock_codes_by_criteria(eps_min=3000)
+        filtered_codes = self.db_manager.fetch_stock_codes_by_criteria(eps_min=3000)
         self.assertIsInstance(filtered_codes, list)
         
         # PBR 2.0 이하, ROE 10.0 이상 종목 조회
-        filtered_codes_complex = self.db_feed.fetch_stock_codes_by_criteria(pbr_max=2.0, roe_min=10.0)
+        filtered_codes_complex = self.db_manager.fetch_stock_codes_by_criteria(pbr_max=2.0, roe_min=10.0)
         self.assertIsInstance(filtered_codes_complex, list)
 
     def test_05_save_and_fetch_daily_price(self):
         """일봉 데이터 저장 및 조회 테스트"""
         # 일봉 데이터 저장
-        result = self.db_feed.save_daily_price(self.test_daily_price_data)
+        result = self.db_manager.save_daily_price(self.test_daily_price_data)
         self.assertTrue(result)
         
         # 일봉 데이터 조회 (전체 기간)
-        fetched_data = self.db_feed.fetch_daily_price(stock_code='A005930')
+        fetched_data = self.db_manager.fetch_daily_price(stock_code='A005930')
         self.assertIsInstance(fetched_data, pd.DataFrame)
         self.assertGreater(len(fetched_data), 0)
         
         # 일봉 데이터 조회 (특정 기간)
-        fetched_period = self.db_feed.fetch_daily_price(
+        fetched_period = self.db_manager.fetch_daily_price(
             stock_code='A005930', 
             start_date=date(2024, 6, 10), 
             end_date=date(2024, 6, 10)
@@ -203,22 +203,22 @@ class TestDBManager(unittest.TestCase):
 
     def test_06_get_latest_daily_price_date(self):
         """최신 일봉 날짜 조회 테스트"""
-        latest_date = self.db_feed.get_latest_daily_price_date('A005930')
+        latest_date = self.db_manager.get_latest_daily_price_date('A005930')
         self.assertIsNotNone(latest_date)
 
     def test_07_save_and_fetch_minute_price(self):
         """분봉 데이터 저장 및 조회 테스트"""
         # 분봉 데이터 저장
-        result = self.db_feed.save_minute_price(self.test_minute_price_data)
+        result = self.db_manager.save_minute_price(self.test_minute_price_data)
         self.assertTrue(result)
         
         # 분봉 데이터 조회 (전체 기간)
-        fetched_data = self.db_feed.fetch_minute_price(stock_code='A005930')
+        fetched_data = self.db_manager.fetch_minute_price(stock_code='A005930')
         self.assertIsInstance(fetched_data, pd.DataFrame)
         self.assertGreater(len(fetched_data), 0)
         
         # 분봉 데이터 조회 (특정 기간)
-        fetched_period = self.db_feed.fetch_minute_price(
+        fetched_period = self.db_manager.fetch_minute_price(
             stock_code='A005930', 
             start_date=date(2024, 6, 10), 
             end_date=date(2024, 6, 10)
@@ -228,44 +228,44 @@ class TestDBManager(unittest.TestCase):
     def test_08_save_and_fetch_market_calendar(self):
         """시장 캘린더 저장 및 조회 테스트"""
         # 시장 캘린더 저장
-        result = self.db_feed.save_market_calendar(pd.DataFrame(self.test_calendar_data))
+        result = self.db_manager.save_market_calendar(pd.DataFrame(self.test_calendar_data))
         self.assertTrue(result)
         
         # 시장 캘린더 조회
-        fetched_data = self.db_feed.fetch_market_calendar(date(2025, 6, 1), date(2025, 6, 13))
+        fetched_data = self.db_manager.fetch_market_calendar(date(2025, 6, 1), date(2025, 6, 13))
         self.assertIsInstance(fetched_data, pd.DataFrame)
         self.assertGreater(len(fetched_data), 0)
 
     def test_09_get_all_trading_days(self):
         """영업일 조회 테스트"""
-        trading_days = self.db_feed.get_all_trading_days(date(2025, 6, 1), date(2025, 6, 13))
+        trading_days = self.db_manager.get_all_trading_days(date(2025, 6, 1), date(2025, 6, 13))
         self.assertIsInstance(trading_days, list)
         self.assertGreater(len(trading_days), 0)
 
     def test_10_create_and_drop_backtest_tables(self):
         """백테스트 관련 테이블 생성 및 삭제 테스트"""
         # 테이블 삭제
-        result = self.db_feed.drop_backtest_tables()
+        result = self.db_manager.drop_backtest_tables()
         self.assertTrue(result)
         
         # 테이블 생성
-        result = self.db_feed.create_backtest_tables()
+        result = self.db_manager.create_backtest_tables()
         self.assertTrue(result)
 
     def test_11_save_and_fetch_backtest_run(self):
         """백테스트 실행 정보 저장 및 조회 테스트"""
         # 백테스트 실행 정보 저장
-        run_id = self.db_feed.save_backtest_run(self.test_run_info)
+        run_id = self.db_manager.save_backtest_run(self.test_run_info)
         self.assertIsNotNone(run_id)
         self.assertIsInstance(run_id, int)
         
         # 백테스트 실행 정보 조회 (특정 run_id)
-        fetched_data = self.db_feed.fetch_backtest_run(run_id=run_id)
+        fetched_data = self.db_manager.fetch_backtest_run(run_id=run_id)
         self.assertIsInstance(fetched_data, pd.DataFrame)
         self.assertGreater(len(fetched_data), 0)
         
         # 백테스트 실행 정보 조회 (기간)
-        fetched_period = self.db_feed.fetch_backtest_run(
+        fetched_period = self.db_manager.fetch_backtest_run(
             start_date=date(2023, 1, 1), 
             end_date=date(2023, 12, 31)
         )
@@ -274,31 +274,31 @@ class TestDBManager(unittest.TestCase):
     def test_12_save_and_fetch_backtest_trade(self):
         """백테스트 거래 내역 저장 및 조회 테스트"""
         # 거래 내역 저장
-        result = self.db_feed.save_backtest_trade(self.test_trade_data)
+        result = self.db_manager.save_backtest_trade(self.test_trade_data)
         self.assertTrue(result)
         
         # 거래 내역 조회 (전체)
-        fetched_data = self.db_feed.fetch_backtest_trade(run_id=1)
+        fetched_data = self.db_manager.fetch_backtest_trade(run_id=1)
         self.assertIsInstance(fetched_data, pd.DataFrame)
         self.assertGreater(len(fetched_data), 0)
         
         # 거래 내역 조회 (특정 종목)
-        fetched_stock = self.db_feed.fetch_backtest_trade(run_id=1, stock_code='A005930')
+        fetched_stock = self.db_manager.fetch_backtest_trade(run_id=1, stock_code='A005930')
         self.assertIsInstance(fetched_stock, pd.DataFrame)
 
     def test_13_save_and_fetch_backtest_performance(self):
         """백테스트 성능 지표 저장 및 조회 테스트"""
         # 성능 지표 저장
-        result = self.db_feed.save_backtest_performance(self.test_performance_data)
+        result = self.db_manager.save_backtest_performance(self.test_performance_data)
         self.assertTrue(result)
         
         # 성능 지표 조회 (전체)
-        fetched_data = self.db_feed.fetch_backtest_performance(run_id=1)
+        fetched_data = self.db_manager.fetch_backtest_performance(run_id=1)
         self.assertIsInstance(fetched_data, pd.DataFrame)
         self.assertGreater(len(fetched_data), 0)
         
         # 성능 지표 조회 (특정 기간)
-        fetched_period = self.db_feed.fetch_backtest_performance(
+        fetched_period = self.db_manager.fetch_backtest_performance(
             run_id=1, 
             start_date=date(2023, 1, 1), 
             end_date=date(2023, 1, 2)
@@ -308,11 +308,11 @@ class TestDBManager(unittest.TestCase):
     def test_14_check_table_exist(self):
         """테이블 존재 여부 확인 테스트"""
         # 존재하는 테이블 확인
-        result = self.db_feed.check_table_exist('stock_info')
+        result = self.db_manager.check_table_exist('stock_info')
         self.assertIsInstance(result, bool)
         
         # 존재하지 않는 테이블 확인
-        result = self.db_feed.check_table_exist('non_existent_table')
+        result = self.db_manager.check_table_exist('non_existent_table')
         self.assertIsInstance(result, bool)
 
     def test_15_insert_df_to_db(self):
@@ -324,7 +324,7 @@ class TestDBManager(unittest.TestCase):
         })
         
         # DataFrame 삽입
-        result = self.db_feed.insert_df_to_db('test_table', test_df, option='replace')
+        result = self.db_manager.insert_df_to_db('test_table', test_df, option='replace')
         self.assertTrue(result)
 
 if __name__ == '__main__':

@@ -109,42 +109,42 @@ class Backtest:
     # def check_portfolio_stop_loss(self, current_dt: datetime, current_prices: Dict[str, float]) -> bool:
     #     pass
 
-    def get_current_market_prices(self, stock_codes: List[str], current_dt: datetime) -> Dict[str, float]:
-        """
-        현재 시점의 시장 가격을 가져옵니다. 백테스트 시뮬레이션에서는 data_store에서 가져옵니다.
-        """
-        prices = {}
-        for code in stock_codes:
-            # data_store['minute'][code]는 이제 단일 DataFrame
-            if code in self.data_store['minute'] and not self.data_store['minute'][code].empty:
-                minute_df = self.data_store['minute'][code]
-                # 현재 시각보다 작거나 같은 가장 최근 분봉의 종가를 가져옴
-                # .loc[] 대신 .iloc[]와 .at[]를 사용하여 성능 최적화
-                try:
-                    # current_dt가 인덱스에 정확히 존재하면 해당 값 사용
-                    if current_dt in minute_df.index:
-                        prices[code] = minute_df.at[current_dt, 'close']
-                    else:
-                        # current_dt보다 작거나 같은 가장 가까운 인덱스 찾기
-                        # searchsorted는 정렬된 인덱스에서 값의 삽입 위치를 찾습니다.
-                        idx_loc = minute_df.index.searchsorted(current_dt, side='right') - 1
-                        if idx_loc >= 0:
-                            prices[code] = minute_df.iloc[idx_loc]['close']
-                        else:
-                            raise IndexError("No data before current_dt")
-                except (KeyError, IndexError):
-                    logging.warning(f"종목 {code}의 {current_dt.isoformat()} 시점의 분봉 가격 데이터가 없습니다. 일봉 종가 사용 시도.")
-                    # 분봉 데이터가 없는 경우, 일봉 데이터의 종가를 사용 (대안)
-                    daily_df = self.data_store['daily'].get(code)
-                    if daily_df is not None and not daily_df.empty and current_dt.date() in daily_df.index.date:
-                        prices[code] = daily_df.loc[current_dt.date()]['close']
-                    else:
-                        logging.warning(f"종목 {code}의 {current_dt.isoformat()} 시점의 유효한 가격 데이터가 없어 가격을 0으로 설정합니다.")
-                        prices[code] = 0.0 # 데이터가 없을 경우 0으로 처리하거나 에러 처리
-            else:
-                logging.warning(f"종목 {code}의 분봉 데이터가 data_store에 없습니다. 가격을 0으로 설정합니다.")
-                prices[code] = 0.0
-        return prices
+    # def get_current_market_prices(self, stock_codes: List[str], current_dt: datetime) -> Dict[str, float]:
+    #     """
+    #     현재 시점의 시장 가격을 가져옵니다. 백테스트 시뮬레이션에서는 data_store에서 가져옵니다.
+    #     """
+    #     prices = {}
+    #     for code in stock_codes:
+    #         # data_store['minute'][code]는 이제 단일 DataFrame
+    #         if code in self.data_store['minute'] and not self.data_store['minute'][code].empty:
+    #             minute_df = self.data_store['minute'][code]
+    #             # 현재 시각보다 작거나 같은 가장 최근 분봉의 종가를 가져옴
+    #             # .loc[] 대신 .iloc[]와 .at[]를 사용하여 성능 최적화
+    #             try:
+    #                 # current_dt가 인덱스에 정확히 존재하면 해당 값 사용
+    #                 if current_dt in minute_df.index:
+    #                     prices[code] = minute_df.at[current_dt, 'close']
+    #                 else:
+    #                     # current_dt보다 작거나 같은 가장 가까운 인덱스 찾기
+    #                     # searchsorted는 정렬된 인덱스에서 값의 삽입 위치를 찾습니다.
+    #                     idx_loc = minute_df.index.searchsorted(current_dt, side='right') - 1
+    #                     if idx_loc >= 0:
+    #                         prices[code] = minute_df.iloc[idx_loc]['close']
+    #                     else:
+    #                         raise IndexError("No data before current_dt")
+    #             except (KeyError, IndexError):
+    #                 logging.warning(f"종목 {code}의 {current_dt.isoformat()} 시점의 분봉 가격 데이터가 없습니다. 일봉 종가 사용 시도.")
+    #                 # 분봉 데이터가 없는 경우, 일봉 데이터의 종가를 사용 (대안)
+    #                 daily_df = self.data_store['daily'].get(code)
+    #                 if daily_df is not None and not daily_df.empty and current_dt.date() in daily_df.index.date:
+    #                     prices[code] = daily_df.loc[current_dt.date()]['close']
+    #                 else:
+    #                     logging.warning(f"종목 {code}의 {current_dt.isoformat()} 시점의 유효한 가격 데이터가 없어 가격을 0으로 설정합니다.")
+    #                     prices[code] = 0.0 # 데이터가 없을 경우 0으로 처리하거나 에러 처리
+    #         else:
+    #             logging.warning(f"종목 {code}의 분봉 데이터가 data_store에 없습니다. 가격을 0으로 설정합니다.")
+    #             prices[code] = 0.0
+    #     return prices
 
 
     def _update_daily_data_from_minute_bars(self, current_dt: datetime.datetime):
@@ -266,7 +266,7 @@ class Backtest:
             stocks_to_load = set()  # 분봉 데이터가 필요한 종목들
             # 매수/매도 신호가 있는 종목들 추가
             for stock_code, signal_info in self.minute_strategy.signals.items():
-                if signal_info['signal'] in ['buy', 'sell']:
+                if signal_info['signal_type'] in ['buy', 'sell']:
                     stocks_to_load.add(stock_code)
             # 보유종목 추가
             current_positions = set(self.broker.positions.keys()) 
@@ -313,7 +313,7 @@ class Backtest:
             
             # 매수/매도 신호가 있는 종목들 추가
             for stock_code, signal_info in self.minute_strategy.signals.items():
-                if signal_info['signal'] in ['buy', 'sell']:
+                if signal_info['signal_type'] in ['buy', 'sell']:
                     stocks_to_trade.add(stock_code)
             # 손절매 기능이 있다면, 보유 중인 종목들 추가 (손절매 체크용)
             if has_stop_loss:
@@ -478,22 +478,8 @@ class Backtest:
 
     def load_stocks(self, start_date, end_date):
         from config.sector_stocks import sector_stocks
-        # 모든 종목 데이터 로딩: 하나의 리스트로 변환
-        # 전략 파라미터는 DailyStrategy에서 가져올 수도 있습니다.
-        if self.daily_strategy:
-             # DailyStrategy의 파라미터에서 필요한 기간을 계산
-             strategy_params = self.daily_strategy.strategy_params
-        elif self.minute_strategy:
-             # DailyStrategy가 없다면 MinuteStrategy의 파라미터를 사용
-             strategy_params = self.minute_strategy.strategy_params
-        else:
-            # 전략이 설정되지 않은 경우 기본값 사용
-            strategy_params = {'long_sma_period': 0, 'volume_ma_period': 0, 'minute_rsi_period': 0, 'market_trend_sma_period': 0}
 
-        fetch_start = start_date - timedelta(days=max(strategy_params.get('long_sma_period', 0), 
-                                                      strategy_params.get('volume_ma_period', 0), 
-                                                      strategy_params.get('minute_rsi_period', 0)) * 2 
-                                                      + strategy_params.get('market_trend_sma_period', 0)) # 전략에 필요한 최대 기간 + 여유
+        fetch_start = start_date - timedelta(days=60) # 전략에 필요한 최대 기간 + 여유
         stock_codes_to_load = []
         for sector, stocks in sector_stocks.items():
             for stock_name, _ in stocks:

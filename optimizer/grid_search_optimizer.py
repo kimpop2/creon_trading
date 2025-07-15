@@ -20,14 +20,18 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from api.creon_api import CreonAPIClient
-from trade.backtest import Backtest
+from trading.backtest import Backtest
 from strategies.sma_daily import SMADaily
 from strategies.triple_screen_daily import TripleScreenDaily
 from manager.backtest_manager import BacktestManager
 from manager.db_manager import DBManager
-from trade.backtest_report import BacktestReport
-from selector.stock_selector import StockSelector
+from trading.backtest_report import BacktestReport
+from config.sector_stocks import sector_stocks
 from strategies.open_minute import OpenMinute
+from config.settings import (
+    SMA_DAILY_PARAMS, RSI_MINUTE_PARAMS, OPEN_MINUTE_PARAMS,
+    TRIPLE_SCREEN_DAILY_PARAMS, STOP_LOSS_PARAMS
+)
 
 # 로거 설정
 logger = logging.getLogger(__name__)
@@ -42,7 +46,7 @@ class GridSearchOptimizer:
                  api_client: CreonAPIClient,
                  backtest_manager: BacktestManager,
                  report: BacktestReport,
-                 stock_selector: StockSelector,
+                 sector_stocks,
                  initial_cash: float = 10_000_000):
         """
         GridSearchOptimizer 초기화
@@ -51,13 +55,13 @@ class GridSearchOptimizer:
             api_client: Creon API 클라이언트
             backtest_manager: 데이터 매니저
             report: 리포터
-            stock_selector: 종목 선택기
+            sector_stocks: 종목 선택기
             initial_cash: 초기 자본금
         """
         self.api_client = api_client
         self.backtest_manager = backtest_manager
         self.report = report
-        self.stock_selector = stock_selector
+        self.sector_stocks = sector_stocks
         self.initial_cash = initial_cash
         
         # 최적화 결과 저장
@@ -72,6 +76,7 @@ class GridSearchOptimizer:
     def generate_parameter_combinations(self) -> List[Dict[str, Any]]:
         """
         최적화할 파라미터 조합을 생성합니다.
+        settings.py의 기본값을 기준으로 최적화 범위를 설정합니다.
         
         Returns:
             파라미터 조합 리스트
@@ -183,54 +188,58 @@ class GridSearchOptimizer:
             백테스트 결과
         """
         try:
-            # 백테스터 초기화
+            # 백테스터 초기화 (새로운 생성자 사용)
             backtest = Backtest(
-                backtest_manager=self.backtest_manager,
                 api_client=self.api_client,
-                backtest_report=self.report,
-                stock_selector=self.stock_selector,
-                initial_cash=self.initial_cash
+                db_manager=self.backtest_manager.db_manager,
+                initial_cash=self.initial_cash,
+                save_to_db=True
             )
             
-            # 전략 생성
+            # 일봉 전략 생성
             if 'sma_params' in params:
                 daily_strategy = SMADaily(
+                    broker=backtest.broker,
                     data_store=backtest.data_store,
-                    strategy_params=params['sma_params'],
-                    broker=backtest.broker
+                    strategy_params=params['sma_params']
                 )
                 num_top_stocks = params['sma_params']['num_top_stocks']
             elif 'triple_screen_params' in params:
                 daily_strategy = TripleScreenDaily(
+                    broker=backtest.broker,
                     data_store=backtest.data_store,
-                    strategy_params=params['triple_screen_params'],
-                    broker=backtest.broker
+                    strategy_params=params['triple_screen_params']
                 )
                 num_top_stocks = params['triple_screen_params']['num_top_stocks']
             else:
                 raise ValueError("전략 파라미터가 없습니다.")
             
-            # OpenMinute 전략 생성 (RSI 파라미터가 필요하지 않음)
+            # 분봉 전략 생성 (OpenMinute)
             minute_params = {
                 'num_top_stocks': num_top_stocks
             }
-            open_minute_strategy = OpenMinute(
+            # rsi_params가 있으면 병합
+            if 'rsi_params' in params:
+                minute_params.update(params['rsi_params'])
+            
+            minute_strategy = OpenMinute(
+                broker=backtest.broker,
                 data_store=backtest.data_store,
-                strategy_params=minute_params,
-                broker=backtest.broker
+                strategy_params=minute_params
             )
             
-            # 전략 설정
+            # 전략 설정 (새로운 방식)
             backtest.set_strategies(
                 daily_strategy=daily_strategy,
-                minute_strategy=open_minute_strategy
+                minute_strategy=minute_strategy
             )
             
             # 손절매 파라미터 설정
-            backtest.set_broker_stop_loss_params(params['stop_loss_params'])
+            if 'stop_loss_params' in params:
+                backtest.set_broker_stop_loss_params(params['stop_loss_params'])
             
             # 데이터 로딩
-            self._load_backtest_data(backtest, start_date, end_date, sector_stocks)
+            backtest.load_stocks(start_date, end_date)
             
             # 백테스트 실행
             portfolio_values, metrics = backtest.run(start_date, end_date)
@@ -258,42 +267,18 @@ class GridSearchOptimizer:
                 'error': str(e)
             }
     
-    def _load_backtest_data(self, 
-                           backtest: Backtest, 
-                           start_date: datetime.date, 
-                           end_date: datetime.date,
-                           sector_stocks: Dict[str, List[Tuple[str, str]]]):
-        """
-        백테스트에 필요한 데이터를 로딩합니다.
-        """
-        # 데이터 가져오기 시작일 (백테스트 시작일 1개월 전)
-        data_fetch_start = (start_date - timedelta(days=30)).replace(day=1)
-        
-        # 안전자산 데이터 로딩
-        safe_asset_code = 'A439870'
-        if safe_asset_code not in self.daily_ohlcv_cache:
-            daily_df = self.backtest_manager.cache_daily_ohlcv(safe_asset_code, data_fetch_start, end_date)
-            self.daily_ohlcv_cache[safe_asset_code] = daily_df
-        else:
-            daily_df = self.daily_ohlcv_cache[safe_asset_code]
-        backtest.add_daily_data(safe_asset_code, daily_df)
-        
-        # 모든 종목 데이터 로딩
-        stock_names = []
-        for sector, stocks in sector_stocks.items():
-            for stock_name, _ in stocks:
-                stock_names.append(stock_name)
-        
-        for name in stock_names:
-            code = self.api_client.get_stock_code(name)
-            if code:
-                if code not in self.daily_ohlcv_cache:
-                    daily_df = self.backtest_manager.cache_daily_ohlcv(code, data_fetch_start, end_date)
-                    self.daily_ohlcv_cache[code] = daily_df
-                else:
-                    daily_df = self.daily_ohlcv_cache[code]
-                if not daily_df.empty:
-                    backtest.add_daily_data(code, daily_df)
+    # def _load_backtest_data(self, 
+    #                        backtest: Backtest, 
+    #                        start_date: datetime.date, 
+    #                        end_date: datetime.date,
+    #                        sector_stocks: Dict[str, List[Tuple[str, str]]]):
+    #     """
+    #     백테스트에 필요한 데이터를 로딩합니다.
+    #     새로운 backtest.load_stocks() 방식을 사용합니다.
+    #     """
+    #     # backtest.load_stocks() 메서드를 사용하여 데이터 로딩
+    #     # 이 메서드는 전략 파라미터를 기반으로 필요한 기간을 자동으로 계산합니다.
+    #     backtest.load_stocks(start_date, end_date)
     
     def run_grid_search(self, 
                        start_date: datetime.date, 
@@ -548,9 +533,8 @@ if __name__ == "__main__":
     report = BacktestReport(db_manager=db_manager)
     
     # 공통 설정 파일에서 sector_stocks 가져오기
-    from config.sector_config import sector_stocks
-    stock_selector = StockSelector(backtest_manager=backtest_manager, api_client=api_client, sector_stocks_config=sector_stocks)
-
+    from config.sector_stocks import sector_stocks
+    
     # 백테스트 기간 설정
     start_date = datetime(2025, 3, 1).date()
     end_date = datetime(2025, 4, 1).date()
@@ -559,7 +543,7 @@ if __name__ == "__main__":
         api_client=api_client,
         backtest_manager=backtest_manager,
         report=report,
-        stock_selector=stock_selector,
+        sector_stocks=sector_stocks,
         initial_cash=10_000_000
     )
 
