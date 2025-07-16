@@ -1,265 +1,218 @@
+# trading/broker.py
+
 import datetime
 import logging
-from typing import Dict
+from typing import Dict, Any, Optional
 from trading.abstract_broker import AbstractBroker
-from manager.backtest_manager import BacktestManager
-# --- 로거 설정 (스크립트 최상단에서 설정하여 항상 보이도록 함) ---
+
 logger = logging.getLogger(__name__)
-# logger.setLevel(logging.DEBUG) # 테스트 시 DEBUG로 설정하여 모든 로그 출력 - 제거
 
 class Broker(AbstractBroker):
     """
-    실제 증권사 API (Creon)를 통해 매매를 실행하는 브로커 구현체입니다.
-    AbstractBroker를 상속받아 실제 주문, 잔고 조회, 포지션 관리를 수행합니다.
+    [최종 수정안] 백테스팅 환경을 위한 가상 브로커입니다.
+    AbstractBroker 인터페이스를 따르며, 모든 손절/익절 로직을 포함합니다.
     """
-    def __init__(self, manager:BacktestManager, initial_cash:float=10_000_000):
+    def __init__(self, initial_cash: float = 10_000_000):
         super().__init__()
         self.initial_cash = initial_cash
-        self.commission_rate = 0.00165 # 매도시에만 부과
-        self.manager = manager
-        self.stop_loss_params = None
+        self.commission_rate = 0.0015
+        self.tax_rate_sell = 0.002
         self._current_cash_balance: float = self.initial_cash
+        self.positions: Dict[str, Dict[str, Any]] = {}
+        self.transaction_log: list = []
+        logging.info(f"백테스트 브로커 초기화: 초기 현금 {self.initial_cash:,.0f}원")
 
-        self.initial_portfolio_value = initial_cash # 포트폴리오 손절을 위한 초기값
-        self.positions = {}  # {stock_code: {'size': int, 'avg_price': float, 'entry_date': datetime.date, 'highest_price': float}}
-        self.transaction_log = [] # (date, stock_code, type, price, quantity, commission, net_amount)
-
-        logging.info(f"브로커 초기화: 초기 현금 {self.initial_cash:,.0f}원, 수수료율 {self.commission_rate*100:.2f}%")
-
-    def set_stop_loss_params(self, stop_loss_params):
-        """손절매 관련 파라미터를 설정합니다."""
-        if stop_loss_params is None:
-            return
+    def set_stop_loss_params(self, stop_loss_params: Optional[Dict[str, Any]]):
         self.stop_loss_params = stop_loss_params
-        logging.info(f"브로커 손절매 파라미터 설정 완료: {stop_loss_params}")
+        logging.info(f"백테스트 브로커 손절매 파라미터 설정 완료: {stop_loss_params}")
 
-    
-    def execute_order(self, stock_code, order_type, price, quantity, current_dt):
-        print("주문:", stock_code, order_type, quantity, current_dt)
-        """매매 주문을 실행합니다."""
-        if quantity <= 0:
-            logging.warning(f"[{current_dt.isoformat()}] {stock_code}: {order_type} 수량 0. 주문 실행하지 않음.")
+    def execute_order(self, stock_code: str, order_type: str, price: float, quantity: int, order_time: datetime, order_id: Optional[str] = None) -> bool:
+        # --- 입력값 검증 (Defensive Programming) ---
+        if not isinstance(price, (int, float)) or not isinstance(quantity, int):
+            logging.error(f"주문 실패({stock_code}): 가격(price)과 수량(quantity)의 타입이 올바르지 않습니다.")
             return False
 
-        effective_price = price * (1 + self.commission_rate if order_type == 'buy' else 1 - self.commission_rate)
+        if price <= 10 or quantity <= 0: # 10원 이하의 주문은 비정상으로 간주
+            logging.error(f"주문 실패({stock_code}): 가격 또는 수량이 비정상적입니다. price={price}, quantity={quantity}")
+            return False
+        
+        # (선택적) 상식적인 범위의 값인지 확인하여 경고 발생
+        if price > 5_000_000: # 예: 500만원을 초과하는 가격
+            logging.warning(f"주문 경고({stock_code}): 가격이 일반적인 범위를 벗어났습니다. price={price}")
 
-        if order_type == 'buy':
-            total_cost = effective_price * quantity  # 커미션 없이
-            if self._current_cash_balance >= total_cost:
-                # 기존 포지션이 있으면 평균 단가 계산
-                if stock_code in self.positions and self.positions[stock_code]['size'] > 0:
+        if quantity > 10000: # 예: 한번에 1만주 이상 주문 시
+            logging.warning(f"주문 경고({stock_code}): 수량이 비정상적으로 많습니다. quantity={quantity}")
+        # --- 검증 끝 ---
+        
+        commission = price * quantity * self.commission_rate
+        trade_amount = price * quantity  # [수정] trade_amount 계산
+
+        if order_type.lower() == 'buy':
+            if self._current_cash_balance >= trade_amount + commission:
+                self._current_cash_balance -= (trade_amount + commission)
+                if stock_code in self.positions:
                     current_size = self.positions[stock_code]['size']
                     current_avg_price = self.positions[stock_code]['avg_price']
                     new_size = current_size + quantity
-                    new_avg_price = (current_avg_price * current_size + effective_price * quantity) / new_size
-                    self.positions[stock_code]['size'] = new_size
-                    self.positions[stock_code]['avg_price'] = new_avg_price
-                    self.positions[stock_code]['highest_price'] = effective_price
+                    new_avg_price = (current_avg_price * current_size + price * quantity) / new_size
+                    self.positions[stock_code].update({'size': new_size, 'avg_price': new_avg_price})
                 else:
                     self.positions[stock_code] = {
-                        'size': quantity,
-                        'avg_price': effective_price,
-                        'entry_date': current_dt.date(),
-                        'highest_price': effective_price
+                        'size': quantity, 
+                        'avg_price': price, 
+                        'entry_date': order_time.date(), 
+                        'highest_price': price
                     }
-                self._current_cash_balance -= total_cost
-                commission = 0  # 매수 시 커미션 없음
-                self.transaction_log.append((current_dt, stock_code, 'buy', price, quantity, commission, total_cost))
-                logging.info(f"[{current_dt.isoformat()}] {stock_code}: {quantity}주 매수. 실제 가격: {effective_price:,.0f}원, 수수료: {commission:,.0f}원, 매매대금: {total_cost:,.0f}원, ")
-                return True
-            else:
-                logging.warning(f"[{current_dt.isoformat()}] {stock_code}: 현금 부족으로 매수 불가. 필요: {total_cost:,.0f}원, 현재: {self._current_cash_balance:,.0f}원")
-                return False
-        
-        elif order_type == 'sell':
-            if stock_code in self.positions and self.positions[stock_code]['size'] > 0:
-                actual_quantity = min(quantity, self.positions[stock_code]['size'])
-                commission = effective_price * actual_quantity * self.commission_rate  # 매도 시에만 커미션
-                revenue = effective_price * actual_quantity - commission
-                # 수익금/수익률 계산
-                avg_price = self.positions[stock_code]['avg_price']
-                profit = (effective_price - avg_price) * actual_quantity
-                profit_rate = ((effective_price - avg_price) / avg_price * 100) if avg_price > 0 else 0
-                self._current_cash_balance += revenue
-                self.transaction_log.append((current_dt, stock_code, 'sell', price, actual_quantity, commission, revenue))
-                self.positions[stock_code]['size'] -= actual_quantity
-                if self.positions[stock_code]['size'] == 0:
-                    del self.positions[stock_code]
-                logging.info(f"[{current_dt.isoformat()}] {stock_code}: {actual_quantity}주 매도. 실제 가격: {effective_price:,.0f}원, 수익금: {profit:,.0f}원, 수익률: {profit_rate:.2f}%, 수수료: {commission:,.0f}원. 매매대금: {revenue:,.0f}원")
-                return True
-            else:
-                logging.warning(f"[{current_dt.isoformat()}] {stock_code}: 보유하지 않은 종목 또는 수량 부족으로 매도 불가.")
-                return False
-        return False
-
-
-    def check_and_execute_stop_loss(self, stock_code, current_price, current_dt):
-        """
-        개별 종목에 대한 손절 조건을 체크하고, 조건 충족 시 매도 주문을 실행합니다.
-        """
-        if stock_code not in self.positions or self.positions[stock_code]['size'] <= 0:
-            return False
-
-        pos_info = self.positions[stock_code]
-        avg_price = pos_info['avg_price']
-        
-        # 1. 포지션의 최고가 업데이트
-        self._update_highest_price(stock_code, current_price)
-        highest_price = pos_info['highest_price']
-
-        loss_ratio = self._calculate_loss_ratio(current_price, avg_price)
-        change_price_ratio = self._calculate_change_price_ratio(current_price, avg_price)
-        
-        # 1. 단순 손절 (stop_loss_ratio)
-        if self.stop_loss_params is not None and self.stop_loss_params['stop_loss_ratio'] is not None and loss_ratio <= self.stop_loss_params['stop_loss_ratio']:
-            logging.info(f"[개별 손절매 발생] {stock_code}: 현재 손실률 {loss_ratio:.2f}%가 기준치 {self.stop_loss_params['stop_loss_ratio']}%를 초과. {current_dt.isoformat()}")
-            self.execute_order(stock_code, 'sell', current_price, pos_info['size'], current_dt)
-            return True
-
-        # 2. 트레일링 스탑 (trailing_stop_ratio)
-        if self.stop_loss_params is not None and self.stop_loss_params['trailing_stop_ratio'] is not None and highest_price > 0:
-            trailing_loss_ratio = self._calculate_loss_ratio(current_price, highest_price)
-            if trailing_loss_ratio <= self.stop_loss_params['trailing_stop_ratio']:
-                logging.info(f"[트레일링 스탑 발생] {stock_code}: 현재가 {current_price:,.0f}원이 최고가 {highest_price:,.0f}원 대비 {trailing_loss_ratio:.2f}% 하락. {current_dt.isoformat()}")
-                self.execute_order(stock_code, 'sell', current_price, pos_info['size'], current_dt)
-                return True
-        
-        # 3. 보유 기간 기반 손절 (early_stop_loss)
-        if self.stop_loss_params is not None and self.stop_loss_params['early_stop_loss'] is not None and pos_info['entry_date'] is not None:
-            holding_days = (current_dt.date() - pos_info['entry_date']).days
-            if holding_days <= 3 and loss_ratio <= self.stop_loss_params['early_stop_loss']:
-                logging.info(f"[조기 손절매 발생] {stock_code}: 매수 후 {holding_days}일 이내 손실률 {loss_ratio:.2f}%가 조기 손절 기준 {self.stop_loss_params['early_stop_loss']}% 초과. {current_dt.isoformat()}")
-                self.execute_order(stock_code, 'sell', current_price, pos_info['size'], current_dt)
-                return True
-        
-        # 4. 익절 (take_profit_ratio)
-        if self.stop_loss_params is not None and self.stop_loss_params['take_profit_ratio'] is not None and change_price_ratio >= self.stop_loss_params['take_profit_ratio']:
-            logging.info(f"[익절 발생] {stock_code}: 현재 수익률 {change_price_ratio:.2f}%가 기준치 {self.stop_loss_params['take_profit_ratio']}%를 초과. {current_dt.isoformat()}")
-            # 분할매도 처리
-            self.execute_order(stock_code, 'sell', current_price, pos_info['size'], current_dt)
-            return True        
-        return False
-    
-    def check_and_execute_portfolio_stop_loss(self, current_prices: Dict[str, float], current_dt: datetime) -> bool:
-        """
-        포트폴리오 전체의 손실률을 체크하고 손절 조건에 도달하면 모든 포지션을 청산합니다.
-        1. 전체 손실폭 기준 (portfolio_stop_loss)
-        2. 동시다발적 손실 기준 (max_losing_positions)
-        """
-        if not self.positions:
-            return False
-
-        # 1. 전체 손실폭 기준 (portfolio_stop_loss)
-        if self.stop_loss_params is not None and self.stop_loss_params['portfolio_stop_loss'] is not None:
-            total_cost = 0
-            total_current_value = 0
-            
-            for stock_code, position in self.positions.items():
-                if position['size'] > 0:
-                    total_cost += position['size'] * position['avg_price']
-                    total_current_value += current_prices.get(stock_code, 0) * position['size']
-            
-            if total_cost > 0:
-                total_loss_ratio = self._calculate_loss_ratio(total_current_value, total_cost)
-                if total_loss_ratio <= self.stop_loss_params['portfolio_stop_loss']:
-                    logging.info(f'[포트폴리오 손절] {current_dt.isoformat()} - 전체 손실률: {total_loss_ratio:.2f}%')
-                    self._execute_portfolio_sellout(current_prices, current_dt)
-                    
-
-        # 2. 동시다발적 손실 기준 (max_losing_positions)
-        if self.stop_loss_params is not None and self.stop_loss_params['max_losing_positions'] is not None:
-            if self.stop_loss_params['stop_loss_ratio'] is None:
-                logging.warning("max_losing_positions 사용을 위해서는 stop_loss_ratio가 설정되어야 합니다.")
-                return False
-
-            losing_positions_count = 0
-            for stock_code, position in self.positions.items():
-                if position['size'] > 0 and stock_code in current_prices:
-                    loss_ratio = self._calculate_loss_ratio(current_prices[stock_code], position['avg_price'])
-                    if loss_ratio <= self.stop_loss_params['stop_loss_ratio']:
-                        losing_positions_count += 1
-
-            if losing_positions_count >= self.stop_loss_params['max_losing_positions']:
-                logging.info(f'[포트폴리오 손절] {current_dt.isoformat()} - 손실 종목 수: {losing_positions_count}개 (기준: {self.stop_loss_params["max_losing_positions"]}개)')
-                self._execute_portfolio_sellout(current_prices, current_dt)
                 
+                # [수정] transaction_log에 'trade_amount' 추가
+                self.transaction_log.append(
+                    {'trade_datetime': order_time, 
+                     'stock_code': stock_code, 
+                     'trade_type': 'BUY', 
+                     'trade_price': price, 
+                     'trade_quantity': quantity, 
+                     'trade_amount': trade_amount, 
+                     'commission': commission, 
+                     'tax': 0, 
+                     'realized_profit_loss': 0}
+                )
+                return True
+            
+            else: return False
+        
+        elif order_type.lower() == 'sell':
+            if stock_code in self.positions and self.positions[stock_code]['size'] >= quantity:
+                tax = trade_amount * self.tax_rate_sell
+                self._current_cash_balance += (trade_amount - commission - tax)
+                avg_price = self.positions[stock_code]['avg_price']
+                profit = (price - avg_price) * quantity - commission - tax
+                
+                self.positions[stock_code]['size'] -= quantity
+                if self.positions[stock_code]['size'] == 0: del self.positions[stock_code]
+                
+                # [수정] transaction_log에 'trade_amount' 추가
+                self.transaction_log.append(
+                    {'trade_datetime': order_time,
+                      'stock_code': stock_code, 
+                      'trade_type': 'SELL', 
+                      'trade_price': price, 
+                      'trade_quantity': quantity, 
+                      'trade_amount': trade_amount, 
+                      'commission': commission, 
+                      'tax': tax, 
+                      'realized_profit_loss': profit}
+                )
+                return True
+            
+            else: return False
+        
         return False
-
-    def _execute_portfolio_sellout(self, current_prices: Dict[str, float], current_dt: datetime):
-        """포트폴리오 전체 청산을 실행합니다."""
-        for stock_code in list(self.positions.keys()):
-            self.execute_order(stock_code, 'sell', current_prices[stock_code], self.positions[stock_code]['size'], current_dt)
-
-            # if self.positions[stock_code]['size'] > 0:
-            #     if stock_code in current_prices: #################### 종목코드가 없는 경우가 있어서 안전 처리리
-            #         self.execute_order(stock_code, 'sell', current_prices[stock_code], self.positions[stock_code]['size'], current_dt)
-            #         return True
-            #     else:
-            #         logging.warning(f"[포트폴리오 청산] {stock_code}의 현재가 정보가 없어 매도 실행을 건너뜁니다.")
-            #         return False
 
     def get_current_cash_balance(self) -> float:
-        """
-        실시간 계좌 현금 잔고를 조회하고 반환합니다.
-        내부 캐시를 반환하며, 이 캐시는 sync_account_status()를 통해 주기적으로 업데이트됩니다.
-        """
         return self._current_cash_balance
-        
-    def get_position_size(self, stock_code):
-        """특정 종목의 보유 수량을 반환합니다."""
-        return self.positions.get(stock_code, {}).get('size', 0)
-    
-    # FIX: 누락된 get_current_positions 메서드 추가
-    def get_current_positions(self) -> Dict:
-        """현재 보유중인 모든 포지션 정보를 반환합니다."""
+
+    def get_current_positions(self) -> Dict[str, Dict[str, Any]]:
         return self.positions
 
-    def get_position_size(self, stock_code):
-        """특정 종목의 보유 수량을 반환합니다."""
+    def get_position_size(self, stock_code: str) -> int:
         return self.positions.get(stock_code, {}).get('size', 0)
 
-    def get_portfolio_value(self, current_prices):
-        """현재 포트폴리오의 총 가치를 계산하여 반환합니다."""
-        holdings_value = 0
-        for stock_code, pos_info in self.positions.items():
-            if stock_code in current_prices:
-                holdings_value += pos_info['size'] * current_prices[stock_code]
-            else:
-                # 데이터가 없는 경우, 마지막 유효 가격 또는 평균 단가 사용
-                logging.warning(f"경고: {stock_code}의 현재 가격 데이터가 없습니다. 보유 포지션 가치 계산에 문제 발생 가능.")
-                holdings_value += pos_info['size'] * pos_info['avg_price'] # 대안으로 평균 단가 사용
-
+    def get_portfolio_value(self, current_prices: Dict[str, float]) -> float:
+        holdings_value = sum(pos_info['size'] * current_prices.get(stock_code, pos_info['avg_price']) for stock_code, pos_info in self.positions.items())
         return self._current_cash_balance + holdings_value
 
+    # 개별 종목 손절/익절/보유기간 손절/트레일링 스탑(매도) 와
+    # 포토폴리오 손절을 함께 처리
+    def check_and_execute_stop_loss(self, current_prices: Dict[str, float], current_dt: datetime) -> bool:
+        if not self.stop_loss_params:
+            return False
+            
+        executed_any = False
+        # [복원] 1. 개별 종목 손절/익절 로직
+        for stock_code in list(self.positions.keys()):
+            if self._check_individual_stock_conditions(stock_code, current_prices, current_dt):
+                executed_any = True
+
+        # [복원] 2. 포트폴리오 레벨 손절 로직
+        if self._check_portfolio_conditions(current_prices, current_dt):
+            executed_any = True
+            
+        return executed_any
+
+    # 익절/손절/보유기반 손절/트레일링 매도 
+    def _check_individual_stock_conditions(self, stock_code: str, current_prices: Dict[str, float], current_dt: datetime) -> bool:
+        pos_info = self.positions.get(stock_code)
+        current_price = current_prices.get(stock_code)
+        if not pos_info or not current_price or pos_info['size'] <= 0:
+            return False
+
+        # 최고가 업데이트
+        if current_price > pos_info.get('highest_price', 0):
+            pos_info['highest_price'] = current_price
+
+        avg_price = pos_info['avg_price']
+        highest_price = pos_info['highest_price']
+        profit_pct = (current_price - avg_price) * 100 / avg_price if avg_price > 0 else 0
+
+        # 익절
+        if profit_pct >= self.stop_loss_params.get('take_profit_ratio', float('inf')):
+            logging.info(f"[익절] {stock_code}")
+            return self.execute_order(stock_code, 'sell', current_price, pos_info['size'], current_dt)
+        # 보유기간 기반 손절
+        holding_days = (current_dt.date() - pos_info['entry_date']).days
+        if holding_days <= 3 and profit_pct <= self.stop_loss_params.get('early_stop_loss', -float('inf')):
+             logging.info(f"[조기손절] {stock_code}")
+             return self.execute_order(stock_code, 'sell', current_price, pos_info['size'], current_dt)
+        # 일반 손절
+        if profit_pct <= self.stop_loss_params.get('stop_loss_ratio', -float('inf')):
+            logging.info(f"[손절] {stock_code}")
+            return self.execute_order(stock_code, 'sell', current_price, pos_info['size'], current_dt)
+        # 트레일링 스탑
+        if highest_price > 0:
+            trailing_stop_pct = (current_price - highest_price) * 100 / highest_price
+            if trailing_stop_pct <= self.stop_loss_params.get('trailing_stop_ratio', -float('inf')):
+                logging.info(f"[가상 트레일링 스탑] {stock_code}")
+                return self.execute_order(stock_code, 'sell', current_price, pos_info['size'], current_dt)
+        
+        return False
+
+    # 포트폴리오 손절 판단 
+    def _check_portfolio_conditions(self, current_prices: Dict[str, float], current_dt: datetime) -> bool:
+        # [복원] 포트폴리오 전체 손실률 기준
+        total_cost = sum(p['size'] * p['avg_price'] for p in self.positions.values())
+        if total_cost == 0: return False
+        
+        total_current_value = sum(p['size'] * current_prices.get(code, p['avg_price']) for code, p in self.positions.items())
+        total_profit_pct = (total_current_value - total_cost) * 100 / total_cost
+
+        if total_profit_pct <= self.stop_loss_params.get('portfolio_stop_loss', -float('inf')):
+            logging.info(f"[가상 포트폴리오 손절] 전체 손실률 {total_profit_pct:.2%}가 기준치 도달")
+            self._execute_portfolio_sellout(current_prices, current_dt)
+            return True
+
+        # [복원] 동시다발적 손실 기준
+        stop_loss_pct = self.stop_loss_params.get('stop_loss_ratio', -float('inf'))
+        losing_positions_count = 0
+        for code, pos in self.positions.items():
+            price = current_prices.get(code)
+            if price and ((price - pos['avg_price']) / pos['avg_price']) * 100 <= stop_loss_pct:
+                losing_positions_count += 1
+        
+        if losing_positions_count >= self.stop_loss_params.get('max_losing_positions', float('inf')):
+            logging.info(f"[가상 포트폴리오 손절] 손실 종목 수 {losing_positions_count}개가 기준치 도달")
+            self._execute_portfolio_sellout(current_prices, current_dt)
+            return True
+
+        return False
+    
+    # 포토폴리오 손절 실행
     def _execute_portfolio_sellout(self, current_prices: Dict[str, float], current_dt: datetime):
         """포트폴리오 전체 청산을 실행합니다."""
         for stock_code in list(self.positions.keys()):
-            self.execute_order(stock_code, 'sell', current_prices[stock_code], self.positions[stock_code]['size'], current_dt)
-
-    def _update_highest_price(self, stock_code, current_price):
-        """포지션의 최고가를 업데이트합니다 (트레일링 스탑을 위해)."""
-        if stock_code in self.positions: # Broker의 positions를 직접 사용
-            if current_price > self.positions[stock_code]['highest_price']:
-                self.positions[stock_code]['highest_price'] = current_price
-
-    def _calculate_loss_ratio(self, current_price: float, avg_price: float) -> float:
-        """손실률을 계산합니다. 퍼센트 단위로 반환합니다."""
-        return (current_price - avg_price) / avg_price * 100
-
-    def _calculate_change_price_ratio(self, current_price: float, avg_price: float) -> float:
-        """손실률을 계산합니다. 퍼센트 단위로 반환합니다."""
-        return (current_price - avg_price) / avg_price * 100
-
-                
-    def reset_daily_transactions(self):
-        """일일 거래 초기화를 수행합니다. 현재는 빈 메서드로 두어 향후 확장 가능하도록 합니다."""
-        # 일일 거래 관련 상태를 초기화하는 로직이 필요할 때 여기에 추가
-        # 예: 일일 거래 횟수 제한, 일일 손실 한도 등
-        pass
-
+            pos_info = self.positions[stock_code]
+            price = current_prices.get(stock_code, pos_info['avg_price'])
+            self.execute_order(stock_code, 'sell', price, pos_info['size'], current_dt)
 
     def cleanup(self) -> None:
-        """리소스 정리 및 Creon API 연결 해제"""
-        logger.info("Brokerage cleanup initiated.")
-        # CreonAPIClient의 cleanup은 Trading 클래스에서 최종적으로 호출
-        logger.info("Brokerage cleanup completed.")
+        logging.info("백테스트 브로커 리소스 정리 완료.")
+        pass

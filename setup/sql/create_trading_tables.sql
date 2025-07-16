@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS current_positions (
     stock_name VARCHAR(100) NOT NULL COMMENT '종목명',
     quantity INT NOT NULL COMMENT '보유 수량',
     sell_avail_qty INT NOT NULL COMMENT '매도가능수량',
-    average_buy_price DECIMAL(18, 2) NOT NULL COMMENT '평균 매입 단가',
+    avg_price DECIMAL(18, 2) NOT NULL COMMENT '평균 매입 단가',
     eval_profit_loss DECIMAL(18, 2) COMMENT '평가 손익',
     eval_return_rate DECIMAL(10, 4) COMMENT '평가 수익률',
     entry_date DATE COMMENT '최초 매수 일자',

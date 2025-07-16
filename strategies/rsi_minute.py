@@ -1,11 +1,10 @@
-import datetime
-import logging
 import pandas as pd
 import numpy as np 
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Any
 from strategies.strategy import MinuteStrategy
 from util.strategies_util import *
+import logging
 
 logger = logging.getLogger(__name__)
 # 디버깅을 위해 DEBUG 레벨로 설정
@@ -112,109 +111,83 @@ class RSIMinute(MinuteStrategy):
         
         return rsi
 
-    # 필수 : 반드시 구현
+    # 분봉 매매 대상 : 매수신호, 매도신호, 보유 중 종목
+    # 비교) 일봉 신호 대상은 모든 유니버스 종목
     def run_minute_logic(self, current_dt, stock_code):
-        """
-        분봉 데이터를 기반으로 RSI 매수/매도 로직을 실행합니다.
-
-        """
-        if stock_code not in self.signals:
-            logger.debug(f"[{current_dt.isoformat()}] {stock_code}: 시그널 없음. 매매 건너뜀.")
-            return
+        # 시그널 없음 건너 뜀
+        if stock_code not in self.signals: return
         
+        # 종목에 대한 신호
         signal_info = self.signals[stock_code]
         order_signal = signal_info.get('signal_type')
         
-        # 당일 이미 거래가 발생했으면 추가 거래 방지
-        if signal_info.get('traded_today', False):
-            logger.debug(f"[{current_dt.isoformat()}] {stock_code}: 이미 오늘 거래 완료 (traded_today=True). 매매 건너뜀.")
-            return
+        #if signal_info.get('traded_today', False): return
+        if order_signal not in ['buy', 'sell']: return
 
-        logger.debug(f"[{current_dt.isoformat()}] {stock_code}: 시그널 정보: {signal_info}")
- 
-        # 현재 시간의 분봉 데이터 가져오기 (한 번만 조회)
-        minute_df = self._get_bar_at_time('minute', stock_code, current_dt)
-        if minute_df is None or minute_df.empty:
-            return
+        minute_df = self._get_ohlcv_at_time(stock_code, current_dt)
+        if minute_df is None or minute_df.empty: return
         
         current_price = minute_df['close']
-        current_minute_time = current_dt.time()
-        current_minutes = current_minute_time.hour * 60 + current_minute_time.minute
-
-        # RSI 계산 (캐시 활용)
-        historical_minute_data = self._get_historical_data_up_to(
-            'minute',
-            stock_code,
-            current_dt,
-            lookback_period=self.strategy_params['minute_rsi_period'] + 1
-        )
-        
-        # 1. 손절 체크 ->broker 손절 처리
         current_position_size = self.broker.get_position_size(stock_code)
-        if self.broker.stop_loss_params is not None and current_position_size > 0:
-            if self.broker.check_and_execute_stop_loss(stock_code, current_price, current_dt):
-                self.reset_signal(stock_code)
- 
-
-        # ##########################
-        # 2. 종목 매도
-        # --------------------------
-        if order_signal == 'sell' and current_position_size > 0:
-            # 매도 전략 로직 시작 : (자유롭게 작성) ==============================
-            # RSI 매도 로직 설명 :
-            #
-            # ----------------------------------------------------------------
-            # 2-1. RSI 지표 계산 : 매수와 중복되지만 코드를 보기 쉽게 중복 함
-            current_rsi_value = self._calculate_rsi(historical_minute_data, stock_code)
-            if current_rsi_value is None:
-                return        
-
-            if current_rsi_value >= self.strategy_params['minute_rsi_overbought']:
-                logging.info(f'[RSI 매도] {current_dt.isoformat()} - {stock_code} RSI: {current_rsi_value:.2f}, 매도가: {current_price:,.0f}원, 수량: {current_position_size}주')
-                self.broker.execute_order(stock_code, 'sell', current_price, current_position_size, current_dt)
-                self.reset_signal(stock_code)
-            # 끝 매도 전략 로직 =================================================
-            
-            # 2-2. 강제매도 (타임컷) 전략에 강제매도가 필요하다면 다음 형식으로 추가
-            if current_minutes >= (15 * 60 + 5) and current_minutes >= (15 * 60 + 20): # 오후 3:05 이후 강제매도 가능 (시간 범위 확장)
-                today_data = minute_df[minute_df.index == pd.Timestamp(current_dt)]
-                if today_data.empty:
-                    return
-                
-                # 타임컷 강제매도 실행 (괴리율 조건 완화)
-                self.execute_time_cut_sell(stock_code, current_dt, current_price, current_position_size, max_price_diff_ratio=0.7)
-            # 끝 강제매도도 -------------------------------------------------------    
-
-        # ##########################
-        # 3. 종목 매수
-        # --------------------------
+        
+        # 1. 가격 필터 + RSI 타이밍을 이용한 최적 매매 시도
+        historical_data = self._get_historical_data_up_to('minute', stock_code, current_dt, self.strategy_params['minute_rsi_period'] + 1)
+        current_rsi = self._calculate_rsi(historical_data, stock_code)
+        if current_rsi is None: return
+        max_deviation_ratio = self.strategy_params['max_deviation_ratio'] / 100
+        # --- [수정] 매수 로직 (가격 괴리율 조건 삭제) ---
         if order_signal == 'buy' and current_position_size == 0:
             target_quantity = signal_info.get('target_quantity', 0)
-            if target_quantity <= 0:
-                return
+            if target_quantity <= 0: return
 
-            # 매수 전략 로직 시작 : (자유롭게 작성) ==============================
-            # RSI 매수 로직 설명 :
-            #
-            # ----------------------------------------------------------------
-            # 3-1. RSI 지표 계산
-            current_rsi_value = self._calculate_rsi(historical_minute_data, stock_code)
-            if current_rsi_value is None:
-                return        
-    
-            if current_rsi_value <= self.strategy_params['minute_rsi_oversold']:
-                logging.info(f'[RSI 매수] {current_dt.isoformat()} - {stock_code} RSI: {current_rsi_value:.2f}, 가격: {current_price:,.0f}원, 수량: {target_quantity}주')
-                self.broker.execute_order(stock_code, 'buy', current_price, target_quantity, current_dt)
-                self.reset_signal(stock_code)
-            
-            # 끝 매수 전략 로직 =================================================
-            
-            # 3-2. 강제매수 (타임컷) 수정금지 -----------------------------------------
-            if current_minutes >= (15 * 60 + 5) and current_minutes >= (15 * 60 + 20): # 오후 3:05 이후 강제매수 가능 (시간 범위 확장)
-                today_data = minute_df[minute_df.index == pd.Timestamp(current_dt)]
-                if today_data.empty:
-                    return
-                # 타임컷 강제매수 실행 (괴리율 조건 완화)
-                self.execute_time_cut_buy(stock_code, current_dt, current_price, target_quantity, max_price_diff_ratio=0.7)
-            # 끝 강제매수 -------------------------------------------------------
+            # [수정] RSI 조건만으로 매수 결정
+            if current_rsi <= self.strategy_params['minute_rsi_oversold']:
+                if self.broker.execute_order(stock_code, 'buy', current_price, target_quantity, order_time=current_dt):
+                    logging.info(f"✅ [RSI 매수] {stock_code} (RSI: {current_rsi:.2f})")
+                    self.reset_signal(stock_code)
 
+        # --- [수정] 매도 로직 (가격 괴리율 조건 삭제) ---
+        elif order_signal == 'sell' and current_position_size > 0:
+            # [수정] 목표가 존재 여부와 상관없이 RSI 조건만으로 매도 결정
+            if current_rsi >= self.strategy_params['minute_rsi_overbought']:
+                if self.broker.execute_order(stock_code, 'sell', current_price, current_position_size, order_time=current_dt):
+                    logging.info(f"✅ [RSI 매도] {stock_code} (RSI: {current_rsi:.2f})")
+                    self.reset_signal(stock_code)
+        
+        # # 매수 로직
+        # if order_signal == 'buy' and current_position_size == 0:
+        #     target_quantity = signal_info.get('target_quantity', 0)
+        #     target_price = signal_info.get('target_price')
+        #     if target_quantity <= 0 or not target_price: return
+
+        #     deviation = abs(current_price - target_price) / target_price
+        #     if deviation <= max_deviation_ratio and current_rsi <= self.strategy_params['minute_rsi_oversold']:
+        #         logging.info(f"✅ [RSI 매수 실행] {stock_code} (RSI: {current_rsi:.2f}, 가격 괴리율: {deviation:.2%})")
+        #         if self.broker.execute_order(stock_code, 'buy', current_price, target_quantity, order_time=current_dt):
+        #             self.reset_signal(stock_code)
+
+        # # 매도 로직
+        # elif order_signal == 'sell' and current_position_size > 0:
+        #     target_price = signal_info.get('target_price')
+        #     # 리밸런싱 매도 (목표가 없음)
+        #     if not target_price and current_rsi >= self.strategy_params['minute_rsi_overbought']:
+        #         logging.info(f"✅ [RSI 리밸런싱 매도] {stock_code} (RSI: {current_rsi:.2f})")
+        #         if self.broker.execute_order(stock_code, 'sell', current_price, current_position_size, order_time=current_dt):
+        #             self.reset_signal(stock_code)
+        #     # 데드크로스 매도 (목표가 있음)
+        #     elif target_price:
+        #         deviation = abs(current_price - target_price) / target_price
+        #         if deviation <= max_deviation_ratio and current_rsi >= self.strategy_params['minute_rsi_overbought']:
+        #             logging.info(f"✅ [RSI 데드크로스 매도] {stock_code} (RSI: {current_rsi:.2f})")
+        #             if self.broker.execute_order(stock_code, 'sell', current_price, current_position_size, order_time=current_dt):
+        #                 self.reset_signal(stock_code)
+        
+        # --- [복원] 타임컷 (Time-cut) 강제 매매 로직 ---
+        # 장 마감 부근(15:10 이후)이고, 아직 오늘 거래가 실행되지 않았다면 강제 실행
+        # if not self.signals[stock_code].get('traded_today', False) and current_dt.time() >= datetime.time(15, 10):
+        #     if order_signal == 'buy' and current_position_size == 0:
+        #         target_quantity = signal_info.get('target_quantity', 0)
+        #         self.execute_time_cut_buy(stock_code, current_dt, current_price, target_quantity, max_deviation_ratio=self.strategy_params['max_deviation_ratio']) # 타임컷 괴리율은 좀 더 여유있게
+            
+        #     elif order_signal == 'sell' and current_position_size > 0:
+        #         self.execute_time_cut_sell(stock_code, current_dt, current_price, current_position_size, max_deviation_ratio=self.strategy_params['max_deviation_ratio'])

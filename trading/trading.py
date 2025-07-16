@@ -6,68 +6,65 @@ import time as pytime
 from typing import Dict, Any, List, Optional
 import sys
 import os
-import threading
 
-# 프로젝트 루트 경로를 sys.path에 추가 (다른 모듈 임포트를 위함)
+# --- [수정] 필요한 모듈 임포트 ---
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
+from trading.abstract_broker import AbstractBroker
 from trading.brokerage import Brokerage
-from trading.trading_report import TradingReport # Reporter 타입 힌트를 위해 남겨둠
+from trading.abstract_report import ReportGenerator, TradingDB # Live 용 Storage 클래스 이름 사용
 
 from api.creon_api import CreonAPIClient
 from manager.db_manager import DBManager
 from manager.trading_manager import TradingManager
-from strategies.strategy import DailyStrategy
-from strategies.strategy import MinuteStrategy
+from strategies.strategy import DailyStrategy, MinuteStrategy
 from util.notifier import Notifier
-# --- 로거 설정 ---
+
 logger = logging.getLogger(__name__)
 
 class Trading:
     """
     자동매매 시스템의 메인 오케스트레이터 클래스입니다.
-    자동매매 루프를 실행하고, 매매 전략을 조정하며, 실시간 데이터 및 주문 처리를 관리합니다.
     """
-    def __init__(self,
-                 api_client: CreonAPIClient,
-                 db_manager: DBManager,
-                 notifier: Notifier,
-                 initial_cash: float = 1_000_000 # 초기 예수금 설정 (Brokerage 로 전달)
-                 ):
+    def __init__(self, api_client: CreonAPIClient, db_manager: DBManager, notifier: Notifier):
         self.api_client = api_client
         self.db_manager = db_manager
         self.notifier = notifier
-        self.initial_cash = initial_cash
-        
-        self.manager = TradingManager(self.api_client, self.db_manager) # initial_cash ???
-        self.broker = Brokerage(self.api_client, self.manager, self.notifier, self.initial_cash)
-        self.report = TradingReport(self.db_manager)
-        self.daily_strategy = None
-        self.minute_strategy = None
-        
-        self.data_store = {'daily': {}, 'minute': {}} # {stock_code: DataFrame}
-        
-        self.is_running = False
-        self.market_open_time = time(9, 0, 0)
-        self.market_close_time = time(15, 30, 0)
-        self.daily_strategy_run_time = time(8, 30, 0) # 일봉 전략 실행 시간 (장 시작 전)
-        self.portfolio_update_time = time(16, 0, 0) # 포트폴리오 업데이트 시간 (장 마감 후)
-        self.current_trading_date = datetime.now().date
-        # _minute_data_cache는 이제 각 종목별로 당일의 분봉 데이터를 저장합니다.
-        self._minute_data_cache = {}   # {stock_code: DataFrame (오늘치 분봉 데이터)}
 
-        # Creon API의 실시간 체결/주문 응답 콜백 등록
+        # --- [수정] __init__ 생성자 정리 ---
+        # 1. Manager를 먼저 생성합니다.
+        self.manager = TradingManager(self.api_client, self.db_manager)
+        # 2. Brokerage 생성 시 Manager를 주입하고, 타입 힌트는 AbstractBroker를 사용합니다.
+        self.broker: AbstractBroker = Brokerage(self.api_client, self.manager, self.notifier)
+        
+        self.daily_strategy: Optional[DailyStrategy] = None
+        self.minute_strategy: Optional[MinuteStrategy] = None
+        
+        self.data_store = {'daily': {}, 'minute': {}}
+        
+        self.is_running = True
+        self.market_open_time = time(9, 0)
+        self.market_close_time = time(15, 30)
+        self.last_strategy_run_time = datetime.min
+        self._portfolio_updated_today = False
+        self.current_trading_date: Optional[date] = None
+        # 일봉 업데이트 캐시 변수들 (성능 개선용)
+        self._daily_update_cache = {}  # {stock_code: {date: last_update_time}}
+        self._minute_data_cache = {}   # {stock_code: {date: filtered_data}}
+        # Creon API의 실시간 체결 콜백을 Brokerage의 핸들러에 연결
         self.api_client.set_conclusion_callback(self.broker.handle_order_conclusion)
         
         logger.info("Trading 시스템 초기화 완료.")
 
-    def set_strategies(self, daily_strategy: DailyStrategy, minute_strategy: MinuteStrategy):
-            self.daily_strategy = daily_strategy
-            self.minute_strategy = minute_strategy
-            logging.info(f"일봉 전략 '{daily_strategy.__class__.__name__}' 및 분봉 전략 '{minute_strategy.__class__.__name__}' 설정 완료.")
- 
+    def set_strategies(self, daily_strategy: DailyStrategy, minute_strategy: MinuteStrategy, stop_loss_params: dict = None):
+        self.daily_strategy = daily_strategy
+        self.minute_strategy = minute_strategy
+        if stop_loss_params:
+            self.broker.set_stop_loss_params(stop_loss_params)
+        logger.info(f"전략 설정 완료: Daily='{daily_strategy.__class__.__name__}', Minute='{minute_strategy.__class__.__name__}'")
+
     def set_broker_stop_loss_params(self, params: dict = None):
         self.broker.set_stop_loss_params(params)
         logging.info("브로커 손절매 파라미터 설정 완료.")
@@ -149,26 +146,26 @@ class Trading:
             
         return False
 
-    def check_portfolio_stop_loss(self, current_dt: datetime, current_prices: Dict[str, float]) -> bool:
-        """
-        포트폴리오 전체 손절매 조건을 확인하고 실행합니다.
-        시뮬레이션에서는 이 함수가 매 분 호출될 수 있습니다.
-        """
-        if self.broker.stop_loss_params and self.broker.stop_loss_params.get('portfolio_stop_loss_enabled', False):
-            # 특정 시간 이후에만 손절매 검사
-            if current_dt.time() >= datetime.time(self.broker.stop_loss_params.get('portfolio_stop_loss_start_hour', 14), 0, 0):
-                losing_positions_count = 0
-                for stock_code, position in self.positions.items():
-                    if position['size'] > 0 and stock_code in current_prices:
-                        loss_ratio = self._calculate_loss_ratio(current_prices[stock_code], position['avg_price'])
-                        if loss_ratio >= self.broker.stop_loss_params['stop_loss_ratio']: # 손실률이 기준 이상인 경우
-                            losing_positions_count += 1
+    # def check_portfolio_stop_loss(self, current_dt: datetime, current_prices: Dict[str, float]) -> bool:
+    #     """
+    #     포트폴리오 전체 손절매 조건을 확인하고 실행합니다.
+    #     시뮬레이션에서는 이 함수가 매 분 호출될 수 있습니다.
+    #     """
+    #     if self.broker.stop_loss_params and self.broker.stop_loss_params.get('portfolio_stop_loss_enabled', False):
+    #         # 특정 시간 이후에만 손절매 검사
+    #         if current_dt.time() >= datetime.time(self.broker.stop_loss_params.get('portfolio_stop_loss_start_hour', 14), 0, 0):
+    #             losing_positions_count = 0
+    #             for stock_code, position in self.positions.items():
+    #                 if position['size'] > 0 and stock_code in current_prices:
+    #                     loss_ratio = self._calculate_loss_ratio(current_prices[stock_code], position['avg_price'])
+    #                     if loss_ratio >= self.broker.stop_loss_params['stop_loss_ratio']: # 손실률이 기준 이상인 경우
+    #                         losing_positions_count += 1
 
-                if losing_positions_count >= self.broker.stop_loss_params['max_losing_positions']:
-                    logger.info(f'[{current_dt.isoformat()}] [포트폴리오 손절] 손실 종목 수: {losing_positions_count}개 (기준: {self.broker.stop_loss_params["max_losing_positions"]}개 이상)')
-                    self._execute_portfolio_sellout(current_prices, current_dt)
-                    return True
-        return False
+    #             if losing_positions_count >= self.broker.stop_loss_params['max_losing_positions']:
+    #                 logger.info(f'[{current_dt.isoformat()}] [포트폴리오 손절] 손실 종목 수: {losing_positions_count}개 (기준: {self.broker.stop_loss_params["max_losing_positions"]}개 이상)')
+    #                 self._execute_portfolio_sellout(current_prices, current_dt)
+    #                 return True
+    #     return False
 
     def get_current_market_prices(self, stock_codes: List[str]) -> Dict[str, float]:
         """
@@ -263,13 +260,13 @@ class Trading:
                 current_date = now.date()
                 current_time = now.time()
                 # 1. 장 마감 시간 이후 자동 종료
-                if current_time > self.market_close_time and current_date == self.current_trading_date:
-                    logger.info(f"[{now.strftime('%H:%M:%S')}] 장 마감 시간 도달. 포트폴리오 결산을 진행합니다.")
-                    if not getattr(self, '_portfolio_updated_today', False):
-                        current_prices = self.get_current_market_prices(list(self.broker.get_current_positions().keys()))
-                        self.broker.update_portfolio_status(now, current_prices)
-                        setattr(self, '_portfolio_updated_today', True)
+                if current_time > self.market_close_time and not getattr(self, '_portfolio_updated_today', False):
+                    logger.info(f"[{now.strftime('%H:%M:%S')}] 장 마감. 포트폴리오 결산을 진행합니다.")
                     
+                    # [수정] ReportGenerator를 사용하여 일일 성과 기록
+                    self.record_daily_performance(now.date())
+                    
+                    setattr(self, '_portfolio_updated_today', True)                    
                     logger.info("오늘의 모든 작업을 종료합니다. 다음 거래일까지 대기합니다.")
                     pytime.sleep(60) # 1분 후 다음 날짜 체크
                     continue
@@ -475,13 +472,48 @@ class Trading:
         # 필요에 따라 정정/취소 로직을 호출할 수 있습니다.
         # 예: 특정 시간까지 미체결 시 취소 후 재주문 또는 타임컷 매도 등.
 
+    def record_daily_performance(self, current_date: date):
+        """[신규] 장 마감 후 ReportGenerator를 사용해 일일 성과를 기록하는 메서드"""
+        
+        # 1. 자동매매용 저장 전략 선택
+        storage = TradingDB(self.db_manager)
+
+        # 2. 리포트 생성기에 저장 전략 주입
+        reporter = ReportGenerator(storage_strategy=storage)
+        
+        # 3. 리포트에 필요한 데이터 준비
+        # 일일 포트폴리오 가치 시계열 데이터 (자동매매에서는 당일 종가 기준)
+        end_value = self.broker.get_portfolio_value(self.manager.get_current_prices(list(self.broker.get_current_positions().keys())))
+        
+        # DB에서 전일자 포트폴리오 정보를 가져와 시계열 데이터 생성
+        latest_portfolio = self.db_manager.fetch_latest_daily_portfolio()
+        start_value = latest_portfolio.get('total_capital', self.broker.initial_cash) if latest_portfolio else self.broker.initial_cash
+        
+        portfolio_series = pd.Series([start_value, end_value], index=[pd.Timestamp(current_date - timedelta(days=1)), pd.Timestamp(current_date)])
+
+        # 거래 로그는 DB에서 해당일의 로그를 다시 불러옴
+        transaction_log = self.db_manager.fetch_trading_logs(current_date, current_date)
+
+        # 4. 리포트 생성 및 저장
+        reporter.generate(
+            start_date=current_date,
+            end_date=current_date,
+            initial_cash=start_value,
+            portfolio_value_series=portfolio_series,
+            transaction_log=transaction_log.to_dict('records') if not transaction_log.empty else [],
+            strategy_info={
+                'strategy_daily': self.daily_strategy.__class__.__name__,
+                'strategy_minute': self.minute_strategy.__class__.__name__,
+                'params_json_daily': self.daily_strategy.strategy_params,
+                'params_json_minute': self.minute_strategy.strategy_params
+            },
+            # LiveTradeDBStorage에 추가 정보 전달
+            cash_balance=self.broker.get_current_cash_balance()
+        )
 
     def stop_trading(self) -> None:
-        """
-        자동매매 루프를 안전하게 종료합니다.
-        """
-        logger.info("자동매매 시스템 종료 요청 수신.")
         self.is_running = False
+        logger.info("자동매매 시스템 종료 요청 수신.")
 
     def cleanup(self) -> None:
         """
@@ -540,26 +572,19 @@ if __name__ == "__main__":
                         handlers=[logging.StreamHandler()])
     try:
         # 1. 필요한 인스턴스들 생성
-        logger.info("=== 자동매매 시작 ===")
-        # API 클라이언트 (실제 거래용이 아닌 테스트용)
         api_client = CreonAPIClient()
-        # DB 매니저
         db_manager = DBManager()
-        # 실제 텔레그램 토큰 및 채팅 ID 설정 필요
         notifier = Notifier(telegram_token=TELEGRAM_BOT_TOKEN, telegram_chat_id=TELEGRAM_CHAT_ID)
 
         # 2. 자동매매 인스턴스 생성
-        initial_cash = 50_000  # 1천만원
-
         trading_system = Trading(
             api_client=api_client,
             db_manager=db_manager,
-            notifier=notifier, 
-            initial_cash=initial_cash
+            notifier=notifier
         )
         
-        # 전략 인스턴스 생성
-        # SMA 전략 설정 (최적화 결과 반영)
+        # 전략 인스턴스 생성 broker와 data_store는 trading_system 내부의 것을 사용
+        # SMA 전략 설정
         from strategies.sma_daily import SMADaily
         daily_strategy = SMADaily(broker=trading_system.broker, data_store=trading_system.data_store, strategy_params=SMA_DAILY_PARAMS)
 
@@ -583,6 +608,7 @@ if __name__ == "__main__":
         trading_system.load_stocks(start_date, end_date)
 
         try:
+            logger.info("=== 자동매매 시작 ===")
             trading_system.run()
         except KeyboardInterrupt:
             logger.info("사용자에 의해 시스템 종료 요청됨.")

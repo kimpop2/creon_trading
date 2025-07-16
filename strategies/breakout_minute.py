@@ -168,7 +168,7 @@ class BreakoutMinute(MinuteStrategy):
                 self.signals[stock_code]['traded_today'] = True # 오늘 매수 완료 플래그 설정
                 # self.reset_signal(stock_code) # 매수 후 신호 초기화 (필요시)
             # --- 타임컷 강제 매수 ---
-            elif current_minute_time >= datetime.time(15, 5) and current_minute_time < datetime.time(15, 15): # 오후 3:05 ~ 3:15 사이
+            elif current_minute_time >= datetime.time(15, 18) and current_minute_time < datetime.time(15, 20): # 오후 3:05 ~ 3:15 사이
                 # 이 부분은 DailyStrategy에서 전달받은 'target_price'나 'score' 등을 활용하여
                 # 여전히 매수 매력도가 높은 경우에만 실행하는 것이 좋습니다.
                 # 현재는 단순히 시간이 되면 매수 시도하는 로직이므로,
@@ -215,7 +215,7 @@ class BreakoutMinute(MinuteStrategy):
             
             # --- 타임컷 강제 매도 ---
             # 장 마감 임박 시 보유 종목 강제 매도
-            if current_minute_time >= datetime.time(15, 20) and current_minute_time < datetime.time(15, 29): # 장 마감 10분 전부터
+            if current_minute_time >= datetime.time(15, 18) and current_minute_time < datetime.time(15, 20): # 장 마감 10분 전부터
                 today_data = minute_df[minute_df.index == pd.Timestamp(current_dt)]
                 if today_data.empty:
                     return

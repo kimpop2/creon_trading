@@ -29,30 +29,25 @@ class BaseStrategy(abc.ABC):
         """분봉 데이터를 기반으로 전략 로직을 실행하는 추상 메서드."""
         pass
 
-    def _get_bar_at_time(self, data_type, stock_code, target_dt):
-        """주어진 시간(target_dt)에 해당하는 정확한 OHLCV 바를 반환합니다."""
-        if data_type == 'daily':
-            df = self.data_store['daily'].get(stock_code)
-            if df is None or df.empty:
-                return None
-            try:
-                target_dt_normalized = pd.Timestamp(target_dt).normalize()
-                return df.loc[target_dt_normalized]
-            except KeyError:
-                return None
-        elif data_type == 'minute':
-            target_date = target_dt.date()
-            if stock_code not in self.data_store['minute'] or target_date not in self.data_store['minute'][stock_code]:
-                return None
-            df = self.data_store['minute'][stock_code][target_date]
-            if df is None or df.empty:
-                return None
-            try:
-                return df.loc[target_dt]
-            except KeyError:
-                return None
-        return None
-
+    def _get_ohlcv_at_time(self, stock_code, target_dt):
+        """
+        주어진 시간(target_dt)에 해당하는 정확한 분봉 OHLCV 바를 반환합니다.
+        """
+        target_date = target_dt.date()
+        
+        # 해당 날짜의 분봉 데이터 저장소 확인
+        daily_minute_data = self.data_store['minute'].get(stock_code, {}).get(target_date)
+        
+        if daily_minute_data is None or daily_minute_data.empty:
+            return None
+            
+        try:
+            # 정확한 시간의 분봉(Series) 반환
+            return daily_minute_data.loc[target_dt]
+        except KeyError:
+            # 해당 시간에 데이터가 없는 경우
+            return None
+    
     def _get_historical_data_up_to(self, data_type, stock_code, current_dt, lookback_period=None):
         """주어진 시간(current_dt)까지의 모든 과거 데이터를 반환합니다."""
         if data_type == 'daily':
@@ -103,37 +98,44 @@ class DailyStrategy(BaseStrategy):
         """일봉 전략은 분봉 로직을 직접 수행하지 않으므로 이 메서드는 비워둡니다."""
         pass 
 
-    def _calculate_target_quantity(self, stock_code, current_price, num_stocks=None):
-        """주어진 가격에서 동일비중 투자에 필요한 수량을 계산합니다."""
+    def _calculate_target_quantity(self, stock_code, current_price, current_date, num_stocks=None):
+        """[수정됨] 수량 계산 시 백테스트의 현재 날짜를 인자로 받습니다."""
         if num_stocks is None:
             num_stocks = self.strategy_params.get('num_top_stocks', 1)
 
+        # [핵심 수정] 포트폴리오 가치 계산 시, pd.Timestamp.today() 대신 current_date 사용
         current_prices_for_summary = {}
         for code in self.data_store['daily']:
-            daily_data = self._get_historical_data_up_to('daily', code, pd.Timestamp.today(), lookback_period=1)
+            # 현재 날짜까지의 데이터를 기반으로 각 종목의 현재가를 가져옴
+            daily_data = self._get_historical_data_up_to('daily', code, current_date, lookback_period=1)
             if not daily_data.empty:
                 current_prices_for_summary[code] = daily_data['close'].iloc[-1]
         
-        portfolio_value = self.broker.get_portfolio_value(current_prices_for_summary)
+        # capital_base를 initial_cash로 고정하여 복리 함정 방지
+        capital_base = self.broker.initial_cash
+        # 2. 종목별 투자금 계산
+        per_stock_investment = capital_base / num_stocks
+        # 3. 실제 투자 가능 금액 결정 (종목별 할당액 vs 실제 가용 현금 중 작은 값)
         available_cash = self.broker.get_current_cash_balance()
-        commission_rate = self.broker.commission_rate
+        invest_per_stock = min(per_stock_investment, available_cash)
+        # 4. 수수료를 포함한 1주당 비용 계산
+        commission_rate = self.broker.commission_rate # 브로커에 수수료율이 정의되어 있다고 가정
+        per_share_cost = current_price * (1 + commission_rate)
+        if per_share_cost <= 0: 
+            return 0
         
-        per_stock_investment = portfolio_value / num_stocks
-        max_buyable_amount = available_cash / (1 + commission_rate)
-        actual_investment_amount = min(per_stock_investment, max_buyable_amount)
-        
-        if current_price <= 0: return 0
-        quantity = int(actual_investment_amount / current_price)
+        # 5. 최종 매수 수량 계산
+        quantity = int(invest_per_stock / per_share_cost)
         
         if quantity > 0:
-            total_cost = current_price * quantity * (1 + commission_rate)
+            total_cost = current_price * quantity * (1 + self.broker.commission_rate)
             if total_cost > available_cash:
                 quantity -= 1
 
         if quantity > 0:
-            logger.info(f"{stock_code} 종목 매수 수량 계산: {quantity}주")
+            logging.info(f"{stock_code} 종목 매수 수량 계산: {quantity}주")
         else:
-            logger.warning(f"{stock_code} 종목 매수 불가: 현금 부족")
+            logging.warning(f"{stock_code} 종목 매수 불가: 현금 부족 또는 할당액 초과")
         
         return quantity
 
@@ -190,7 +192,8 @@ class DailyStrategy(BaseStrategy):
             # 1. 매수 신호 결정
             if stock_code in buy_candidates and stock_code not in current_positions:
                 if target_price is not None and target_price > 0:
-                    target_quantity = self._calculate_target_quantity(stock_code, target_price)
+                    # [수정] _calculate_target_quantity 호출 시 current_daily_date 전달
+                    target_quantity = self._calculate_target_quantity(stock_code, target_price, current_daily_date, self.strategy_params['num_top_stocks'])
                     if target_quantity > 0:
                         signal_info.update({
                             'signal_type': 'buy',
@@ -207,7 +210,7 @@ class DailyStrategy(BaseStrategy):
                     'target_quantity': self.broker.get_position_size(stock_code)
                 })
                 price_log = f"{target_price:,.0f}원" if target_price is not None else "N/A"
-                logging.info(f'매도 신호 - {stock_code} (포지션 보유): 목표가격 {price_log}')
+                logging.info(f'매도 신호 - {stock_code} 매도수량 {signal_info["target_quantity"]}주: 목표가격 {price_log}')
 
             # 3. 홀드 신호 결정
             elif stock_code in current_positions:
@@ -216,7 +219,7 @@ class DailyStrategy(BaseStrategy):
                     'target_quantity': self.broker.get_position_size(stock_code)
                 })
                 price_log = f"{target_price:,.0f}원" if target_price is not None else "N/A"
-                logging.info(f'홀딩 신호 - {stock_code}: 목표수량 {signal_info["target_quantity"]}주, 목표가격 {price_log}')
+                logging.debug(f'홀딩 신호 - {stock_code}: 목표수량 {signal_info["target_quantity"]}주, 목표가격 {price_log}')
 
             # 유효한 신호('buy', 'sell', 'hold')가 생성된 경우에만 최종 신호 목록에 추가
             if signal_info.get('signal_type'):
@@ -272,11 +275,10 @@ class MinuteStrategy(BaseStrategy):
         logging.debug(f"[MinuteStrategy] '{self.strategy_name}' 신호 업데이트 완료. 총 {len(self.signals)}개 신호 수신.")
 
     def reset_signal(self, stock_code):
-        """매매 체결 후 신호 딕셔너리를 안전하게 초기화합니다."""
+        """매매가 실행된 종목의 신호를 딕셔너리에서 제거하여 반복적인 주문을 방지합니다."""
         if stock_code in self.signals:
-            self.signals[stock_code]['traded_today'] = True
-            self.signals[stock_code]['is_executed'] = True
-            logging.debug(f"{stock_code} 매매 후 신호 초기화 완료.")
+            del self.signals[stock_code]
+            logging.info(f"[{stock_code}] 신호 처리 완료. signals에서 제거합니다.")
 
     def execute_time_cut_buy(self, stock_code, current_dt, current_price, target_quantity, max_deviation_ratio):
         """타임컷 강제매수를 실행합니다."""
@@ -284,11 +286,12 @@ class MinuteStrategy(BaseStrategy):
         target_price = self.signals[stock_code].get('target_price', current_price)
         if target_price is None or target_price <= 0: return False
 
-        price_diff_ratio = abs(target_price - current_price) * 100 / target_price
+        price_diff_ratio = abs(target_price - current_price) / target_price
         
-        if price_diff_ratio <= max_deviation_ratio:
+        if price_diff_ratio <= max_deviation_ratio / 100:
             logging.info(f'[타임컷 강제매수] {current_dt.isoformat()} - {stock_code}')
-            self.broker.execute_order(stock_code, 'buy', current_price, target_quantity, current_dt)
+            # FIX: order_time 파라미터 이름으로 전달
+            self.broker.execute_order(stock_code, 'buy', current_price, target_quantity, order_time=current_dt)
             self.reset_signal(stock_code)
             return True
         else:
@@ -300,14 +303,60 @@ class MinuteStrategy(BaseStrategy):
         if stock_code not in self.signals: return False
         target_price = self.signals[stock_code].get('target_price', current_price)
         if target_price is None or target_price <= 0: return False
-
-        price_diff_ratio = abs(target_price - current_price) * 100 / target_price 
+        # 목표가와 현재가 간의 괴리율 계산
+        price_diff_ratio = abs(target_price - current_price) / target_price 
         
-        if price_diff_ratio <= max_deviation_ratio:
+        if price_diff_ratio <= max_deviation_ratio / 100:
             logging.info(f'[타임컷 강제매도] {current_dt.isoformat()} - {stock_code}')
-            self.broker.execute_order(stock_code, 'sell', current_price, current_position_size, current_dt)
+            # FIX: order_time 파라미터 이름으로 전달
+            self.broker.execute_order(stock_code, 'sell', current_price, current_position_size, order_time=current_dt)
             self.reset_signal(stock_code)
             return True
         else:
             logging.info(f'[타임컷 미체결] {current_dt.isoformat()} - {stock_code} 괴리율: {price_diff_ratio:.2%}')
             return False
+        
+
+
+    # def _get_bar_at_time(self, data_type, stock_code, target_dt):
+    #     """주어진 시간(target_dt)에 해당하는 정확한 OHLCV 바를 반환합니다."""
+    #     if data_type == 'daily':
+    #         target_date = target_dt.date()
+    #         # 해당 날짜의 분봉 데이터가 있는지 확인
+    #         if stock_code not in self.data_store['minute'] or \
+    #         target_date not in self.data_store['minute'][stock_code]:
+    #             # 분봉 데이터가 없으면 실시간 일봉 생성 불가
+    #             logging.warning(f"{target_date}의 분봉 데이터가 없어 실시간 일봉을 생성할 수 없습니다.")
+    #             return None
+                
+    #         df_minute_today = self.data_store['minute'][stock_code][target_date]
+    #         # target_dt 이전의 분봉만 필터링
+    #         intraday_df = df_minute_today[df_minute_today.index <= target_dt]
+            
+    #         if intraday_df.empty:
+    #             return None
+    #         # 분봉 데이터를 집계하여 실시간 일봉 생성
+    #         df_daily = intraday_df.agg(
+    #             open=('open', 'first'),      # 당일 첫 분봉의 시가
+    #             high=('high', 'max'),        # 지금까지의 최고가
+    #             low=('low', 'min'),          # 지금까지의 최저가
+    #             close=('close', 'last'),     # 현재 분봉의 종가
+    #             volume=('volume', 'sum')     # 지금까지의 거래량 합계
+    #         )
+            
+    #         # Series의 이름을 날짜로 설정하여 반환 형식을 맞춤
+    #         df_daily.name = pd.Timestamp(target_date).normalize()
+    #         return df_daily
+        
+    #     elif data_type == 'minute':
+    #         target_date = target_dt.date()
+    #         if stock_code not in self.data_store['minute'] or target_date not in self.data_store['minute'][stock_code]:
+    #             return None
+    #         df_minute = self.data_store['minute'][stock_code][target_date]
+    #         if df_minute is None or df_minute.empty:
+    #             return None
+    #         try:
+    #             return df_minute.loc[target_dt]
+    #         except KeyError:
+    #             return None
+    #     return None

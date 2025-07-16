@@ -1386,7 +1386,7 @@ class DBManager:
         """
         sql = """
             INSERT INTO current_positions (
-                stock_code, stock_name, quantity, sell_avail_qty, average_buy_price,
+                stock_code, stock_name, quantity, sell_avail_qty, avg_price,
                 eval_profit_loss, eval_return_rate, entry_date
             ) VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s 
@@ -1395,7 +1395,7 @@ class DBManager:
                 stock_name = VALUES(stock_name),
                 quantity = VALUES(quantity),
                 sell_avail_qty = VALUES(sell_avail_qty),
-                average_buy_price = VALUES(average_buy_price),
+                avg_price = VALUES(avg_price),
                 eval_profit_loss = VALUES(eval_profit_loss),
                 eval_return_rate = VALUES(eval_return_rate),
                 entry_date = VALUES(entry_date),
@@ -1406,7 +1406,7 @@ class DBManager:
             position_data.get('stock_name'),
             position_data.get('quantity'),
             position_data.get('sell_avail_qty'),
-            position_data.get('average_buy_price'),
+            position_data.get('avg_price'),
             position_data.get('eval_profit_loss'),
             position_data.get('eval_return_rate'),
             position_data.get('entry_date')

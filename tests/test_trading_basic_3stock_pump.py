@@ -17,7 +17,7 @@ sys.path.insert(0, project_root)
 
 # 리팩토링된 CreonAPIClient 및 관련 Enum 임포트
 # get_next_tick_price는 제외합니다.
-from api.creon_api2 import CreonAPIClient, OrderType, OrderStatus
+from api.creon_api import CreonAPIClient, OrderType, OrderStatus
 
 # 로깅 설정
 logging.basicConfig(

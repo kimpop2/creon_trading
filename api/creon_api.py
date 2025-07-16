@@ -376,7 +376,7 @@ class CreonAPIClient:
             objChart.SetInputValue(1, ord('2'))
             objChart.SetInputValue(4, count)
             objChart.SetInputValue(6, ord(period))
-            objChart.SetInputValue(9, ord('1'))
+            objChart.SetInputValue(9, ord('1')) # 0: 무수정, 1: 수정주가
 
             chart_fields = [0, 1, 2, 3, 4, 5, 8] if period in ['m', 'T'] else [0, 2, 3, 4, 5, 8]
             if period == 'm':
@@ -435,7 +435,7 @@ class CreonAPIClient:
         objChart.SetInputValue(2, int(to_date_str))
         objChart.SetInputValue(3, int(from_date_str))
         objChart.SetInputValue(6, ord(period))
-        objChart.SetInputValue(9, ord('1'))
+        objChart.SetInputValue(9, ord('1')) # 0: 무수정, 1: 수정주가
         
         if period == 'm':
             objChart.SetInputValue(7, interval)

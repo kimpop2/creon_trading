@@ -438,7 +438,7 @@ class TradingManager:
                 'stock_name': stock_name,
                 'quantity': api_pos['quantity'],
                 'sell_avail_qty': api_pos['sell_avail_qty'],
-                'average_buy_price': api_pos['average_buy_price'],
+                'avg_price': api_pos['avg_price'],
                 'eval_profit_loss': api_pos['eval_profit_loss'],
                 'eval_return_rate': api_pos['eval_return_rate'],
                 'entry_date': datetime.now().date() # Ensure datetime is imported
