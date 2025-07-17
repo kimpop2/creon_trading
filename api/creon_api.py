@@ -43,34 +43,34 @@ class CpEvent:
         self.parent = parent_instance # CreonAPIClient 인스턴스
         self.stock_code = stock_code
         self.concdic = {"1": "체결", "2": "확인", "3": "거부", "4": "접수"}
-        self.buyselldic = {"1" : "매도", "2" : "매수"}
+        self.buyselldic = {"1" : "sell", "2" : "buy"}
 
     def OnReceived(self):
         """PLUS로부터 실시간 이벤트를 수신 받아 처리하는 함수"""
         # 💡 주문 체결/응답 수신
         if self.name == "conclusion":
-            conflag = self.client.GetHeaderValue(14)
-            ordernum = self.client.GetHeaderValue(5)
-            quantity = self.client.GetHeaderValue(3)  # <-- 변경
+            conflag = self.client.GetHeaderValue(14)    # 주문상태 {"1": "체결", "2": "확인", "3": "거부", "4": "접수"}
+            order_id = self.client.GetHeaderValue(5)
+            quantity = self.client.GetHeaderValue(3)    # <-- 변경
             price = self.client.GetHeaderValue(4)
-            code = self.client.GetHeaderValue(9)
-            bs = self.client.GetHeaderValue(12)
+            stock_code = self.client.GetHeaderValue(9)
+            buy_sell = self.client.GetHeaderValue(12)
             balance = self.client.GetHeaderValue(23)
 
-            conflags_str = self.concdic.get(str(conflag), "알수없음")
-            bs_str = self.buyselldic.get(str(bs), "알수없음")
+            conflags_str = self.concdic.get(str(conflag), "알수없음") # 주문상태 숫자->한글문자
+            buy_sell_str = self.buyselldic.get(str(buy_sell), "알수없음")
 
-            logger.info(f"[CpEvent] 주문 체결/응답 수신: {conflags_str} {bs_str} 종목:{code} 가격:{price:,.0f} 수량:{quantity} 주문번호:{ordernum} 잔고:{balance}") # <-- 변경
+            logger.info(f"[CpEvent] 주문 체결/응답 수신: {conflags_str} {buy_sell_str} 종목:{stock_code} 가격:{price:,.0f} 수량:{quantity} 주문번호:{order_id} 잔고:{balance}") # <-- 변경
 
             if self.parent.conclusion_callback:
                 self.parent.conclusion_callback({
-                    'flag': conflags_str,
-                    'order_num': ordernum,
-                    'code': code,
+                    'order_status': conflags_str,
+                    'order_id': order_id,
+                    'stock_code': stock_code,
                     'price': price,
                     'quantity': quantity,  # <-- 변경
                     'balance': balance,
-                    'buy_sell': bs_str
+                    'order_type': buy_sell_str
                 })
 
         # 실시간 현재가 이벤트 처리
@@ -553,14 +553,15 @@ class CreonAPIClient:
         elif price < 500000: return round(price / 500) * 500
         else: return round(price / 1000) * 1000
 
-    def send_order(self, stock_code: str, order_type: OrderType, quantity: int, price: int = 0, org_order_num: Optional[int] = 0, order_condition: str = "0", order_unit: str = "01") -> Dict[str, Any]: # <-- 변경
+    def send_order(self, stock_code: str, order_type: OrderType, quantity: int, price: int = 0, origin_order_id: Optional[int] = 0, order_condition: str = "0", order_unit: str = "01") -> Dict[str, Any]: # <-- 변경
         """주식 주문 (매수, 매도, 정정, 취소)을 전송합니다."""
-        logger.info(f"주문 요청 - 유형: {order_type.name}, 종목: {stock_code}, 수량: {quantity}, 가격: {price}, 원주문번호: {org_order_num}") # <-- 변경
+        logger.info(f"주문 요청 - 유형: {order_type.name}, 종목: {stock_code}, 수량: {quantity}, 가격: {price}, 원주문번호: {origin_order_id}") # <-- 변경
 
         com_obj = None
+        # 매수/매도 주문
         if order_type in [OrderType.BUY, OrderType.SELL]:
             com_obj = win32com.client.Dispatch("CpTrade.CpTd0311")
-            com_obj.SetInputValue(0, order_type.value)
+            com_obj.SetInputValue(0, order_type.value)  # 매수/매도
             com_obj.SetInputValue(1, self.account_number)
             com_obj.SetInputValue(2, self.account_flag)
             com_obj.SetInputValue(3, stock_code)
@@ -568,30 +569,32 @@ class CreonAPIClient:
             com_obj.SetInputValue(5, self.round_to_tick(price) if price > 0 else 0)
             com_obj.SetInputValue(7, order_condition)
             com_obj.SetInputValue(8, order_unit)
+        # 정정 주문    
         elif order_type == OrderType.MODIFY:
             com_obj = win32com.client.Dispatch("CpTrade.CpTd0313")
-            com_obj.SetInputValue(1, org_order_num)
+            com_obj.SetInputValue(1, origin_order_id)
             com_obj.SetInputValue(2, self.account_number)
             com_obj.SetInputValue(3, self.account_flag)
             com_obj.SetInputValue(4, stock_code)
             com_obj.SetInputValue(5, quantity) # <-- 변경
             com_obj.SetInputValue(6, self.round_to_tick(price) if price > 0 else 0)
+        # 취소주문    
         elif order_type == OrderType.CANCEL:
             com_obj = win32com.client.Dispatch("CpTrade.CpTd0314")
-            com_obj.SetInputValue(1, org_order_num)
+            com_obj.SetInputValue(1, origin_order_id)
             com_obj.SetInputValue(2, self.account_number)
             com_obj.SetInputValue(3, self.account_flag)
             com_obj.SetInputValue(4, stock_code)
             com_obj.SetInputValue(5, quantity) # <-- 변경
         else:
-            return {'status': 'fail', 'message': '지원하지 않는 주문 유형', 'order_num': None}
+            return {'status': 'fail', 'message': '지원하지 않는 주문 유형', 'order_id': None}
 
         status_code, message = self._execute_block_request(com_obj)
         if status_code != 0:
-            return {'status': 'fail', 'message': message, 'order_num': None}
+            return {'status': 'fail', 'message': message, 'order_id': None}
 
-        result_order_num = com_obj.GetHeaderValue(8 if order_type in [OrderType.BUY, OrderType.SELL] else 7) if order_type != OrderType.CANCEL else org_order_num
-        return {'status': 'success', 'message': message, 'order_num': result_order_num}
+        result_order_id = com_obj.GetHeaderValue(8 if order_type in [OrderType.BUY, OrderType.SELL] else 7) if order_type != OrderType.CANCEL else origin_order_id
+        return {'status': 'success', 'message': message, 'order_id': result_order_id}
 
     def get_account_balance(self) -> Optional[Dict[str, Any]]:
         """계좌의 현금 잔고 및 예수금 정보를 조회합니다."""

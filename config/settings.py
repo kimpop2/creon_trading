@@ -52,16 +52,16 @@ PORTFOLIO_UPDATE_TIME = "16:00:00"
 # 각 전략에 대한 파라미터를 딕셔너리 형태로 정의합니다.
 # --- 공통 파라미터 정의 ---
 COMMON_PARAMS = {
-    'num_top_stocks': 5,       # 매매 대상 상위 종목 수
+    #'num_top_stocks': 5,       # 매매 대상 상위 종목 수
     'max_deviation_ratio': 2.0, # 단위: %
-    'min_holding_days': 3,
+    'min_holding_days': 5,
     'safe_asset_code': 'U001',
 }
 # 손절매 파라미터 설정 예시 (선택 사항)
 STOP_LOSS_PARAMS = {
     **COMMON_PARAMS,
     'stop_loss_ratio': -5.0,        # 단순 손절매 비율 (예: -5% 손실 시 손절)
-    'trailing_stop_ratio': -2.0,    # 트레일링 스탑 비율 (최고가 대비 -2% 하락 시 손절)
+    'trailing_stop_ratio': -4.0,    # 트레일링 스탑 비율 (최고가 대비 -2% 하락 시 손절)
     'early_stop_loss': -3.0,        # 조기 손절매 (매수 후 3일 이내 -3% 손실 시 손절)
     'take_profit_ratio': 10.0,      # 익절 비율 (예: 10% 수익 시 익절)
     'portfolio_stop_loss': -10.0,   # 포트폴리오 전체 손실률 기준 (예: -10% 손실 시 전체 청산)
@@ -71,10 +71,10 @@ STOP_LOSS_PARAMS = {
 # SMA 일봉 전략 파라미터
 SMA_DAILY_PARAMS = {
     **COMMON_PARAMS,
-    'short_sma_period': 3,          # 단기 이동평균선 기간 (일봉)
-    'long_sma_period': 10,          # 장기 이동평균선 기간 (일봉)
+    'short_sma_period': 5,          # 단기 이동평균선 기간 (일봉)
+    'long_sma_period': 14,          # 장기 이동평균선 기간 (일봉)
     'volume_ma_period': 7,          # 거래량 이동평균선 기간 (일봉)
-    'num_top_stocks': 20,            # 매매 대상 상위 종목 수
+    'num_top_stocks': 5,            # 매매 대상 상위 종목 수
     # market_sma_period
     'market_sma_period': 20,        # 시장 트랜드 이동 평균선 기간 (일봉)
     'market_index_code': 'U001',    # 시장 지수 코드(코스피 200)
@@ -83,7 +83,7 @@ SMA_DAILY_PARAMS = {
 # RSI 분봉 전략 파라미터
 RSI_MINUTE_PARAMS = {
     **COMMON_PARAMS,
-    'minute_rsi_period': 14,                # 분봉 RSI 계산 기간
+    'minute_rsi_period': 10,                # 분봉 RSI 계산 기간
     'minute_rsi_oversold': 30,              # RSI 과매도 기준
     'minute_rsi_overbought': 70,            # RSI 과매수 기준
     'num_top_stocks': 5,                    # 매매 대상 상위 종목 수

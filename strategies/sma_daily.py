@@ -75,16 +75,16 @@ class SMADaily(DailyStrategy):
             current_volume = historical_data['volume'].iloc[-1]
             volume_ma = calculate_volume_ma_incremental(historical_data, volume_ma_period, self.volume_cache)[0]
 
-            target_price = historical_data['close'].iloc[-1]
+            # target_price = historical_data['close'].iloc[-1]
+            # stock_target_prices[stock_code] = target_price
+            yesterday_close = historical_data['close'].iloc[-2]
+            today_open = historical_data['open'].iloc[-1]
+            target_price = (yesterday_close + today_open) / 2
             stock_target_prices[stock_code] = target_price
 
             # 골든크로스 + 거래량 조건 완화 (1.0배 이상)
             if short_sma > long_sma and prev_short_sma <= prev_long_sma and current_volume > volume_ma * 1.0:
                 score = (short_sma - long_sma) / long_sma * 100
-                buy_scores[stock_code] = score
-            # 추가 매수 조건(강한 상승 완화)
-            elif short_sma > long_sma and current_volume > volume_ma * 1.2:
-                score = (short_sma - long_sma) / long_sma * 50
                 buy_scores[stock_code] = score
             
             # 데드크로스 + 거래량 조건이 모두 충족될 때만 매도 신호
@@ -158,10 +158,16 @@ class SMADaily(DailyStrategy):
                     logging.info(f"매수 후보 제외+홀딩기간 경과로 매도 후보 추가: {stock_code}")
 
         logging.info(f"매도 후보 최종 선정: {sorted(sell_candidates)}")        
-        current_positions = set(self.broker.get_current_positions().keys())
-
-        logging.info(f"매도 후보 최종 선정: {sorted(sell_candidates)}")
-        
+        #current_positions = set(self.broker.get_current_positions().keys())
+        #logging.info(f"매도 후보 최종 선정: {sorted(sell_candidates)}")
+        # --- [핵심 수정] 리밸런싱 매도 대상의 목표가(target_price)를 제거하는 로직 추가 ---
+        for stock_code in list(sell_candidates): # 복사본으로 순회
+            # 매도 후보이지만, 데드크로스 점수(sell_scores)는 없는 경우 = 리밸런싱 매도
+            if stock_code not in sell_scores:
+                if stock_code in stock_target_prices:
+                    del stock_target_prices[stock_code] # 목표가 딕셔너리에서 해당 종목 제거
+                    logging.info(f"리밸런싱 매도 대상 {stock_code}의 target_price를 제거합니다.")
+        # --- 수정 끝 ---
         final_positions = self._generate_signals(current_date, buy_candidates, sorted_buy_stocks, stock_target_prices, sell_candidates)
         
         self._log_rebalancing_summary(current_date, buy_candidates, final_positions, sell_candidates)

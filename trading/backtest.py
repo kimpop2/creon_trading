@@ -161,7 +161,7 @@ class Backtest:
     def get_all_current_prices(self, current_dt):
         current_prices = {}
         for code in self.broker.positions.keys():
-            price_data = self.minute_strategy._get_ohlcv_at_time(code, current_dt)
+            price_data = self.minute_strategy._get_bar_at_time('minute', code, current_dt)
             # 가격 데이터가 있고, 종가가 NaN이 아닌 경우에만 추가
             if price_data is not None and not np.isnan(price_data['close']):
                 current_prices[code] = price_data['close']  
@@ -222,7 +222,7 @@ class Backtest:
             
             # 1. 일봉 로직 실행
             # DailyStrategy.run_daily_logic()을 호출하여 신호 생성
-            self.daily_strategy.run_daily_logic(prev_date)
+            self.daily_strategy.run_daily_logic(current_date)
             
             # 2. 신호 동기화
             # DailyStrategy가 생성한 신호(self.daily_strategy.signals)를 MinuteStrategy로 전달
@@ -241,10 +241,10 @@ class Backtest:
             # 3-1. 먼저 당일 실행할 신호(매수/매도/보유)가 있는 종목들의 분봉 데이터를 모두 로드
             for stock_code in stocks_to_load:
                 signal_info = self.minute_strategy.signals.get(stock_code)
-                prev_date = signal_info.get('signal_date', current_date) if signal_info else current_date
+                # prev_date = signal_info.get('signal_date', current_date) if signal_info else current_date
 
-                if not prev_date:
-                    prev_date = current_date 
+                # if not prev_date:
+                #     prev_date = current_date 
 
                 # BacktestManager를 사용하여 분봉 데이터 로드 (전일~당일)
                 minute_df = self.manager.cache_minute_ohlcv(
@@ -302,8 +302,6 @@ class Backtest:
                 # 보유 포지션에 대한 손절/익절 등을 먼저 체크하고 실행
                 # 이 함수는 내부적으로 보유 종목 전체를 루프 돌며 확인합니다.
                 self.broker.check_and_execute_stop_loss(current_prices, current_dt)
-
-                
                 
                 # --- [핵심 수정] ---
                 # 불필요한 시간 체크 조건을 제거하고, 모든 매매 대상 종목에 대해
@@ -318,8 +316,6 @@ class Backtest:
                 # 포토폴리오 손절 vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
                 # 포트폴리오 손절을 위한 9:00, 15:20 시간 체크, 분봉마다하는 것이 정확하겠지만 속도상 
                 if self.broker.stop_loss_params is not None and self._should_check_portfolio(current_dt):
-                    
-
 
                     # 손절/익절/트레일링 매도 처리 후 포트폴리오 손절 판단 True, False                          
                     if self.broker.check_and_execute_stop_loss(current_prices, current_dt):
@@ -332,7 +328,21 @@ class Backtest:
                         logging.info(f"[{current_dt.isoformat()}] 포트폴리오 손절매 실행 완료. 오늘의 매매 종료.")
                         break # 분봉 루프를 종료, 일일 포트폴리오 처리 후 다음 "영업일"로 넘어감
                 # 포트폴리오 손절 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-            
+                
+                # [신규 추가] PassMinute 전략 최적화 ---
+                # BacktestMinute 전략은 당일 신호를 모두 소진하면 더 이상 분봉을 확인할 필요가 없음
+                is_pass_minute_strategy = hasattr(self.minute_strategy, 'strategy_name') and self.minute_strategy.strategy_name == "PassMinute"
+                if is_pass_minute_strategy:
+                    # 남은 매수/매도 신호가 있는지 확인
+                    remaining_signals = any(
+                        s.get('signal_type') in ['buy', 'sell'] 
+                        for s in self.minute_strategy.signals.values()
+                    )
+                    # 남은 신호가 없으면 분봉 루프 조기 종료
+                    if not remaining_signals:
+                        logging.info(f"[{current_date.isoformat()}] PassMinute 전략: 모든 신호를 소진하여 분봉 루프를 조기 종료합니다.")
+                        break
+                # --- 최적화 끝 ---
             # ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
             # 끝 매분 반복
             ###################################
@@ -483,7 +493,7 @@ if __name__ == "__main__":
         db_manager = DBManager()
         
         # 2. Backtest 인스턴스 생성
-        initial_cash = 100_000_000  # 1천만원
+        initial_cash = 1_000_000  # 1천만원
         
         backtest_instance = Backtest(
             api_client=api_client,
@@ -498,20 +508,24 @@ if __name__ == "__main__":
         daily_strategy = SMADaily(broker=backtest_instance.broker, data_store=backtest_instance.data_store, strategy_params=SMA_DAILY_PARAMS)
 
         # RSI 분봉 전략 설정
-        from strategies.rsi_minute import RSIMinute
-        minute_strategy = RSIMinute(broker=backtest_instance.broker, data_store=backtest_instance.data_store, strategy_params=RSI_MINUTE_PARAMS)        
+        # from strategies.rsi_minute import RSIMinute
+        # minute_strategy = RSIMinute(broker=backtest_instance.broker, data_store=backtest_instance.data_store, strategy_params=RSI_MINUTE_PARAMS)        
         
-        # 분봉전략: 매매신호 바로 주문 (최적화용)
-        # from strategies.open_minute import OpenMinute
-        # minute_strategy = OpenMinute(broker=backtest_instance.broker, data_store=backtest_instance.data_store, strategy_params=RSI_MINUTE_PARAMS)        
+        # 분봉전략: 매매신호 target_price 에 분봉이 해당할 경우 바로 주문
+        # from strategies.backtest_minute import BacktestMinute
+        # minute_strategy = BacktestMinute(broker=backtest_instance.broker, data_store=backtest_instance.data_store, strategy_params=RSI_MINUTE_PARAMS)        
         
+        # 분봉 패스 전략: 오늘의 시가와 종가 사이에 목표가가 있을 경우 매매 후 바로 다음날로 넘어감 (최적화용)
+        from strategies.pass_minute import PassMinute
+        minute_strategy = PassMinute(broker=backtest_instance.broker, data_store=backtest_instance.data_store, strategy_params=RSI_MINUTE_PARAMS)        
+
         # 일봉/분봉 전략 설정
         backtest_instance.set_strategies(daily_strategy=daily_strategy, minute_strategy=minute_strategy)
         # 손절매 파라미터 설정 (선택사항)
         backtest_instance.set_broker_stop_loss_params(STOP_LOSS_PARAMS)
         
-        end_date = date(2025, 7, 10)
-        start_date = end_date - timedelta(days=365)
+        end_date = date(2025, 6, 10)
+        start_date = end_date - timedelta(days=150)
         # 일봉 데이터 로드
         backtest_instance.load_stocks(start_date, end_date)
 

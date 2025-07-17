@@ -121,38 +121,54 @@ class RSIMinute(MinuteStrategy):
         signal_info = self.signals[stock_code]
         order_signal = signal_info.get('signal_type')
         
-        #if signal_info.get('traded_today', False): return
         if order_signal not in ['buy', 'sell']: return
 
-        minute_df = self._get_ohlcv_at_time(stock_code, current_dt)
+        minute_df = self._get_bar_at_time('minute', stock_code, current_dt) 
         if minute_df is None or minute_df.empty: return
         
         current_price = minute_df['close']
         current_position_size = self.broker.get_position_size(stock_code)
         
-        # 1. 가격 필터 + RSI 타이밍을 이용한 최적 매매 시도
+        # 1. RSI 및 이격도 계산에 필요한 데이터 준비
         historical_data = self._get_historical_data_up_to('minute', stock_code, current_dt, self.strategy_params['minute_rsi_period'] + 1)
         current_rsi = self._calculate_rsi(historical_data, stock_code)
         if current_rsi is None: return
+        
         max_deviation_ratio = self.strategy_params['max_deviation_ratio'] / 100
-        # --- [수정] 매수 로직 (가격 괴리율 조건 삭제) ---
+        
+        # --- [수정] 매수 로직 (이격도 조건 복원) ---
         if order_signal == 'buy' and current_position_size == 0:
             target_quantity = signal_info.get('target_quantity', 0)
-            if target_quantity <= 0: return
+            target_price = signal_info.get('target_price')
+            if target_quantity <= 0 or not target_price: return
 
-            # [수정] RSI 조건만으로 매수 결정
-            if current_rsi <= self.strategy_params['minute_rsi_oversold']:
+            deviation = abs(current_price - target_price) / target_price
+            
+            # 이격도와 RSI 조건을 모두 만족할 때 매수
+            if deviation <= max_deviation_ratio and current_rsi <= self.strategy_params['minute_rsi_oversold']:
                 if self.broker.execute_order(stock_code, 'buy', current_price, target_quantity, order_time=current_dt):
-                    logging.info(f"✅ [RSI 매수] {stock_code} (RSI: {current_rsi:.2f})")
+                    logging.info(f"✅ [RSI 매수 실행] {stock_code} (RSI: {current_rsi:.2f}, 가격 괴리율: {deviation:.2%})")
                     self.reset_signal(stock_code)
 
-        # --- [수정] 매도 로직 (가격 괴리율 조건 삭제) ---
+        # --- [수정] 매도 로직 (이격도 조건 복원) ---
         elif order_signal == 'sell' and current_position_size > 0:
-            # [수정] 목표가 존재 여부와 상관없이 RSI 조건만으로 매도 결정
-            if current_rsi >= self.strategy_params['minute_rsi_overbought']:
+            target_price = signal_info.get('target_price')
+            
+            # 경우 1: 리밸런싱 매도 (목표가가 없는 경우, RSI 조건만 확인)
+            if not target_price and current_rsi >= self.strategy_params['minute_rsi_overbought']:
                 if self.broker.execute_order(stock_code, 'sell', current_price, current_position_size, order_time=current_dt):
-                    logging.info(f"✅ [RSI 매도] {stock_code} (RSI: {current_rsi:.2f})")
+                    logging.info(f"✅ [RSI 리밸런싱 매도] {stock_code} (RSI: {current_rsi:.2f})")
                     self.reset_signal(stock_code)
+            
+            # 경우 2: 데드크로스 등 목표가가 있는 매도 (이격도와 RSI 조건 모두 확인)
+            elif target_price:
+                deviation = abs(current_price - target_price) / target_price
+                if deviation <= max_deviation_ratio and current_rsi >= self.strategy_params['minute_rsi_overbought']:
+                    if self.broker.execute_order(stock_code, 'sell', current_price, current_position_size, order_time=current_dt):
+                        logging.info(f"✅ [RSI 목표가 매도] {stock_code} (RSI: {current_rsi:.2f}, 가격 괴리율: {deviation:.2%})")
+                        self.reset_signal(stock_code)
+
+        # --- 타임컷 로직은 필요시 여기에 추가 ---
         
         # # 매수 로직
         # if order_signal == 'buy' and current_position_size == 0:

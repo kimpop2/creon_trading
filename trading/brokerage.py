@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 class Brokerage(AbstractBroker):
     """
-    [수정됨] 실제 증권사 API를 통해 매매를 실행하며, 통일된 AbstractBroker 인터페이스를 구현합니다.
+    실제 증권사 API를 통해 매매를 실행하며, 통일된 AbstractBroker 인터페이스를 구현합니다.
     """
     def __init__(self, 
                  api_client: CreonAPIClient, 
@@ -25,10 +25,17 @@ class Brokerage(AbstractBroker):
         self.api_client = api_client
         self.manager = manager
         self.notifier = notifier
+        
+        self.commission_rate = 0.0015
+        self.tax_rate_sell = 0.002
         self._current_cash_balance: float = 0.0
-        self._current_positions: Dict[str, Any] = {}
+        self.positions: Dict[str, Dict[str, Any]] = {}
+        self.transaction_log: list = []
+        self._active_orders: Dict[str, Dict[str, Any]] = {}
+        # 
         self.api_client.set_conclusion_callback(self.handle_order_conclusion)
-        self.sync_account_status()
+        # 현금잔고 _current_cash_balance, 보유종목 positions 증권사 정보로 업데이트
+        self.sync_account_status() 
 
     def set_stop_loss_params(self, stop_loss_params: Optional[Dict[str, Any]]):
         self.stop_loss_params = stop_loss_params
@@ -49,34 +56,213 @@ class Brokerage(AbstractBroker):
         )
         
         if result and result['status'] == 'success':
-            logger.info(f"주문 요청 성공: {stock_code}, 주문번호: {result['order_num']}")
-            return True
+            order_id = result['order_id']
+            logger.info(f"주문 요청 성공: {stock_code}, 주문번호: {result['order_id']}")
+            
+            # 주문 성공 시, _active_orders에 주문 정보 등록
+            self._active_orders[order_id] = {
+                'stock_code': stock_code,
+                'stock_name': self.manager.get_stock_name(stock_code),
+                'order_type': order_type.lower(),
+                'order_status': '접수',  # '접수' 상태
+                'order_price': price,
+                'order_quantity': quantity,
+                'filled_quantity': 0,
+                'unfilled_quantity': quantity,
+                'order_time': order_time,
+                'original_order_id': None
+            }
+            return order_id
+            
         else:
             stock_name = self.manager.get_stock_name(stock_code)
             self.notifier.send_message(f"❌ 주문 실패: {stock_name}({stock_code})")
             logger.error(f"주문 실패: {stock_code}, 메시지: {result.get('message', 'N/A')}")
-            return False
+            return None
     
     def get_current_cash_balance(self) -> float:
-        self.sync_account_status()
+        #self.sync_account_status() 불필요한 호출 제거, 내부상태 반환
         return self._current_cash_balance
 
     def get_current_positions(self) -> Dict[str, Dict[str, Any]]:
-        self.sync_account_status()
-        return self._current_positions
+        #self.sync_account_status() 불필요한 호출 제거, 내부상태 반환
+        return self.positions
 
     def get_position_size(self, stock_code: str) -> int:
-        position = self.get_current_positions().get(stock_code)
-        return position.get('quantity', 0) if position else 0
+        return self.positions.get(stock_code, {}).get('quantity', 0)
 
     def get_portfolio_value(self, current_prices: Dict[str, float]) -> float:
-        cash = self.get_current_cash_balance()
-        positions = self.get_current_positions()
-        holdings_value = sum(pos.get('quantity', 0) * current_prices.get(code, pos.get('avg_price', 0)) for code, pos in positions.items())
+        cash = self._current_cash_balance
+        holdings_value = sum(pos.get('quantity', 0) * current_prices.get(code, pos.get('avg_price', 0)) for code, pos in self.positions.items())
         return cash + holdings_value
 
+    # --- 실시간 체결/잔고 업데이트 콜백 핸들러 (Creon API 연동) ---
+    def handle_order_conclusion(self, conclusion_data: Dict[str, Any]):
+        """
+        Creon API에서 실시간 체결/주문 응답이 왔을 때 호출되는 콜백 함수.
+        trading_log 테이블을 업데이트하고, 보유 종목 및 현금 잔고를 동기화합니다.
+        CreonAPIClient의 `set_conclusion_callback`에 등록됩니다.
+        """
+        logger.info(f"체결/주문응답 수신: {conclusion_data}")
+        order_status = conclusion_data.get('order_status') # 예: '접수', '체결', '부분체결', '거부', '확인', '정정', '취소'
+        order_id = conclusion_data.get('order_id')
+        origin_order_id = conclusion_data.get('origin_order_id')
+        stock_code = conclusion_data.get('stock_code')
+        
+        # 1. 활성 주문 목록(_active_orders)에서 해당 주문 정보 업데이트
+        if order_id in self._active_orders:
+            order_info = self._active_orders[order_id]
+            
+            filled_quantity = conclusion_data.get('quantity', 0)
+            order_info['order_status'] = order_status.lower()
+            order_info['filled_quantity'] += filled_quantity
+            order_info['unfilled_quantity'] = order_info['order_quantity'] - order_info['filled_quantity']
 
-# [수정] broker.py와 동일한 구조로 변경
+            logger.info(f"주문({order_id}) 상태 업데이트: {order_info['order_status']}, 체결수량: {filled_quantity}")
+        else:
+            logger.warning(f"활성 주문 목록에 없는 주문 응답 수신: {order_id}")
+            # 필요시 여기서 DB 조회 후 비정상 주문 처리 로직 추가 가능
+            return
+
+         # 2. 체결 이벤트인 경우, DB에 로그 저장 및 알림
+        if order_status in ['체결', '부분체결'] and filled_quantity > 0:
+            filled_price = conclusion_data.get('price', 0)
+            order_type_for_log = order_info['order_type']
+
+            transaction_amount = filled_price * filled_quantity
+            commission = transaction_amount * self.commission_rate
+            tax = transaction_amount * self.tax_rate_sell if order_type_for_log == 'sell' else 0
+            net_amount = (transaction_amount - commission - tax) if order_type_for_log == 'sell' else -(transaction_amount + commission)
+            trade_date = datetime.now().date()
+            trade_time = datetime.now().time()
+            stock_name_for_log = order_info.get('stock_name')
+            original_order_id_for_log = order_info.get('original_order_id')
+            
+            log_data = {
+                # --- 주문 식별 정보 ---
+                'order_id': order_id,
+                'original_order_id': origin_order_id,
+                # --- 체결 기본 정보 ---
+                'stock_code': stock_code,
+                'stock_name': stock_name_for_log,
+                'trade_type': order_type_for_log, # 'buy' 또는 'sell'
+                'trading_datetime': datetime.combine(trade_date, trade_time), # 날짜와 시간을 합침
+                # --- 체결 결과 정보 (핵심) ---
+                'filled_price': filled_price,
+                'filled_quantity': filled_quantity,
+                # --- 비용 및 정산 정보 ---
+                'commission': commission,
+                'tax': tax,
+                'net_amount': net_amount, # 순매매금액 : 수수료+세금 포함 매매에 소요된 총비용용
+                'credit_type': '현금'
+            }
+            self.manager.save_trading_log(log_data)
+            
+            
+            self.notifier.send_message(f"🔔 {order_status}: {stock_name_for_log}({stock_code}) {order_type_for_log.upper()} {filled_quantity}주 @ {filled_price:,.0f}원")
+       
+        # 3. 주문이 완전히 종료되었는지 확인하고 처리
+        is_complete = order_info['unfilled_quantity'] <= 0 or order_status in ['취소', '거부', '체결']
+        if is_complete:
+            logger.info(f"주문({order_id}) 최종 완료. 활성 주문 목록에서 제거합니다.")
+            del self._active_orders[order_id]
+            # 주문이 완전히 종료되면, 계좌 상태를 최종 동기화하여 정확성을 보장
+            self.sync_account_status()
+            
+    def sync_account_status(self):
+        """
+        [수정] API에서 계좌 정보를 가져와 내부 상태(현금, 포지션)를 업데이트합니다.
+        프로그램 시작 시, 미체결 내역을 _active_orders로 복원합니다.
+        """
+        logger.info("계좌 상태 동기화 시작...")
+
+        # 1. 현금 잔고 업데이트
+        balance_info = self.api_client.get_account_balance()
+        self._current_cash_balance = balance_info.get('cash_balance', 0.0) if balance_info else 0.0
+        logger.info(f"현금 잔고 업데이트: {self._current_cash_balance:,.0f}원")
+
+        # 2. 보유 종목 업데이트
+        positions_list = self.api_client.get_portfolio_positions()
+        self.positions = {pos['stock_code']: pos for pos in positions_list}
+        logger.info(f"보유 종목 업데이트: 총 {len(self.positions)}건")
+
+        # 3. 미체결 주문을 _active_orders로 복원 (주로 프로그램 시작 시)
+        unfilled_orders_from_api = self.api_client.get_unfilled_orders()
+        # 현재 _active_orders에 없는 미체결 주문만 추가 (중복 방지)
+        for order in unfilled_orders_from_api:
+            order_id = order.get('order_id')
+            if order_id not in self._active_orders:
+                self._active_orders[order_id] = {
+                    'stock_code': order.get('stock_code'),
+                    'order_type': 'buy' if order.get('buy_sell') == '매수' else 'sell',
+                    'order_status': 'submitted', # API 미체결은 '접수' 상태로 간주
+                    'order_price': order.get('price'),
+                    'order_quantity': order.get('quantity'),
+                    'filled_quantity': order.get('filled_quantity', 0),
+                    'unfilled_quantity': order.get('unfilled_quantity'),
+                    'order_time': order.get('time'),
+                    'original_order_id': None
+                }
+                logger.info(f"미체결 주문 복원: 주문번호 {order_id}")
+        
+        logger.info("계좌 상태 동기화 완료.")
+
+    def get_unfilled_orders(self) -> List[Dict[str, Any]]:
+        """
+        실시간으로 관리되는 활성 주문(주문 후 ~ 체결 직전) 목록을 반환합니다.
+        """
+        return list(self._active_orders.values())
+
+    def cancel_order(self, order_id: str, stock_code: str, quantity: int = 0) -> bool:
+        """
+        진행 중인 주문을 취소합니다. Creon API를 통해 취소 요청을 보냅니다.
+        :param order_id: 취소할 주문의 주문번호
+        :param stock_code: 종목코드
+        :param quantity: 취소할 수량 (0이면 잔량 취소)
+        """
+        result = self.api_client.send_order(
+            stock_code=stock_code,
+            order_type=OrderType.CANCEL,
+            quantity=quantity,
+            origin_order_id=order_id
+        )
+        if result and result['status'] == 'success':
+            logger.info(f"주문 취소 요청 성공: 주문번호 {order_id}")
+            self.notifier.send_message(f"⚠️ 주문 취소 요청: 주문ID {order_id}")
+            return True
+        else:
+            logger.error(f"주문 취소 요청 실패: 주문번호 {order_id}")
+            self.notifier.send_message(f"❗ 주문 취소 요청 실패: 주문ID {order_id}")
+            return False
+
+    def amend_order(self,
+                    order_id: str,
+                    stock_code: str, # 종목코드 추가
+                    new_price: Optional[float] = None,
+                    new_quantity: Optional[int] = None
+                   ) -> Optional[str]:
+        """
+        진행 중인 주문을 정정합니다. Creon API를 통해 정정 요청을 보냅니다.
+        """
+        result = self.api_client.send_order(
+            stock_code=stock_code,
+            order_type=OrderType.MODIFY,
+            quantity=new_quantity or 0,
+            price=int(new_price) if new_price else 0,
+            org_order_id=order_id
+        )
+        if result and result['status'] == 'success':
+            amended_order_id = result['order_id']
+            logger.info(f"주문 정정 요청 성공: 원주문 {order_id} -> 정정주문 {amended_order_id}")
+            self.notifier.send_message(f"🔄 주문 정정 요청: 원주문ID {order_id} -> 새 주문ID {amended_order_id}")
+            return amended_order_id
+        else:
+            logger.error(f"주문 정정 요청 실패: 주문번호 {order_id}")
+            self.notifier.send_message(f"❗ 주문 정정 요청 실패: 주문ID {order_id}")
+            return None
+
+
+    # [수정] broker.py와 동일한 구조로 변경
     def check_and_execute_stop_loss(self, current_prices: Dict[str, float], current_dt: datetime) -> bool:
         if not self.stop_loss_params:
             return False
@@ -186,153 +372,7 @@ class Brokerage(AbstractBroker):
         # CreonAPIClient의 cleanup은 Trading 클래스에서 최종적으로 호출
         logger.info("Brokerage cleanup completed.")
 
-    def sync_account_status(self):
-        """
-        Creon API로부터 최신 계좌 잔고, 보유 종목, 미체결 주문 정보를 가져와
-        내부 캐시 변수(_current_cash_balance, _current_positions, _unfilled_orders)를 업데이트합니다.
-        """
-        logger.info("계좌 상태 동기화 시작...")
 
-        # 1. 현금 잔고 업데이트
-        balance_info = self.api_client.get_account_balance()
-        if balance_info:
-            self._current_cash_balance = balance_info.get('cash_balance', 0.0)
-            logger.info(f"현금 잔고 업데이트: {self._current_cash_balance:,.0f}원")
-        else:
-            logger.warning("현금 잔고 조회에 실패했습니다. 현금 잔고를 0으로 설정합니다.")
-            self._current_cash_balance = 0.0
-
-        # 2. 보유 종목 업데이트
-        # get_portfolio_positions()는 quantity, avg_price, stock_name 등을 포함한 딕셔너리 리스트를 반환합니다.
-        positions_list = self.api_client.get_portfolio_positions()
-        self._current_positions = {pos['stock_code']: pos for pos in positions_list}
-        logger.info(f"보유 종목 업데이트: 총 {len(self._current_positions)}건")
-
-        # 3. 미체결 주문 업데이트
-        self._unfilled_orders = self.api_client.get_unfilled_orders()
-        logger.info(f"미체결 주문 업데이트: 총 {len(self._unfilled_orders)}건")
-
-        logger.info("계좌 상태 동기화 완료.")
-
-
-    # --- 실시간 체결/잔고 업데이트 콜백 핸들러 (Creon API 연동) ---
-    def handle_order_conclusion(self, conclusion_data: Dict[str, Any]):
-        """
-        Creon API에서 실시간 체결/주문 응답이 왔을 때 호출되는 콜백 함수.
-        trading_log 테이블을 업데이트하고, 보유 종목 및 현금 잔고를 동기화합니다.
-        CreonAPIClient의 `set_conclusion_callback`에 등록됩니다.
-        """
-        logger.info(f"체결/주문응답 수신: {conclusion_data}")
-        order_id = conclusion_data.get('order_num')
-        original_order_id = conclusion_data.get('order_num')
-        stock_code = conclusion_data.get('code')
-        # order_type 영문 변환 (콜백 데이터)
-        order_type = conclusion_data.get('buy_sell').lower() # '매수' -> 'buy', '매도' -> 'sell'
-        if order_type == '매수':
-            order_type_for_log = 'buy'
-        elif order_type == '매도':
-            order_type_for_log = 'sell'
-        else:
-            order_type_for_log = order_type
-        order_status = conclusion_data.get('flag') # 예: '접수', '체결', '부분체결', '거부', '확인', '정정', '취소'
-        filled_quantity = conclusion_data.get('quantity', 0)
-        filled_price = conclusion_data.get('price', 0)
-        unfilled_quantity = 0 # TODO: 정확한 미체결 수량 계산 로직 필요
-        stock_name = self.manager.get_stock_name(stock_code)
-        trade_date = datetime.now().date()
-        trade_time = datetime.now().time()
-        commission = 0
-        tax = 0
-        net_amount = 0
-        if order_status in ['체결', '부분체결'] and filled_quantity > 0:
-            transaction_amount = filled_price * filled_quantity
-            commission = transaction_amount * self.commission_rate
-            if order_type == 'sell':
-                tax = transaction_amount * self.tax_rate_sell
-            if order_type == 'buy':
-                net_amount = -(transaction_amount + commission)
-            else:
-                net_amount = transaction_amount - commission - tax
-            self.notifier.send_message(f"🔔 {order_status}: {stock_name}({stock_code}) {order_type.upper()} {filled_quantity}주 @ {filled_price:,.0f}원")
-            logger.info(f"거래 체결: {stock_code}, 수량: {filled_quantity}, 가격: {filled_price}, 순매매액: {net_amount}")
-        log_data = {
-            'order_id': order_id,
-            'original_order_id': original_order_id,
-            'stock_code': stock_code,
-            'stock_name': stock_name,
-            'trading_date': trade_date,
-            'trading_time': trade_time,
-            'order_type': order_type_for_log,
-            'order_price': filled_price,
-            'order_quantity': filled_quantity,
-            'filled_price': filled_price,
-            'filled_quantity': filled_quantity,
-            'unfilled_quantity': unfilled_quantity,
-            'order_status': order_status,
-            'commission': commission,
-            'tax': tax,
-            'net_amount': net_amount,
-            'credit_type': '현금'
-        }
-        self.manager.save_trading_log(log_data)
-        self.sync_account_status()
-
-
-    def cancel_order(self, order_id: str, stock_code: str, quantity: int = 0) -> bool:
-        """
-        진행 중인 주문을 취소합니다. Creon API를 통해 취소 요청을 보냅니다.
-        :param order_id: 취소할 주문의 주문번호
-        :param stock_code: 종목코드
-        :param quantity: 취소할 수량 (0이면 잔량 취소)
-        """
-        result = self.api_client.send_order(
-            stock_code=stock_code,
-            order_type=OrderType.CANCEL,
-            quantity=quantity,
-            org_order_num=order_id
-        )
-        if result and result['status'] == 'success':
-            logger.info(f"주문 취소 요청 성공: 주문번호 {order_id}")
-            self.notifier.send_message(f"⚠️ 주문 취소 요청: 주문ID {order_id}")
-            return True
-        else:
-            logger.error(f"주문 취소 요청 실패: 주문번호 {order_id}")
-            self.notifier.send_message(f"❗ 주문 취소 요청 실패: 주문ID {order_id}")
-            return False
-
-    def amend_order(self,
-                    order_id: str,
-                    stock_code: str, # 종목코드 추가
-                    new_price: Optional[float] = None,
-                    new_quantity: Optional[int] = None
-                   ) -> Optional[str]:
-        """
-        진행 중인 주문을 정정합니다. Creon API를 통해 정정 요청을 보냅니다.
-        """
-        result = self.api_client.send_order(
-            stock_code=stock_code,
-            order_type=OrderType.MODIFY,
-            quantity=new_quantity or 0,
-            price=int(new_price) if new_price else 0,
-            org_order_num=order_id
-        )
-        if result and result['status'] == 'success':
-            amended_order_id = result['order_num']
-            logger.info(f"주문 정정 요청 성공: 원주문 {order_id} -> 정정주문 {amended_order_id}")
-            self.notifier.send_message(f"🔄 주문 정정 요청: 원주문ID {order_id} -> 새 주문ID {amended_order_id}")
-            return amended_order_id
-        else:
-            logger.error(f"주문 정정 요청 실패: 주문번호 {order_id}")
-            self.notifier.send_message(f"❗ 주문 정정 요청 실패: 주문ID {order_id}")
-            return None
-
-
-    def get_unfilled_orders(self) -> List[Dict[str, Any]]:
-        """
-        실시간 미체결 주문 내역을 조회하고 반환합니다.
-        내부 캐시를 반환하며, 이 캐시는 sync_account_status()를 통해 주기적으로 업데이트됩니다.
-        """
-        return self._unfilled_orders
 
 
 

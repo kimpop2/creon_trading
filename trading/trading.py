@@ -50,9 +50,11 @@ class Trading:
         self.last_strategy_run_time = datetime.min
         self._portfolio_updated_today = False
         self.current_trading_date: Optional[date] = None
+
         # 일봉 업데이트 캐시 변수들 (성능 개선용)
         self._daily_update_cache = {}  # {stock_code: {date: last_update_time}}
         self._minute_data_cache = {}   # {stock_code: {date: filtered_data}}
+
         # Creon API의 실시간 체결 콜백을 Brokerage의 핸들러에 연결
         self.api_client.set_conclusion_callback(self.broker.handle_order_conclusion)
         
@@ -198,6 +200,7 @@ class Trading:
         for stock_code in self.data_store['daily'].keys():
             # _minute_data_cache에서 해당 종목의 오늘치 전체 분봉 데이터를 가져옵니다.
             # 이 데이터는 run 함수 진입 시 cache_minute_ohlcv를 통해 이미 로드되어 있어야 합니다.
+            
             today_minute_bars = self._minute_data_cache.get(stock_code)
 
             if today_minute_bars is not None and not today_minute_bars.empty:
@@ -288,7 +291,7 @@ class Trading:
                     # 마지막 실행 후 10분이 경과했거나, 오늘 처음 실행하는 경우
                     should_run_strategy = (
                         self.last_strategy_run_time is None or
-                        (now - self.last_strategy_run_time).total_seconds() >= 60 # 10분 = 600초
+                        (now - self.last_strategy_run_time).total_seconds() >= 20 # 10분 = 600초
                     )
 
                     if should_run_strategy:
@@ -365,23 +368,23 @@ class Trading:
             if info.get('signal_type') in ['buy', 'sell', 'hold']
         }
 
-        # 3. 필터링된 유효 신호만 DB에 저장
-        if valid_signals:
-            logger.info(f"생성된 유효 신호 {len(valid_signals)}건을 DB에 저장합니다.")
-            for stock_code, signal_info in valid_signals.items():
-                if 'strategy_name' not in signal_info:
-                    signal_info['strategy_name'] = self.daily_strategy.strategy_name
-                if 'stock_name' not in signal_info:
-                    signal_info['stock_name'] = self.manager.get_stock_name(stock_code)
+        # 3. 필터링된 유효 신호만 DB에 저장 --> 최소한 만 DB 에 저장
+        # if valid_signals:
+        #     logger.info(f"생성된 유효 신호 {len(valid_signals)}건을 DB에 저장합니다.")
+        #     for stock_code, signal_info in valid_signals.items():
+        #         if 'strategy_name' not in signal_info:
+        #             signal_info['strategy_name'] = self.daily_strategy.strategy_name
+        #         if 'stock_name' not in signal_info:
+        #             signal_info['stock_name'] = self.manager.get_stock_name(stock_code)
                 
-                self.manager.save_daily_signals(signal_info)
+        #         self.manager.save_daily_signals(signal_info)
         
         # 4. 필터링된 유효 신호만 분봉 전략으로 전달
         self.minute_strategy.update_signals(valid_signals)
         
         # 5. 분봉 데이터가 필요한 종목 목록 취합 (보유종목 + 유효 신호 종목)
         stocks_to_load = set(self.broker.get_current_positions().keys()) | set(valid_signals.keys())
-        
+        stocks_to_load.add('U001')
         if not stocks_to_load:
             logger.info("금일 거래 대상 종목이 없어 데이터 로드를 건너뜁니다.")
             return
@@ -392,7 +395,7 @@ class Trading:
         
         for stock_code in stocks_to_load:
             minute_df = self.manager.cache_minute_ohlcv(stock_code, prev_trading_day, current_date)
-            
+            logger.warning(f"{stock_code}의 분봉 {len(minute_df)}데이터 로드.")
             if not minute_df.empty:
                 if stock_code not in self.data_store['minute']:
                     self.data_store['minute'][stock_code] = {}
@@ -437,6 +440,36 @@ class Trading:
         self.load_active_signals(current_date)
 
         logger.info(f"--- {current_date} 새로운 거래일 준비 완료 ---")
+
+
+    def update_realtime_minute_data(self, stock_code, current_price):
+        """현재가를 받아 분봉 데이터를 업데이트합니다."""
+        
+        current_time = datetime.now()
+        # 분 단위로 시간을 정규화 (예: 10:15:34 -> 10:15:00)
+        current_minute = current_time.replace(second=0, microsecond=0)
+        today_str = current_time.strftime('%Y-%m-%d')
+
+        # 오늘 날짜의 분봉 데이터프레임이 없으면 새로 생성
+        if today_str not in self.data_store['minute'][stock_code]:
+            self.data_store['minute'][stock_code][today_str] = pd.DataFrame(
+                columns=['open', 'high', 'low', 'close', 'volume']
+            )
+
+        today_df = self.data_store['minute'][stock_code][today_str]
+
+        # 현재 분(minute)에 해당하는 데이터가 있는지 확인
+        if current_minute in today_df.index:
+            # 데이터가 있으면 high, low, close 업데이트
+            today_df.loc[current_minute, 'high'] = max(today_df.loc[current_minute, 'high'], current_price)
+            today_df.loc[current_minute, 'low'] = min(today_df.loc[current_minute, 'low'], current_price)
+            today_df.loc[current_minute, 'close'] = current_price
+            # (필요 시) 누적 거래량 추가
+        else:
+            # 데이터가 없으면 새로운 행(분봉) 추가
+            new_row = {'open': current_price, 'high': current_price, 'low': current_price, 'close': current_price, 'volume': 0} # 초기 거래량은 0으로 설정
+            today_df.loc[current_minute] = new_row
+
 
     def _run_minute_strategy_and_realtime_checks(self, current_dt: datetime) -> None:
         """
@@ -589,12 +622,12 @@ if __name__ == "__main__":
         daily_strategy = SMADaily(broker=trading_system.broker, data_store=trading_system.data_store, strategy_params=SMA_DAILY_PARAMS)
 
         # RSI 분봉 전략 설정 (최적화 결과 반영)
-        # from strategies.rsi_minute import RSIMinute
-        # minute_strategy = RSIMinute(broker=trading_system.broker, data_store=trading_system.data_store, strategy_params=RSI_MINUTE_PARAMS)        
+        from strategies.rsi_minute import RSIMinute
+        minute_strategy = RSIMinute(broker=trading_system.broker, data_store=trading_system.data_store, strategy_params=RSI_MINUTE_PARAMS)        
         
         # # RSI 가상 분봉 전략 설정 (최적화 결과 반영)
-        from strategies.open_minute import OpenMinute
-        minute_strategy = OpenMinute(broker=trading_system.broker, data_store=trading_system.data_store, strategy_params=RSI_MINUTE_PARAMS)        
+        # from strategies.open_minute import OpenMinute
+        # minute_strategy = OpenMinute(broker=trading_system.broker, data_store=trading_system.data_store, strategy_params=RSI_MINUTE_PARAMS)        
         
         # 일봉/분봉 전략 설정
         trading_system.set_strategies(daily_strategy=daily_strategy, minute_strategy=minute_strategy)

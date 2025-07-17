@@ -29,25 +29,68 @@ class BaseStrategy(abc.ABC):
         """분봉 데이터를 기반으로 전략 로직을 실행하는 추상 메서드."""
         pass
 
-    def _get_ohlcv_at_time(self, stock_code, target_dt):
-        """
-        주어진 시간(target_dt)에 해당하는 정확한 분봉 OHLCV 바를 반환합니다.
-        """
-        target_date = target_dt.date()
-        
-        # 해당 날짜의 분봉 데이터 저장소 확인
-        daily_minute_data = self.data_store['minute'].get(stock_code, {}).get(target_date)
-        
-        if daily_minute_data is None or daily_minute_data.empty:
-            return None
-            
-        try:
-            # 정확한 시간의 분봉(Series) 반환
-            return daily_minute_data.loc[target_dt]
-        except KeyError:
-            # 해당 시간에 데이터가 없는 경우
-            return None
+
     
+    def _get_bar_at_time(self, data_type, stock_code, target_dt):
+        """주어진 시간(target_dt)에 해당하는 정확한 OHLCV 바를 반환합니다."""
+        target_date = target_dt.date()
+        if data_type == 'daily':
+            # 1. 해당 종목의 일봉 데이터프레임을 가져옵니다.
+            daily_df = self.data_store['daily'].get(stock_code)
+            
+            if daily_df is None or daily_df.empty:
+                return None
+            
+            # 2. 날짜를 기준으로 해당 일봉(하나의 행)을 정확히 찾습니다.
+            try:
+                # 날짜 인덱스로 해당 행(pd.Series)을 반환
+                return daily_df.loc[pd.Timestamp(target_date)]
+            except KeyError:
+                # 해당 날짜에 데이터가 없는 경우
+                return None
+
+
+            # 해당 날짜의 분봉 데이터가 있는지 확인
+            
+            # if stock_code not in self.data_store['minute'] or \
+            # target_date not in self.data_store['minute'][stock_code]:
+            #     # 분봉 데이터가 없으면 실시간 일봉 생성 불가
+            #     logging.warning(f"{target_date}의 분봉 데이터가 없어 실시간 일봉을 생성할 수 없습니다.")
+            #     return None
+                
+            # df_minute_today = self.data_store['minute'][stock_code][target_date]
+            # # target_dt 이전의 분봉만 필터링
+            # intraday_df = df_minute_today[df_minute_today.index <= target_dt]
+            # if intraday_df.empty:
+            #     return None
+            # # 분봉 데이터를 집계하여 실시간 일봉 생성
+            # df_daily = intraday_df.agg(
+            #     open=('open', 'first'),      # 당일 첫 분봉의 시가
+            #     high=('high', 'max'),        # 지금까지의 최고가
+            #     low=('low', 'min'),          # 지금까지의 최저가
+            #     close=('close', 'last'),     # 현재 분봉의 종가
+            #     volume=('volume', 'sum')     # 지금까지의 거래량 합계
+            # )
+            
+            # # Series의 이름을 날짜로 설정하여 반환 형식을 맞춤
+            # df_daily.name = pd.Timestamp(target_date).normalize()
+            # return df_daily
+        
+        elif data_type == 'minute':
+            # 해당 날짜의 분봉 데이터 저장소 확인
+            minute_data = self.data_store['minute'].get(stock_code, {}).get(target_date)
+            
+            if minute_data is None or minute_data.empty:
+                return None
+                
+            try:
+                # 정확한 시간의 분봉(Series) 반환
+                return minute_data.loc[target_dt]
+            except KeyError:
+                # 해당 시간에 데이터가 없는 경우
+                return None
+        return None
+        
     def _get_historical_data_up_to(self, data_type, stock_code, current_dt, lookback_period=None):
         """주어진 시간(current_dt)까지의 모든 과거 데이터를 반환합니다."""
         if data_type == 'daily':
@@ -318,45 +361,4 @@ class MinuteStrategy(BaseStrategy):
         
 
 
-    # def _get_bar_at_time(self, data_type, stock_code, target_dt):
-    #     """주어진 시간(target_dt)에 해당하는 정확한 OHLCV 바를 반환합니다."""
-    #     if data_type == 'daily':
-    #         target_date = target_dt.date()
-    #         # 해당 날짜의 분봉 데이터가 있는지 확인
-    #         if stock_code not in self.data_store['minute'] or \
-    #         target_date not in self.data_store['minute'][stock_code]:
-    #             # 분봉 데이터가 없으면 실시간 일봉 생성 불가
-    #             logging.warning(f"{target_date}의 분봉 데이터가 없어 실시간 일봉을 생성할 수 없습니다.")
-    #             return None
-                
-    #         df_minute_today = self.data_store['minute'][stock_code][target_date]
-    #         # target_dt 이전의 분봉만 필터링
-    #         intraday_df = df_minute_today[df_minute_today.index <= target_dt]
-            
-    #         if intraday_df.empty:
-    #             return None
-    #         # 분봉 데이터를 집계하여 실시간 일봉 생성
-    #         df_daily = intraday_df.agg(
-    #             open=('open', 'first'),      # 당일 첫 분봉의 시가
-    #             high=('high', 'max'),        # 지금까지의 최고가
-    #             low=('low', 'min'),          # 지금까지의 최저가
-    #             close=('close', 'last'),     # 현재 분봉의 종가
-    #             volume=('volume', 'sum')     # 지금까지의 거래량 합계
-    #         )
-            
-    #         # Series의 이름을 날짜로 설정하여 반환 형식을 맞춤
-    #         df_daily.name = pd.Timestamp(target_date).normalize()
-    #         return df_daily
-        
-    #     elif data_type == 'minute':
-    #         target_date = target_dt.date()
-    #         if stock_code not in self.data_store['minute'] or target_date not in self.data_store['minute'][stock_code]:
-    #             return None
-    #         df_minute = self.data_store['minute'][stock_code][target_date]
-    #         if df_minute is None or df_minute.empty:
-    #             return None
-    #         try:
-    #             return df_minute.loc[target_dt]
-    #         except KeyError:
-    #             return None
-    #     return None
+
