@@ -1,7 +1,7 @@
 # strategies/sma_daily.py
 
 import logging
-from datetime import datetime
+from datetime import datetime, time
 from typing import Dict, List, Tuple, Any
 from strategies.strategy import DailyStrategy
 from util.strategies_util import calculate_sma_incremental, calculate_volume_ma_incremental, calculate_sma
@@ -63,7 +63,7 @@ class SMADaily(DailyStrategy):
             if stock_code == self.strategy_params['safe_asset_code']: continue
             
             historical_data = self._get_historical_data_up_to('daily', stock_code, current_date, lookback_period=max(long_sma_period, volume_ma_period) + 2)
-            if len(historical_data) < max(long_sma_period, volume_ma_period) + 2:
+            if len(historical_data) < max(long_sma_period, volume_ma_period) + 1: ########### 원래 2
                 continue
             
             # current_date 인자값은 백테스트에서는 전일, 자동매매에서는 당일 임
@@ -81,24 +81,49 @@ class SMADaily(DailyStrategy):
             today_open = historical_data['open'].iloc[-1]
             target_price = (yesterday_close + today_open) / 2
             stock_target_prices[stock_code] = target_price
-
+            
+            # --- [수정] datetime.now() 대신 historical_data의 마지막 시간 사용 ---
+            # 1. 데이터의 마지막 타임스탬프를 '현재 시간'으로 간주
+            current_timestamp = historical_data.index[-1].to_pydatetime()
+            # 2. 장 시작 시간 정의
+            market_open_time = datetime.combine(current_date, time(9, 0))
+            # 3. 경과 시간(분) 계산
+            if current_timestamp > market_open_time:
+                minutes_passed = (current_timestamp - market_open_time).total_seconds() / 60
+            else:
+                minutes_passed = 0
+            # 4. 하루 진행률 계산
+            day_progress_ratio = min(minutes_passed / 390.0, 1.0) if minutes_passed > 0 else 0.0
+            # 5. 기대 거래량 계산
+            expected_volume = volume_ma * day_progress_ratio
+            
             # 골든크로스 + 거래량 조건 완화 (1.0배 이상)
-            if short_sma > long_sma and prev_short_sma <= prev_long_sma and current_volume > volume_ma * 1.0:
+            if short_sma > long_sma and prev_short_sma <= prev_long_sma and current_volume > expected_volume * 1.5:
                 score = (short_sma - long_sma) / long_sma * 100
                 buy_scores[stock_code] = score
-            
+            # --- [추가] 매수 신호가 발생하지 않은 이유를 DEBUG 레벨로 로깅 ---
+            else:
+                # 조건이 충족되지 않은 이유를 상세히 기록
+                reason = []
+                if short_sma <= long_sma: reason.append(f"단기SMA({short_sma:,.0f}) <= 장기SMA({long_sma:,.0f})")
+                if prev_short_sma > prev_long_sma: reason.append("전일 이미 골든크로스 상태")
+                if current_volume <= volume_ma * 1.0: reason.append(f"거래량({current_volume:,.0f}) <= 평균({volume_ma:,.0f})")
+                
+                # 5분마다 전략이 실행되므로, 너무 많은 로그를 피하기 위해 DEBUG 레벨 사용
+                logger.debug(f"[{stock_code}] 매수 신호 미발생. 이유: {', '.join(reason)}")
+            # --- 추가 끝 ---
+                        
             # 데드크로스 + 거래량 조건이 모두 충족될 때만 매도 신호
-            if short_sma < long_sma and prev_short_sma >= prev_long_sma and current_volume > volume_ma * 1.0:
+            if short_sma < long_sma and prev_short_sma >= prev_long_sma and current_volume > expected_volume * 1.5:
                 score = (long_sma - short_sma) / long_sma * 100
                 sell_scores[stock_code] = score
             # 강한 하락(추가 매도)은 제외(신호 완화)
 
-        # 시장 장세 필터링
+        # --- [수정] 시장 장세 필터링 ---
         if self.strategy_params['market_sma_period']:
             market_index_code = self.strategy_params['market_index_code']
             market_sma_period = self.strategy_params['market_sma_period']
 
-            # 시장 지수 데이터 로드, 약세장에서는 매수 후보를 모두 제거하는 로직
             market_data = self._get_historical_data_up_to('daily', market_index_code, current_date, lookback_period=market_sma_period + 1)
             
             if not market_data.empty and len(market_data) >= market_sma_period:
@@ -107,14 +132,15 @@ class SMADaily(DailyStrategy):
 
                 if current_market_price < market_sma:
                     logger.info(f"[{current_date}] 시장({market_index_code})이 약세장({market_sma_period}일 SMA 하회)으로 판단되어, 신규 매수 신호를 제한합니다.")
-                    buy_candidates = set() # 약세장에서는 매수 후보를 모두 제거
+                    # [핵심 수정] buy_candidates 대신 함수의 반환값인 buy_scores를 직접 비웁니다.
+                    buy_scores.clear() 
                 else:
                     logger.info(f"[{current_date}] 시장({market_index_code})이 강세장({market_sma_period}일 SMA 상회)으로 판단됩니다.")
             else:
                 logger.warning(f"[{current_date}] 시장 지수({market_index_code}) 데이터 부족 또는 기간 부족으로 시장 장세 판단을 건너뜁니다.")
 
         return buy_scores, sell_scores, stock_target_prices
-
+    
     def run_daily_logic(self, current_date: datetime.date):
         """
         [수정됨] 매도 후보 선정 로직을 개선하여, 보유 종목 중에서만 매도 후보를 찾고

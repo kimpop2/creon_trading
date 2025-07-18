@@ -42,7 +42,7 @@ class PassMinute(MinuteStrategy):
             if current_position_size > 0:
                 execution_price = (daily_bar['open'] + daily_bar['close']) / 2 # 시가와 종가의 중간 가격으로 매도
                 logging.info(f"✅ [일일 리밸런싱 매도] {stock_code} at {execution_price:,.0f}")
-                if self.broker.execute_order(stock_code, 'sell', execution_price, current_position_size, order_time=current_dt):
+                if self.broker.execute_order(stock_code, 'sell', execution_price, current_position_size, order_time=current_dt) is not None:
                     self.reset_signal(stock_code)
 
         # 경우 2: 목표가 기반 매매 (목표가 있음)
@@ -53,11 +53,11 @@ class PassMinute(MinuteStrategy):
                 if order_signal == 'buy' and current_position_size == 0:
                     target_quantity = signal_info.get('target_quantity', 0)
                     if target_quantity > 0:
-                        if self.broker.execute_order(stock_code, 'buy', target_price, target_quantity, order_time=current_dt):
+                        if self.broker.execute_order(stock_code, 'buy', target_price, target_quantity, order_time=current_dt) is not None:
                             logging.info(f"✅ [일일 목표가 도달 매수] {stock_code}: Target {target_price:,.0f}")
                             self.reset_signal(stock_code)
                 # 매도 실행
                 elif order_signal == 'sell' and current_position_size > 0:
-                    if self.broker.execute_order(stock_code, 'sell', target_price, current_position_size, order_time=current_dt):
+                    if self.broker.execute_order(stock_code, 'sell', target_price, current_position_size, order_time=current_dt) is not None:
                         logging.info(f"✅ [일일 목표가 도달 매도] {stock_code}: Target {target_price:,.0f}")
                         self.reset_signal(stock_code)

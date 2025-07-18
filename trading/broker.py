@@ -20,21 +20,22 @@ class Broker(AbstractBroker):
         self._current_cash_balance: float = self.initial_cash
         self.positions: Dict[str, Dict[str, Any]] = {}
         self.transaction_log: list = []
+        self.order_counter = 0  # 주문 ID 생성을 위한 카운터 추가
         logging.info(f"백테스트 브로커 초기화: 초기 현금 {self.initial_cash:,.0f}원")
 
     def set_stop_loss_params(self, stop_loss_params: Optional[Dict[str, Any]]):
         self.stop_loss_params = stop_loss_params
         logging.info(f"백테스트 브로커 손절매 파라미터 설정 완료: {stop_loss_params}")
 
-    def execute_order(self, stock_code: str, order_type: str, price: float, quantity: int, order_time: datetime, order_id: Optional[str] = None) -> bool:
+    def execute_order(self, stock_code: str, order_type: str, price: float, quantity: int, order_time: datetime, order_id: Optional[str] = None) -> Optional[str]: # 성공 시 주문 ID(str), 실패 시 None
         # --- 입력값 검증 (Defensive Programming) ---
         if not isinstance(price, (int, float)) or not isinstance(quantity, int):
             logging.error(f"주문 실패({stock_code}): 가격(price)과 수량(quantity)의 타입이 올바르지 않습니다.")
-            return False
+            return None
 
         if price <= 10 or quantity <= 0: # 10원 이하의 주문은 비정상으로 간주
             logging.error(f"주문 실패({stock_code}): 가격 또는 수량이 비정상적입니다. price={price}, quantity={quantity}")
-            return False
+            return None
         
         # (선택적) 상식적인 범위의 값인지 확인하여 경고 발생
         if price > 5_000_000: # 예: 500만원을 초과하는 가격
@@ -63,7 +64,8 @@ class Broker(AbstractBroker):
                         'entry_date': order_time.date(), 
                         'highest_price': price
                     }
-                
+                self.order_counter += 1
+                order_id = f"backtest_buy_{self.order_counter}"
                 # [수정] transaction_log에 'trade_amount' 추가
                 self.transaction_log.append(
                     {'trade_datetime': order_time, 
@@ -76,9 +78,9 @@ class Broker(AbstractBroker):
                      'tax': 0, 
                      'realized_profit_loss': 0}
                 )
-                return True
+                return order_id # 'success' 대신 생성된 ID 반환
             
-            else: return False
+            else: return None
         
         elif order_type.lower() == 'sell':
             if stock_code in self.positions and self.positions[stock_code]['size'] >= quantity:
@@ -89,7 +91,8 @@ class Broker(AbstractBroker):
                 
                 self.positions[stock_code]['size'] -= quantity
                 if self.positions[stock_code]['size'] == 0: del self.positions[stock_code]
-                
+                self.order_counter += 1
+                order_id = f"backtest_sell_{self.order_counter}"
                 # [수정] transaction_log에 'trade_amount' 추가
                 self.transaction_log.append(
                     {'trade_datetime': order_time,
@@ -102,11 +105,11 @@ class Broker(AbstractBroker):
                       'tax': tax, 
                       'realized_profit_loss': profit}
                 )
-                return True
+                return order_id # 'success' 대신 생성된 ID 반환
             
-            else: return False
+            else: return None
         
-        return False
+        return None
 
     def get_current_cash_balance(self) -> float:
         return self._current_cash_balance
@@ -130,7 +133,7 @@ class Broker(AbstractBroker):
         executed_any = False
         # [복원] 1. 개별 종목 손절/익절 로직
         for stock_code in list(self.positions.keys()):
-            if self._check_individual_stock_conditions(stock_code, current_prices, current_dt):
+            if self._check_individual_stock_conditions(stock_code, current_prices, current_dt) == 'sucess':
                 executed_any = True
 
         # [복원] 2. 포트폴리오 레벨 손절 로직

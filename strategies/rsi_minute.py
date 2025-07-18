@@ -146,7 +146,7 @@ class RSIMinute(MinuteStrategy):
             
             # 이격도와 RSI 조건을 모두 만족할 때 매수
             if deviation <= max_deviation_ratio and current_rsi <= self.strategy_params['minute_rsi_oversold']:
-                if self.broker.execute_order(stock_code, 'buy', current_price, target_quantity, order_time=current_dt):
+                if self.broker.execute_order(stock_code, 'buy', current_price, target_quantity, order_time=current_dt) is not None:
                     logging.info(f"✅ [RSI 매수 실행] {stock_code} (RSI: {current_rsi:.2f}, 가격 괴리율: {deviation:.2%})")
                     self.reset_signal(stock_code)
 
@@ -156,7 +156,7 @@ class RSIMinute(MinuteStrategy):
             
             # 경우 1: 리밸런싱 매도 (목표가가 없는 경우, RSI 조건만 확인)
             if not target_price and current_rsi >= self.strategy_params['minute_rsi_overbought']:
-                if self.broker.execute_order(stock_code, 'sell', current_price, current_position_size, order_time=current_dt):
+                if self.broker.execute_order(stock_code, 'sell', current_price, current_position_size, order_time=current_dt) is not None:
                     logging.info(f"✅ [RSI 리밸런싱 매도] {stock_code} (RSI: {current_rsi:.2f})")
                     self.reset_signal(stock_code)
             
@@ -164,7 +164,7 @@ class RSIMinute(MinuteStrategy):
             elif target_price:
                 deviation = abs(current_price - target_price) / target_price
                 if deviation <= max_deviation_ratio and current_rsi >= self.strategy_params['minute_rsi_overbought']:
-                    if self.broker.execute_order(stock_code, 'sell', current_price, current_position_size, order_time=current_dt):
+                    if self.broker.execute_order(stock_code, 'sell', current_price, current_position_size, order_time=current_dt) is not None:
                         logging.info(f"✅ [RSI 목표가 매도] {stock_code} (RSI: {current_rsi:.2f}, 가격 괴리율: {deviation:.2%})")
                         self.reset_signal(stock_code)
 
@@ -179,7 +179,7 @@ class RSIMinute(MinuteStrategy):
         #     deviation = abs(current_price - target_price) / target_price
         #     if deviation <= max_deviation_ratio and current_rsi <= self.strategy_params['minute_rsi_oversold']:
         #         logging.info(f"✅ [RSI 매수 실행] {stock_code} (RSI: {current_rsi:.2f}, 가격 괴리율: {deviation:.2%})")
-        #         if self.broker.execute_order(stock_code, 'buy', current_price, target_quantity, order_time=current_dt):
+        #         if self.broker.execute_order(stock_code, 'buy', current_price, target_quantity, order_time=current_dt) is not None:
         #             self.reset_signal(stock_code)
 
         # # 매도 로직
@@ -188,14 +188,14 @@ class RSIMinute(MinuteStrategy):
         #     # 리밸런싱 매도 (목표가 없음)
         #     if not target_price and current_rsi >= self.strategy_params['minute_rsi_overbought']:
         #         logging.info(f"✅ [RSI 리밸런싱 매도] {stock_code} (RSI: {current_rsi:.2f})")
-        #         if self.broker.execute_order(stock_code, 'sell', current_price, current_position_size, order_time=current_dt):
+        #         if self.broker.execute_order(stock_code, 'sell', current_price, current_position_size, order_time=current_dt) is not None:
         #             self.reset_signal(stock_code)
         #     # 데드크로스 매도 (목표가 있음)
         #     elif target_price:
         #         deviation = abs(current_price - target_price) / target_price
         #         if deviation <= max_deviation_ratio and current_rsi >= self.strategy_params['minute_rsi_overbought']:
         #             logging.info(f"✅ [RSI 데드크로스 매도] {stock_code} (RSI: {current_rsi:.2f})")
-        #             if self.broker.execute_order(stock_code, 'sell', current_price, current_position_size, order_time=current_dt):
+        #             if self.broker.execute_order(stock_code, 'sell', current_price, current_position_size, order_time=current_dt) is not None:
         #                 self.reset_signal(stock_code)
         
         # --- [복원] 타임컷 (Time-cut) 강제 매매 로직 ---

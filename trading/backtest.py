@@ -473,7 +473,7 @@ if __name__ == "__main__":
         TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
         MARKET_OPEN_TIME, MARKET_CLOSE_TIME,
         DAILY_STRATEGY_RUN_TIME, PORTFOLIO_UPDATE_TIME,
-        SMA_DAILY_PARAMS, RSI_MINUTE_PARAMS, 
+        COMMON_PARAMS, SMA_DAILY_PARAMS, RSI_MINUTE_PARAMS, 
         STOP_LOSS_PARAMS, INITIAL_CASH,
         LOG_LEVEL, LOG_FILE
     )    
@@ -495,7 +495,7 @@ if __name__ == "__main__":
         # 2. Backtest 인스턴스 생성
         initial_cash = 1_000_000  # 1천만원
         
-        backtest_instance = Backtest(
+        backtest_system = Backtest(
             api_client=api_client,
             db_manager=db_manager,
             initial_cash=initial_cash,
@@ -505,37 +505,37 @@ if __name__ == "__main__":
         # 전략 인스턴스 생성
         # SMA 전략 설정 (최적화 결과 반영)
         from strategies.sma_daily import SMADaily
-        daily_strategy = SMADaily(broker=backtest_instance.broker, data_store=backtest_instance.data_store, strategy_params=SMA_DAILY_PARAMS)
+        daily_strategy = SMADaily(broker=backtest_system.broker, data_store=backtest_system.data_store, strategy_params=SMA_DAILY_PARAMS)
 
         # RSI 분봉 전략 설정
         # from strategies.rsi_minute import RSIMinute
-        # minute_strategy = RSIMinute(broker=backtest_instance.broker, data_store=backtest_instance.data_store, strategy_params=RSI_MINUTE_PARAMS)        
+        # minute_strategy = RSIMinute(broker=backtest_system.broker, data_store=backtest_system.data_store, strategy_params=RSI_MINUTE_PARAMS)        
         
-        # 분봉전략: 매매신호 target_price 에 분봉이 해당할 경우 바로 주문
-        # from strategies.backtest_minute import BacktestMinute
-        # minute_strategy = BacktestMinute(broker=backtest_instance.broker, data_store=backtest_instance.data_store, strategy_params=RSI_MINUTE_PARAMS)        
+        # 목표가 분봉 전략 설정 (최적화 결과 반영)
+        from strategies.target_price_minute import TargetPriceMinute
+        minute_strategy = TargetPriceMinute(broker=backtest_system.broker, data_store=backtest_system.data_store, strategy_params=COMMON_PARAMS)        
         
         # 분봉 패스 전략: 오늘의 시가와 종가 사이에 목표가가 있을 경우 매매 후 바로 다음날로 넘어감 (최적화용)
-        from strategies.pass_minute import PassMinute
-        minute_strategy = PassMinute(broker=backtest_instance.broker, data_store=backtest_instance.data_store, strategy_params=RSI_MINUTE_PARAMS)        
+        # from strategies.pass_minute import PassMinute
+        # minute_strategy = PassMinute(broker=backtest_system.broker, data_store=backtest_system.data_store, strategy_params=COMMON_PARAMS)        
 
         # 일봉/분봉 전략 설정
-        backtest_instance.set_strategies(daily_strategy=daily_strategy, minute_strategy=minute_strategy)
+        backtest_system.set_strategies(daily_strategy=daily_strategy, minute_strategy=minute_strategy)
         # 손절매 파라미터 설정 (선택사항)
-        backtest_instance.set_broker_stop_loss_params(STOP_LOSS_PARAMS)
+        backtest_system.set_broker_stop_loss_params(STOP_LOSS_PARAMS)
         
         end_date = date(2025, 6, 10)
-        start_date = end_date - timedelta(days=150)
+        start_date = end_date - timedelta(days=20)
         # 일봉 데이터 로드
-        backtest_instance.load_stocks(start_date, end_date)
+        backtest_system.load_stocks(start_date, end_date)
 
         # 5. 백테스트 실행
         try:
-            backtest_instance.run(start_date, end_date)
+            backtest_system.run(start_date, end_date)
         except KeyboardInterrupt:
             logger.info("사용자에 의해 시스템 종료 요청됨.")
         finally:
-            backtest_instance.cleanup()
+            backtest_system.cleanup()
             logger.info("시스템 종료 완료.")
 
     except Exception as e:

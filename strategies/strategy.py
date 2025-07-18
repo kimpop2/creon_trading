@@ -142,43 +142,30 @@ class DailyStrategy(BaseStrategy):
         pass 
 
     def _calculate_target_quantity(self, stock_code, current_price, current_date, num_stocks=None):
-        """[수정됨] 수량 계산 시 백테스트의 현재 날짜를 인자로 받습니다."""
         if num_stocks is None:
             num_stocks = self.strategy_params.get('num_top_stocks', 1)
 
-        # [핵심 수정] 포트폴리오 가치 계산 시, pd.Timestamp.today() 대신 current_date 사용
-        current_prices_for_summary = {}
-        for code in self.data_store['daily']:
-            # 현재 날짜까지의 데이터를 기반으로 각 종목의 현재가를 가져옴
-            daily_data = self._get_historical_data_up_to('daily', code, current_date, lookback_period=1)
-            if not daily_data.empty:
-                current_prices_for_summary[code] = daily_data['close'].iloc[-1]
-        
-        # capital_base를 initial_cash로 고정하여 복리 함정 방지
-        capital_base = self.broker.initial_cash
-        # 2. 종목별 투자금 계산
-        per_stock_investment = capital_base / num_stocks
-        # 3. 실제 투자 가능 금액 결정 (종목별 할당액 vs 실제 가용 현금 중 작은 값)
-        available_cash = self.broker.get_current_cash_balance()
-        invest_per_stock = min(per_stock_investment, available_cash)
-        # 4. 수수료를 포함한 1주당 비용 계산
-        commission_rate = self.broker.commission_rate # 브로커에 수수료율이 정의되어 있다고 가정
-        per_share_cost = current_price * (1 + commission_rate)
-        if per_share_cost <= 0: 
+        # 1. 1주를 사는 데 필요한 총 비용 계산 (수수료 포함)
+        per_share_cost = current_price * (1 + self.broker.commission_rate)
+        if per_share_cost <= 0:
             return 0
-        
-        # 5. 최종 매수 수량 계산
-        quantity = int(invest_per_stock / per_share_cost)
-        
-        if quantity > 0:
-            total_cost = current_price * quantity * (1 + self.broker.commission_rate)
-            if total_cost > available_cash:
-                quantity -= 1
 
+        # 2. 이 종목에 투자할 수 있는 최대 금액 결정
+        capital_base = self.broker.initial_cash
+        per_stock_budget = capital_base / num_stocks if num_stocks > 0 else 0
+        available_cash = self.broker.get_current_cash_balance()
+        max_invest_amount = min(per_stock_budget, available_cash)
+
+        # 3. 매수 가능한 수량 계산 (최대 투자 가능 금액 / 1주당 비용)
+        # 만약 최대 투자 가능 금액이 1주 비용보다 작으면 quantity는 자동으로 0이 됨
+        quantity = int(max_invest_amount / per_share_cost)
+
+        # 4. 결과 로깅
         if quantity > 0:
-            logging.info(f"{stock_code} 종목 매수 수량 계산: {quantity}주")
+            logging.info(f"✅ [{stock_code}] 매수 수량 계산 완료: {quantity}주")
         else:
-            logging.warning(f"{stock_code} 종목 매수 불가: 현금 부족 또는 할당액 초과")
+            # INFO 레벨로 변경하여 항상 로그가 보이도록 하고, 원인을 명확히 표시
+            logging.info(f"❌ [{stock_code}] 매수 불가: 할당/가용액({max_invest_amount:,.0f}원) < 1주 비용({per_share_cost:,.0f}원)")
         
         return quantity
 
@@ -235,14 +222,32 @@ class DailyStrategy(BaseStrategy):
             # 1. 매수 신호 결정
             if stock_code in buy_candidates and stock_code not in current_positions:
                 if target_price is not None and target_price > 0:
-                    # [수정] _calculate_target_quantity 호출 시 current_daily_date 전달
-                    target_quantity = self._calculate_target_quantity(stock_code, target_price, current_daily_date, self.strategy_params['num_top_stocks'])
-                    if target_quantity > 0:
-                        signal_info.update({
-                            'signal_type': 'buy',
-                            'target_quantity': target_quantity
-                        })
-                        logging.info(f'매수 신호 - {stock_code}: 목표수량 {target_quantity}주, 목표가격 {target_price:,.0f}원')
+                # [수정 시작] target_price가 유효하지 않은 경우, data_store의 최종 종가로 대체하는 로직
+                    price_to_use = target_price
+                    if price_to_use is None or price_to_use <= 0:
+                        logging.warning(f"[{stock_code}] 유효한 목표가격이 없어 data_store의 최종 종가로 대체합니다.")
+                        # data_store에서 해당 종목의 과거 데이터를 가져옴
+                        historical_data = self._get_historical_data_up_to('daily', stock_code, current_daily_date)
+                        
+                        # 데이터가 있고 비어있지 않은지 확인
+                        if historical_data is not None and not historical_data.empty:
+                            # 마지막 행의 'close' 값을 사용
+                            price_to_use = historical_data['close'].iloc[-1]
+                        else:
+                            logging.error(f"[{stock_code}] data_store에서도 가격을 찾을 수 없어 매수 신호를 생성할 수 없습니다.")
+                            price_to_use = 0 # 유효하지 않은 값으로 설정하여 아래 로직을 건너뛰도록 함
+
+                    # 이제 price_to_use 변수를 사용하여 수량 계산
+                    if price_to_use > 0:
+                        target_quantity = self._calculate_target_quantity(stock_code, price_to_use, current_daily_date, self.strategy_params['num_top_stocks'])
+                        if target_quantity > 0:
+                            signal_info.update({
+                                'signal_type': 'buy',
+                                'target_quantity': target_quantity
+                            })
+                            # 로그 출력 시에도 실제 사용할 가격(price_to_use)을 표시
+                            logging.info(f"매수 신호 - {stock_code}: 목표수량 {target_quantity}주, 목표가격 {price_to_use:,.0f}원")
+                    # [수정 끝]                
                 else:
                     logging.warning(f"{stock_code} 매수 신호 생성 불가: 유효한 목표가격 없음")
 

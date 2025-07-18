@@ -36,7 +36,7 @@ TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')  # 크레온 HTS 로그인 비�
 
 # --- 자동매매 기본 설정 ---
 # 초기 투자 자본 (백테스트 및 실전 거래의 초기 예수금으로 사용됩니다.)
-INITIAL_CASH = 100_000_000 # 1천만원 예시
+INITIAL_CASH = 300_000 # 30만원 예시
 
 # 시장 개장 시간 (KST 기준)
 MARKET_OPEN_TIME = "09:00:00"
@@ -71,8 +71,8 @@ STOP_LOSS_PARAMS = {
 # SMA 일봉 전략 파라미터
 SMA_DAILY_PARAMS = {
     **COMMON_PARAMS,
-    'short_sma_period': 5,          # 단기 이동평균선 기간 (일봉)
-    'long_sma_period': 14,          # 장기 이동평균선 기간 (일봉)
+    'short_sma_period': 2,          # 단기 이동평균선 기간 (일봉)
+    'long_sma_period': 4,          # 장기 이동평균선 기간 (일봉)
     'volume_ma_period': 7,          # 거래량 이동평균선 기간 (일봉)
     'num_top_stocks': 5,            # 매매 대상 상위 종목 수
     # market_sma_period

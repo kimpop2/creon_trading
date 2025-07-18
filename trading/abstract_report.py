@@ -72,7 +72,7 @@ class TradingDB(AbstractReport):
         # 자동매매 환경에서는 매일 장 마감 후, 하루의 최종 성과를 기록합니다.
         if portfolio_summary:
             # ReportGenerator가 생성한 summary 딕셔너리를 DB 테이블 컬럼에 맞게 변환
-            live_portfolio_data = {
+            portfolio_data = {
                 'record_date': portfolio_summary.get('end_date'),
                 'total_capital': portfolio_summary.get('final_capital'),
                 'cash_balance': kwargs.get('cash_balance', 0), # 추가 정보는 kwargs로 전달
@@ -82,8 +82,8 @@ class TradingDB(AbstractReport):
                 'cumulative_profit_loss': portfolio_summary.get('total_profit_loss'),
                 'cumulative_return_rate': portfolio_summary.get('cumulative_return')
             }
-            self.db_manager.save_daily_portfolio(live_portfolio_data)
-            logger.info(f"{live_portfolio_data['record_date']}의 일일 포트폴리오 최종 상태를 DB에 저장했습니다.")
+            self.db_manager.save_daily_portfolio(portfolio_data)
+            logger.info(f"{portfolio_data['record_date']}의 일일 포트폴리오 최종 상태를 DB에 저장했습니다.")
 
 # 3. 통합된 리포트 생성기
 class ReportGenerator:
@@ -99,7 +99,8 @@ class ReportGenerator:
                  initial_cash: float,
                  portfolio_value_series: pd.Series,
                  transaction_log: list,
-                 strategy_info: dict):
+                 strategy_info: dict,
+                 **kwargs):
         """
         [수정됨] 리포트를 생성하고, 누락된 필드를 모두 포함하여 저장합니다.
         """
@@ -160,7 +161,7 @@ class ReportGenerator:
         }
         
         # 3. 주입받은 저장 전략을 통해 저장 실행
-        run_id = self.storage.save(report_data)
+        run_id = self.storage.save(report_data, **kwargs)
 
         # 4. 최종 결과 로깅 (기존과 동일)
         logger.info("\n=== 최종 결과 요약 ===")

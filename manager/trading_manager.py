@@ -21,6 +21,7 @@ logger.debug(f"Project root added to sys.path: {project_root}")
 from manager.db_manager import DBManager
 from api.creon_api import CreonAPIClient # CreonAPIClient 클래스 이름 일치
 from util.strategies_util import calculate_sma, calculate_rsi, calculate_ema, calculate_macd
+from config.sector_stocks import sector_stocks
 
 class TradingManager:
     """
@@ -54,6 +55,42 @@ class TradingManager:
         self.stock_names = self.get_stock_info_map()
         logger.info(f"종목명 {len(self.stock_names)}건 캐시 완료.")
 
+    def get_universe_codes(self) -> List[str]:
+        """
+        config/sector_stocks.py 에서 유니버스 종목 목록을 가져와
+        종목명을 코드로 변환한 뒤, 유니크한 종목 코드 리스트를 반환합니다.
+        """
+        logger.info("유니버스 종목 코드 목록 생성을 시작합니다.")
+
+        # 1. sector_stocks 설정에서 모든 종목 이름을 수집하고 중복을 제거합니다.
+        all_stock_names = set()
+        for stocks_in_sector in sector_stocks.values():
+            for stock_name, theme in stocks_in_sector:
+                all_stock_names.add(stock_name)
+        
+        logger.debug(f"고유 유니버스 종목명 {len(all_stock_names)}개 수집 완료.")
+
+        # 2. 종목명을 종목 코드로 변환합니다.
+        universe_codes = []
+        for name in sorted(list(all_stock_names)): # 정렬하여 처리 순서 고정
+            code = self.api_client.get_stock_code(name)
+            
+            # 3. 코드가 유효한 경우에만 리스트에 추가하고, 없으면 경고 로그를 남깁니다.
+            if code:
+                universe_codes.append(code)
+            else:
+                logger.warning(f"유니버스 구성 중 종목명을 코드로 변환할 수 없습니다: '{name}'. 해당 종목을 건너뜁니다.")
+        
+        # --- [수정] 시장 지수 코드(U001)를 유니버스에 명시적으로 추가 ---
+        market_index_code = 'U001' # KOSPI 지수 코드
+        if market_index_code not in universe_codes:
+            universe_codes.append(market_index_code)
+            logger.info(f"시장 필터용 지수 코드 '{market_index_code}'를 유니버스에 추가했습니다.")
+        # --- 수정 끝 ---
+        
+        logger.info(f"최종 유니버스 종목 코드 {len(universe_codes)}개 생성 완료.")
+        return universe_codes
+    
     def cache_daily_ohlcv(self, stock_code: str, from_date: date, to_date: date) -> pd.DataFrame:
         """
         DB와 증권사 API를 사용하여 특정 종목의 일봉 데이터를 캐싱하고 반환합니다.
@@ -258,14 +295,10 @@ class TradingManager:
             return {}
         
     def get_stock_name(self, stock_code: str) -> str:
-        """종목 코드로 종목명을 조회합니다. 캐시에 없으면 DB에서 조회 후 캐시합니다."""
-        if stock_code not in self.stock_names:
-            stock_info = self.db_manager.fetch_stock_info(stock_code)
-            if stock_info:
-                self.stock_names[stock_code] = stock_info['stock_name']
-            else:
-                self.stock_names[stock_code] = "알 수 없음" # 또는 에러 처리
-        return self.stock_names.get(stock_code, "알 수 없음")
+        """[수정] 종목명 조회를 api_client에 위임합니다."""
+        # 이제 api_client가 유일한 정보 출처가 됩니다.
+        name = self.api_client.get_stock_name(stock_code)
+        return name if name else "알 수 없음"
 
     def get_all_stock_list(self) -> List[Tuple[str, str]]:
         """캐시된 모든 종목의 코드와 이름을 반환합니다."""
@@ -361,6 +394,7 @@ class TradingManager:
             else:
                 logger.warning(f"Creon API에서도 {stock_code}의 분봉 데이터를 가져올 수 없습니다.")
         return df
+
 
     # def cache_minute_price(self, stock_code: str, current_dt: datetime) -> Optional[Dict[str, Any]]:
     #     """
@@ -544,17 +578,16 @@ class TradingManager:
         logger.info(f"{start_date} {end_date} 날짜의 유니버스 종목 {len(stock_codes)}개 로드 완료.")
         return stock_codes
 
+
     def get_current_prices(self, stock_codes: List[str]) -> Dict[str, float]:
         """
-        주어진 종목 코드 리스트에 대한 현재 시장 가격을 조회합니다.
-        (실시간 데이터 또는 TR 요청)
+        [수정] CreonAPIClient의 일괄 조회 메서드를 호출하여 현재가를 가져옵니다.
         """
-        prices = {}
-        prices = self.api_client.get_current_prices(stock_codes)
-        if prices:
-            return prices
-        else:
-            logger.warning(f"종목 {stock_codes}의 현재 시장 가격을 가져올 수 없습니다.")
+        if not stock_codes:
+            return {}
+        # 새로 추가한 일괄 조회 메서드를 직접 호출
+        return self.api_client.get_current_prices_bulk(stock_codes)
+    
 
     def save_trading_log(self, log_data: Dict[str, Any]) -> bool:
         """거래 로그를 DB에 저장하도록 요청합니다."""

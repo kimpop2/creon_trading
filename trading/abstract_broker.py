@@ -28,7 +28,7 @@ class AbstractBroker(abc.ABC):
                       quantity: int,
                       order_time: datetime,
                       order_id: Optional[str] = None
-                     ) -> bool: # 주문 성공 여부를 bool로 반환
+                     ) -> Optional[str]: # 성공 시 주문 ID(str), 실패 시 None
         """
         주문을 실행합니다. 실제 매매에서는 API를 호출하고, 백테스팅에서는 가상으로 처리합니다.
         """

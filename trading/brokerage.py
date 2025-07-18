@@ -20,12 +20,13 @@ class Brokerage(AbstractBroker):
     def __init__(self, 
                  api_client: CreonAPIClient, 
                  manager: TradingManager, 
-                 notifier: Notifier):
+                 notifier: Notifier,
+                 initial_cash: float):
         super().__init__()
         self.api_client = api_client
         self.manager = manager
         self.notifier = notifier
-        
+        self.initial_cash=initial_cash
         self.commission_rate = 0.0015
         self.tax_rate_sell = 0.002
         self._current_cash_balance: float = 0.0
@@ -41,7 +42,7 @@ class Brokerage(AbstractBroker):
         self.stop_loss_params = stop_loss_params
         logging.info(f"자동매매 브로커 손절매 파라미터 설정 완료: {stop_loss_params}")
 
-    def execute_order(self, stock_code: str, order_type: str, price: float, quantity: int, order_time: datetime, order_id: Optional[str] = None) -> bool:
+    def execute_order(self, stock_code: str, order_type: str, price: float, quantity: int, order_time: datetime, order_id: Optional[str] = None) -> Optional[str]: # 성공 시 주문 ID(str), 실패 시 None
         """ [수정] 주문 성공 여부를 bool 값으로 반환하도록 인터페이스와 일치시킵니다. """
         order_type_enum = OrderType.BUY if order_type.lower() == 'buy' else OrderType.SELL
         order_unit = "03" if price == 0 else "01"
@@ -168,7 +169,44 @@ class Brokerage(AbstractBroker):
             del self._active_orders[order_id]
             # 주문이 완전히 종료되면, 계좌 상태를 최종 동기화하여 정확성을 보장
             self.sync_account_status()
+
+
+    # [신규] DB에 저장하지 않는 상태(highest_price)를 복원하는 메서드
+    def _restore_positions_state(self, data_store: Dict[str, Any]):
+        """
+        프로그램 시작 시, 메모리상의 포지션 정보에 DB에 없는 상태값(예: 최고가)을
+        과거 데이터를 기반으로 계산하여 복원합니다.
+        """
+        logger.info("보유 포지션의 상태(최고가) 복원을 시작합니다.")
+        today = datetime.now().date()
+
+        for code, pos_info in self.positions.items():
+            entry_date = pos_info.get('entry_date')
+            if not entry_date:
+                pos_info['highest_price'] = pos_info.get('avg_price', 0)
+                continue
+
+            # 1. 매수일 ~ 어제까지의 일봉 데이터에서 최고가 찾기
+            daily_df = data_store['daily'].get(code)
+            historical_high = 0
+            if daily_df is not None:
+                historical_df = daily_df[(daily_df.index.date >= entry_date) & (daily_df.index.date < today)]
+                if not historical_df.empty:
+                    historical_high = historical_df['high'].max()
+
+            # 2. 오늘의 분봉 데이터에서 최고가 찾기
+            today_high = 0
+            if code in data_store['minute'] and today in data_store['minute'][code]:
+                today_minute_df = data_store['minute'][code][today]
+                if not today_minute_df.empty:
+                    today_high = today_minute_df['high'].max()
             
+            # 3. 두 기간의 최고가와 평균 매수가 중 가장 높은 값을 최종 highest_price로 설정
+            restored_highest_price = max(historical_high, today_high, pos_info.get('avg_price', 0))
+            pos_info['highest_price'] = restored_highest_price
+            
+            logger.debug(f"[{code}] 최고가 복원 완료: {restored_highest_price:,.0f}원")
+
     def sync_account_status(self):
         """
         [수정] API에서 계좌 정보를 가져와 내부 상태(현금, 포지션)를 업데이트합니다.

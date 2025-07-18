@@ -76,14 +76,17 @@ class CpEvent:
         # 실시간 현재가 이벤트 처리
         elif self.name == "stockcur":
             exFlag = self.client.GetHeaderValue(19)  # 예상체결 플래그
-            cprice = self.client.GetHeaderValue(13)  # 현재가
+            cprice = self.client.GetHeaderValue(13)  # 현재가 또는 예상체결가
+            #cvolume = self.client.GetHeaderValue(18) # 누적 거래량
+            cvolume = self.client.GetHeaderValue(9) # 누적 거래량
             
             # 장중이 아니면 처리 안함. (예상체결 플래그 2: 장중)
             if exFlag != ord('2'):
                 return
             
             if self.parent.price_update_callback:
-                self.parent.price_update_callback(self.stock_code, cprice, time.time())
+                # 콜백 함수에 누적 거래량(cvolume)을 함께 전달
+                self.parent.price_update_callback(self.stock_code, cprice, cvolume, time.time())
 
         # 실시간 10차 호가 이벤트 처리
         elif self.name == "stockbid":
@@ -311,10 +314,115 @@ class CreonAPIClient:
             logger.error(f"_make_stock_dic 중 오류 발생: {e}", exc_info=True)
 
     def get_stock_name(self, find_code: str) -> Optional[str]:
-        return self.stock_code_dic.get(find_code)
+        """
+        [최종] 캐시에서 종목명을 우선 조회하고, 없으면 API로 조회하여 캐시에 추가합니다.
+        """
+        # 1. 캐시에서 먼저 조회
+        cached_name = self.stock_code_dic.get(find_code)
+        if cached_name:
+            return cached_name
+
+        # 2. 캐시에 없으면 (Cache Miss), 실시간 API로 조회
+        logger.warning(f"캐시에 없는 코드 '{find_code}'에 대한 실시간 조회를 시도합니다.")
+        live_name = self.cp_code_mgr.CodeToName(find_code)
+
+        # 3. API 조회 성공 시, 캐시에 동적으로 추가 후 반환
+        if live_name:
+            logger.info(f"실시간 조회 성공: {find_code} -> {live_name}. 캐시에 추가합니다.")
+            self.stock_code_dic[find_code] = live_name
+            # 이름->코드 캐시도 함께 업데이트 (일관성 유지)
+            self.stock_name_dic[live_name] = find_code
+            return live_name
+        
+        return None
 
     def get_stock_code(self, find_name: str) -> Optional[str]:
-        return self.stock_name_dic.get(find_name, find_name)
+        """
+        [최종] 캐시에서 종목 코드를 우선 조회하고, 없으면 API로 조회하여 캐시에 추가합니다.
+        """
+        # 1. 캐시에서 먼저 조회
+        cached_code = self.stock_name_dic.get(find_name)
+        if cached_code:
+            return cached_code
+
+        # 2. 캐시에 없으면 (Cache Miss), 실시간 API로 조회
+        logger.warning(f"캐시에 없는 종목명 '{find_name}'에 대한 실시간 조회를 시도합니다.")
+        # NameToCode의 위험성을 회피하는 안전한 조회 로직 사용
+        live_code = self._get_safe_stock_code(find_name) # 이전 답변의 안전한 조회 함수
+
+        # 3. API 조회 성공 시, 캐시에 동적으로 추가 후 반환
+        if live_code:
+            logger.info(f"실시간 조회 성공: {find_name} -> {live_code}. 캐시에 추가합니다.")
+            self.stock_name_dic[find_name] = live_code
+            # 코드->이름 캐시도 함께 업데이트 (일관성 유지)
+            self.stock_code_dic[live_code] = find_name
+            return live_code
+            
+        return None
+
+    def _get_safe_stock_code(self, stock_name: str) -> Optional[str]:
+        """
+        [신규] NameToCode의 위험성을 회피하는 안전한 종목 코드 조회 메서드.
+        여러 코드가 반환될 경우, 일반주(코드가 '0'으로 끝남)를 우선적으로 선택합니다.
+        """
+        # [수정] 메서드 이름을 NameToCode -> GetStockCodeByName 으로 변경
+        code = self.cp_code_mgr.GetStockCodeByName(stock_name)
+        
+        # NameToCode가 여러 코드를 리스트/튜플로 반환하는 경우 처리
+        if isinstance(code, (list, tuple)):
+            for c in code:
+                if c.endswith('0'): # 일반주 코드를 찾으면 즉시 반환
+                    return c
+            return code[0] # 일반주를 못찾으면 첫 번째 코드라도 반환
+        
+        # 단일 문자열로 반환된 경우
+        return code
+
+    def get_current_prices_bulk(self, stock_codes: List[str]) -> Dict[str, Dict[str, float]]:
+        """
+        [수정] MarketEye를 사용하여 여러 종목의 당일 OHLCV 데이터를 일괄 조회합니다.
+        """
+        if not stock_codes:
+            return {}
+
+        all_results = {}
+        # MarketEye는 최대 200개 종목까지 조회 가능
+        CHUNK_SIZE = 200
+        for i in range(0, len(stock_codes), CHUNK_SIZE):
+            chunk = stock_codes[i:i + CHUNK_SIZE]
+            logger.info(f"{len(chunk)}개 종목의 OHLCV를 MarketEye로 일괄 조회합니다.")
+            
+            objMarketEye = win32com.client.Dispatch("CpSysDib.MarketEye")
+
+            # [수정] 요청 필드: 0(코드), 4(현재가=종가), 5(시가), 6(고가), 7(저가), 10(거래량)
+            request_fields = [0, 4, 5, 6, 7, 10]
+            objMarketEye.SetInputValue(0, request_fields)
+            objMarketEye.SetInputValue(1, chunk)
+
+            status_code, msg = self._execute_block_request(objMarketEye)
+            if status_code != 0:
+                continue
+
+            count = objMarketEye.GetHeaderValue(2)
+            for j in range(count):
+                code = objMarketEye.GetDataValue(0, j)
+                # 요청 필드 [0, 4, 5, 6, 7, 10] 순서에 따른 인덱스
+                price = objMarketEye.GetDataValue(1, j) # 현재가
+                open_p = objMarketEye.GetDataValue(2, j) # 시가
+                high_p = objMarketEye.GetDataValue(3, j) # 고가
+                low_p = objMarketEye.GetDataValue(4, j)  # 저가
+                volume = objMarketEye.GetDataValue(5, j) # 거래량
+
+                all_results[code] = {
+                    'open': float(open_p),
+                    'high': float(high_p),
+                    'low': float(low_p),
+                    'close': float(price),
+                    'volume': int(volume)
+                }
+
+        return all_results
+
 
     def get_current_price_and_quotes(self, stock_code: str) -> Optional[Dict[str, Any]]:
         """
@@ -770,15 +878,12 @@ class CreonAPIClient:
 
             logger.info("모든 실시간 구독 해지 및 콜백 정리 완료.")
 
-            # 💡 [중요] 아래 두 줄이 주석 처리되지 않고 반드시 실행되어야 합니다.
+            # 💡 [중요] 바로 아래 두 줄이 데드락을 풀고 정상 종료를 위한 핵심 코드입니다.
             logger.info("COM 스레드 정상 종료를 위해 대기 및 메시지 처리...")
             time.sleep(1) 
-            pythoncom.PumpWaitingMessages()
+            pythoncom.PumpWaitingMessages() # 대기 중인 모든 COM 메시지를 강제로 처리
             
             logger.info("CreonAPIClient 리소스 정리 최종 완료.")
 
         except Exception as e:
             logger.error(f"CreonAPIClient 리소스 정리 중 오류 발생: {e}", exc_info=True)
-
-    def __del__(self):
-        self.cleanup()
