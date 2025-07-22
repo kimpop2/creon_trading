@@ -30,7 +30,6 @@ class BaseStrategy(abc.ABC):
         pass
 
 
-    
     def _get_bar_at_time(self, data_type, stock_code, target_dt):
         """주어진 시간(target_dt)에 해당하는 정확한 OHLCV 바를 반환합니다."""
         target_date = target_dt.date()
@@ -48,34 +47,7 @@ class BaseStrategy(abc.ABC):
             except KeyError:
                 # 해당 날짜에 데이터가 없는 경우
                 return None
-
-
-            # 해당 날짜의 분봉 데이터가 있는지 확인
-            
-            # if stock_code not in self.data_store['minute'] or \
-            # target_date not in self.data_store['minute'][stock_code]:
-            #     # 분봉 데이터가 없으면 실시간 일봉 생성 불가
-            #     logging.warning(f"{target_date}의 분봉 데이터가 없어 실시간 일봉을 생성할 수 없습니다.")
-            #     return None
-                
-            # df_minute_today = self.data_store['minute'][stock_code][target_date]
-            # # target_dt 이전의 분봉만 필터링
-            # intraday_df = df_minute_today[df_minute_today.index <= target_dt]
-            # if intraday_df.empty:
-            #     return None
-            # # 분봉 데이터를 집계하여 실시간 일봉 생성
-            # df_daily = intraday_df.agg(
-            #     open=('open', 'first'),      # 당일 첫 분봉의 시가
-            #     high=('high', 'max'),        # 지금까지의 최고가
-            #     low=('low', 'min'),          # 지금까지의 최저가
-            #     close=('close', 'last'),     # 현재 분봉의 종가
-            #     volume=('volume', 'sum')     # 지금까지의 거래량 합계
-            # )
-            
-            # # Series의 이름을 날짜로 설정하여 반환 형식을 맞춤
-            # df_daily.name = pd.Timestamp(target_date).normalize()
-            # return df_daily
-        
+     
         elif data_type == 'minute':
             # 해당 날짜의 분봉 데이터 저장소 확인
             minute_data = self.data_store['minute'].get(stock_code, {}).get(target_date)
@@ -194,15 +166,12 @@ class DailyStrategy(BaseStrategy):
         logging.debug("일봉 전략 신호 초기화 완료.")
 
     def _generate_signals(self, current_daily_date, buy_candidates, sorted_stocks, stock_target_prices, sell_candidates=None):
-        """
-        [최종 수정] 매수/매도/홀딩 신호 생성을 통합하고, None 값 에러를 처리합니다.
-        """
         current_positions = set(self.broker.get_current_positions().keys())
-        if sell_candidates is None: sell_candidates = set()
-
-        # 처리 대상이 되는 모든 종목 (신규 매수후보, 매도후보, 현재 보유종목)
-        stocks_to_process = buy_candidates | sell_candidates | current_positions
         
+        # [핵심 수정] 미체결 주문이 진행 중인 종목 코드 목록을 가져옵니다.
+        unfilled_order_codes = self.broker.get_unfilled_stock_codes()
+        
+        stocks_to_process = buy_candidates | sell_candidates | current_positions
         new_signals = {}
         
         for stock_code in stocks_to_process:
@@ -218,9 +187,12 @@ class DailyStrategy(BaseStrategy):
                 'strategy_name': self.strategy_name,
                 'is_executed': False
             }
+            
+            # 신규 매수 신호 생성 : 매수후보, 보유 제외, 미체결 제외
+            if (stock_code in buy_candidates and 
+                stock_code not in current_positions and 
+                stock_code not in unfilled_order_codes):
 
-            # 1. 매수 신호 결정
-            if stock_code in buy_candidates and stock_code not in current_positions:
                 if target_price is not None and target_price > 0:
                 # [수정 시작] target_price가 유효하지 않은 경우, data_store의 최종 종가로 대체하는 로직
                     price_to_use = target_price

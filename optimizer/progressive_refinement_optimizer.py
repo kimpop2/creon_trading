@@ -957,7 +957,7 @@ class ProgressiveRefinementOptimizer:
     def _create_minute_strategy(self, backtest: Backtest, params: Dict[str, Any], strategy_name: str):
         """분봉 전략 생성"""
         if strategy_name == 'open_minute':
-            from strategies.open_minute import OpenMinute
+            from strategies.pass_minute import OpenMinute
             # 전략별로 올바른 파라미터 참조
             if 'sma_params' in params:
                 num_top_stocks = params['sma_params']['num_top_stocks']

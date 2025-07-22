@@ -27,7 +27,7 @@ from manager.backtest_manager import BacktestManager
 from manager.db_manager import DBManager
 from trading.backtest_report import BacktestReport
 from config.sector_stocks import sector_stocks
-from strategies.open_minute import OpenMinute
+from strategies.pass_minute import OpenMinute
 from config.settings import (
     SMA_DAILY_PARAMS, RSI_MINUTE_PARAMS, OPEN_MINUTE_PARAMS,
     TRIPLE_SCREEN_DAILY_PARAMS, STOP_LOSS_PARAMS

@@ -72,11 +72,13 @@ STOP_LOSS_PARAMS = {
 SMA_DAILY_PARAMS = {
     **COMMON_PARAMS,
     'short_sma_period': 2,          # 단기 이동평균선 기간 (일봉)
-    'long_sma_period': 4,          # 장기 이동평균선 기간 (일봉)
+    'long_sma_period': 5,          # 장기 이동평균선 기간 (일봉)
     'volume_ma_period': 7,          # 거래량 이동평균선 기간 (일봉)
-    'num_top_stocks': 5,            # 매매 대상 상위 종목 수
+    'num_top_stocks': 10,            # 매매 대상 상위 종목 수
     # market_sma_period
-    'market_sma_period': 20,        # 시장 트랜드 이동 평균선 기간 (일봉)
+    'market_sma_period': 60,        # 시장 트랜드 이동 평균선 기간 (일봉)
+    'volume_lookback_days': 5,
+    'range_coefficient': 0.5,       # 변동성 계수
     'market_index_code': 'U001',    # 시장 지수 코드(코스피 200)
 }
 

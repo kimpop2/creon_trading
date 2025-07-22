@@ -93,185 +93,160 @@ class TradingManager:
     
     def cache_daily_ohlcv(self, stock_code: str, from_date: date, to_date: date) -> pd.DataFrame:
         """
-        DB와 증권사 API를 사용하여 특정 종목의 일봉 데이터를 캐싱하고 반환합니다.
-        분봉 캐싱 로직과 유사하게 수정되었습니다.
-        :param stock_code: 종목 코드
-        :param from_date: 조회 시작일 (datetime.date 객체)
-        :param to_date: 조회 종료일 (datetime.date 객체)
-        :return: Pandas DataFrame (DB와 API 데이터를 합친 최종 데이터)
+        [최종 검토 완료] DB와 증권사 API를 사용하여 특정 종목의 일봉 데이터를 캐싱하고 반환합니다.
+        일봉 전용 헬퍼 함수 `_fetch_and_store_daily_range`를 호출합니다.
         """
         logger.debug(f"일봉 데이터 캐싱 시작: {stock_code} ({from_date.strftime('%Y%m%d')} ~ {to_date.strftime('%Y%m%d')})")
 
-        # 1. DB에서 데이터 조회 시도
+        # 1. DB에서 기존 데이터 조회
         db_df = self.db_manager.fetch_daily_price(stock_code, from_date, to_date)
-        
-        # db_df.index는 pd.Timestamp 객체로 구성된 Index임을 가정합니다.
-        # .normalize()를 사용하여 시간 정보를 제거하고 순수 날짜로만 비교
         db_existing_dates = set(db_df.index.normalize()) if not db_df.empty else set()
         
-        if db_existing_dates:
-            logger.debug(f"DB에서 {stock_code}의 일봉 데이터 {len(db_df)}개 로드됨. ({min(db_existing_dates).strftime('%Y-%m-%d')} ~ {max(db_existing_dates).strftime('%Y-%m-%d')})")
-        else:
-            logger.debug(f"DB에서 {stock_code}의 기존 일봉 데이터가 없습니다.")
-        
-        # 2. market_calendar에서 필요한 모든 실제 거래일 조회
-        # get_all_trading_days는 pd.Timestamp 객체를 반환한다고 가정
+        # 2. 누락된 날짜 계산
         all_trading_dates = set(self.db_manager.get_all_trading_days(from_date, to_date))
-
-        # 3. DB에 누락된 날짜 (market_calendar에는 있지만 DB daily_price에는 없는 날짜) 계산
         missing_dates = sorted(list(all_trading_dates - db_existing_dates))
-        # 요청 범위 내의 날짜만 필터링 (get_all_trading_days가 더 넓은 범위 줄 수도 있어서 안전 장치)
-        missing_dates = [d for d in missing_dates if pd.Timestamp(from_date).normalize() <= d.normalize() <= pd.Timestamp(to_date).normalize()]
         
-        # 4. 누락된 데이터 API 호출 및 DB 저장 (연속된 구간 처리)
-        api_fetched_dfs = []
+        # 3. 최종 조회일(to_date) 강제 포함 (데이터 무결성 보장)
+        to_date_ts = pd.Timestamp(to_date).normalize()
+        if to_date_ts in all_trading_dates and to_date_ts not in {pd.Timestamp(d).normalize() for d in missing_dates}:
+            missing_dates.append(to_date_ts)
+
+        # 4. 누락/최종일 데이터가 있을 경우, 전용 헬퍼 함수 호출
         if missing_dates:
-            logger.debug(f"DB에 누락된 일봉 데이터 발견: {len(missing_dates)}개 날짜. API 호출 시작.")
-            
-            # 분봉 방식과 동일하게, 누락된 날짜들의 시작과 끝으로 구간을 묶어 API 호출
-            current_start = missing_dates[0].date() # datetime.date로 변환하여 전달
-            current_end = missing_dates[-1].date() # datetime.date로 변환하여 전달
+            api_fetched_dfs = []
+            # 누락된 날짜들의 시작과 끝을 찾아 API 호출
+            start_range = missing_dates[0].date()
+            end_range = missing_dates[-1].date()
             
             try:
-                # _fetch_and_store_daily_range가 data_type 'daily'를 처리하도록
-                api_df = self._fetch_and_store_daily_range(stock_code, current_start, current_end, 'daily')
+                # 일봉 전용 헬퍼 함수 호출
+                api_df = self._fetch_and_store_daily_range(stock_code, start_range, end_range)
                 if not api_df.empty:
                     api_fetched_dfs.append(api_df)
             except Exception as e:
                 logger.error(f"API로부터 일봉 데이터 가져오기 실패: {stock_code} - {str(e)}")
 
-        # 5. 최종 데이터 반환
-        if api_fetched_dfs:
-            # API에서 가져온 데이터와 DB 데이터를 합침
+            # 5. 데이터 통합 및 반환
             final_df = pd.concat([db_df] + api_fetched_dfs)
-            # 중복 제거 (혹시 모를 중복 데이터 처리)
-            # 일봉 데이터도 인덱스(날짜)가 중복될 수 있으므로 duplicated 처리
-            final_df = final_df[~final_df.index.duplicated(keep='first')]
-            logger.debug(f"{stock_code}의 최종 일봉 데이터 {len(final_df)}개 준비 완료.")
+            final_df = final_df[~final_df.index.duplicated(keep='last')]
             return final_df.sort_index()
         else:
-            # API에서 추가 데이터를 가져오지 못했거나, 처음부터 모든 데이터가 DB에 있었던 경우
-            logger.debug(f"{stock_code}의 모든 일봉 데이터가 DB에 존재하거나 API에서 추가 데이터를 가져오지 못했습니다. DB 데이터만 반환합니다.")
-            return db_df # db_df가 비어있을 수도 있으니 sort_index() 호출 안전하게 유지
+            # 5. 누락된 데이터가 없으면 DB 데이터만 반환
+            return db_df
 
     def cache_minute_ohlcv(self, stock_code: str, from_date: date, to_date: date, interval: int = 1) -> pd.DataFrame:
         """
-        분봉 데이터를 캐싱하고 반환합니다. DB에 있는 데이터는 재사용하고, 없는 데이터만 API에서 가져옵니다.
+        [최종 검토 완료] 분봉 데이터를 캐싱하고 반환합니다. 
+        분봉 전용 헬퍼 함수 `_fetch_and_store_minute_range`를 호출합니다.
         """
         logger.debug(f"분봉 데이터 캐싱 시작: {stock_code} ({from_date} ~ {to_date}), Interval: {interval}분")
         
-        # 1. DB에서 데이터 조회 (한 번만 조회)
+        # 1. DB에서 기존 데이터 조회
         db_df = self.db_manager.fetch_minute_price(stock_code, from_date, to_date)
+        db_existing_dates = {pd.Timestamp(d).normalize() for d in db_df.index.date} if not db_df.empty else set()
         
-        # 2. DB에 있는 날짜들을 pd.Timestamp로 변환하여 set으로 저장
-        db_existing_dates = set()
-        if not db_df.empty:
-            # 인덱스의 날짜 부분만 추출하여 set으로 변환
-            db_existing_dates = {pd.Timestamp(d).normalize() for d in db_df.index.date}
-            logger.debug(f"DB에서 {stock_code}의 분봉 데이터가 존재하는 날짜: {len(db_existing_dates)}개")
-            if db_existing_dates:
-                logger.debug(f"데이터 범위: {min(db_existing_dates).strftime('%Y-%m-%d')} ~ {max(db_existing_dates).strftime('%Y-%m-%d')}")
-        
-        # 3. 거래일 목록 조회 (이미 pd.Timestamp 객체)
+        # 2. 누락된 날짜 계산
         all_trading_dates = set(self.db_manager.get_all_trading_days(from_date, to_date))
-        
-        # 4. 거래일 중 DB에 없는 날짜만 필터링
         missing_dates = sorted(list(all_trading_dates - db_existing_dates))
 
-        if not missing_dates:
-            logger.debug(f"모든 요청 날짜({from_date} ~ {to_date})의 분봉 데이터가 DB에 존재합니다. API 호출 안함.")
-            return db_df
+        # 3. 최종 조회일(to_date) 강제 포함 (데이터 무결성 보장)
+        to_date_ts = pd.Timestamp(to_date).normalize()
+        if to_date_ts in all_trading_dates and to_date_ts not in {pd.Timestamp(d).normalize() for d in missing_dates}:
+            missing_dates.append(to_date_ts)
         
-        logger.debug(f"DB에 누락된 분봉 데이터 발견: {len(missing_dates)}개 날짜")
-        logger.debug(f"API에서 분봉 데이터를 가져올 날짜들: {[d.strftime('%Y-%m-%d') for d in missing_dates]}")
+        if not missing_dates:
+            return db_df
 
-        # 5. 누락된 데이터를 API에서 가져오기
+        # 4. 누락/최종일 데이터가 있을 경우, 전용 헬퍼 함수 호출
         api_fetched_dfs = []
-        if missing_dates:
-            # 연속된 날짜들을 하나의 구간으로 처리
-            current_start = missing_dates[0]
-            current_end = missing_dates[-1]
-            
-            try:
-                api_df = self._fetch_and_store_daily_range(stock_code, current_start, current_end, 'minute')
-                if not api_df.empty:
-                    api_fetched_dfs.append(api_df)
-            except Exception as e:
-                logger.error(f"API 데이터 가져오기 실패: {stock_code} - {str(e)}")
+        start_range = missing_dates[0].date()
+        end_range = missing_dates[-1].date()
 
-        # 6. 최종 데이터 반환
+        try:
+            # 분봉 전용 헬퍼 함수 호출
+            api_df = self._fetch_and_store_minute_range(stock_code, start_range, end_range)
+            if not api_df.empty:
+                api_fetched_dfs.append(api_df)
+        except Exception as e:
+            logger.error(f"API 데이터 가져오기 실패: {stock_code} - {str(e)}")
+
+        # 5. 데이터 통합 및 반환
         if api_fetched_dfs:
-            # API에서 가져온 데이터와 DB 데이터를 합침
             final_df = pd.concat([db_df] + api_fetched_dfs).sort_index()
-            # 중복 제거 (혹시 모를 중복 데이터 처리)
-            final_df = final_df[~final_df.index.duplicated(keep='first')]
-            logger.debug(f"{stock_code}의 최종 분봉 데이터 {len(final_df)}개 준비 완료.")
+            final_df = final_df[~final_df.index.duplicated(keep='last')]
             return final_df
         else:
-            logger.debug(f"API에서 추가 데이터를 가져오지 못했습니다. DB 데이터만 반환합니다.")
             return db_df
 
-    def _fetch_and_store_daily_range(self, stock_code: str, start_date: date, end_date: date, data_type: str) -> pd.DataFrame:
-        """
-        API에서 데이터를 가져와 DB에 저장합니다. API 호출 실패 시 빈 DataFrame을 반환합니다.
-        """
-        logger.debug(f"API로부터 {stock_code} {data_type} 데이터 요청: {start_date} ~ {end_date}")
+    def _fetch_and_store_daily_range(self, stock_code: str, start_date: date, end_date: date) -> pd.DataFrame:
+        """[신규] '일봉' 데이터만 가져와 DB에 저장하고 반환하는 전용 함수"""
+        logger.debug(f"API로부터 {stock_code} 일봉 데이터 요청: {start_date} ~ {end_date}")
         
-        api_df_part = pd.DataFrame()
         try:
-            # API 호출
-            if data_type == 'daily':
-                api_df_part = self.api_client.get_daily_ohlcv(stock_code, start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d'))
-            elif data_type == 'minute':
-                api_df_part = self.api_client.get_minute_ohlcv(stock_code, start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d'))
-                # 분봉 데이터 API 호출 시 지연 적용
-                if not api_df_part.empty:
-                    pytime.sleep(0.1)  # 0.1초로 변경
-            else:
-                logger.error(f"알 수 없는 data_type: {data_type}")
-                return pd.DataFrame()
+            api_df_part = self.api_client.get_daily_ohlcv(stock_code, start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d'))
             
             if api_df_part.empty:
                 return pd.DataFrame()
-            
-            # DB 저장을 위한 데이터 변환
+
+            api_df_part['stock_code'] = stock_code
+            api_df_part['change_rate'] = 0.0
+            api_df_part['trading_value'] = 0
+
+            df_for_saving = api_df_part.reset_index()
             data_to_save_list = []
-            for index_val, row in api_df_part.iterrows():
+            for _, row in df_for_saving.iterrows():
                 record = {
-                    'stock_code': stock_code,
-                    'open': row['open'],
-                    'high': row['high'],
-                    'low': row['low'],
-                    'close': row['close'],
-                    'volume': row['volume'],
-                    'change_rate': row.get('change_rate', 0.0),
-                    'trading_value': row.get('trading_value', 0)
+                    'stock_code': stock_code, 'date': row['date'].date(),
+                    'open': row['open'], 'high': row['high'], 'low': row['low'],
+                    'close': row['close'], 'volume': row['volume'],
+                    'change_rate': row.get('change_rate', 0.0), 'trading_value': row.get('trading_value', 0)
                 }
-                
-                if data_type == 'daily':
-                    record['date'] = index_val.date()
-                elif data_type == 'minute':
-                    record['datetime'] = index_val
-                
                 data_to_save_list.append(record)
             
-            # DB 저장 시도
-            try:
-                if data_type == 'daily':
-                    self.db_manager.save_daily_price(data_to_save_list)
-                elif data_type == 'minute':
-                    self.db_manager.save_minute_price(data_to_save_list)
-                logger.debug(f"API로부터 {stock_code}의 {data_type} 데이터 {len(api_df_part)}개 DB 저장 완료")
-            except Exception as e:
-                logger.error(f"DB 저장 실패: {stock_code} - {str(e)}")
-                # DB 저장 실패해도 API 데이터는 반환
+            self.db_manager.save_daily_price(data_to_save_list)
+            logger.debug(f"API로부터 {stock_code}의 일봉 데이터 {len(api_df_part)}개 DB 저장 완료")
             
             return api_df_part
             
         except Exception as e:
-            logger.error(f"API 호출 실패: {stock_code} - {str(e)}")
+            logger.error(f"API 일봉 호출 또는 DB 저장 실패: {stock_code} - {e}", exc_info=True)
             return pd.DataFrame()
 
+    def _fetch_and_store_minute_range(self, stock_code: str, start_date: date, end_date: date) -> pd.DataFrame:
+        """[신규] '분봉' 데이터만 가져와 DB에 저장하고 반환하는 전용 함수"""
+        logger.debug(f"API로부터 {stock_code} 분봉 데이터 요청: {start_date} ~ {end_date}")
+        
+        try:
+            api_df_part = self.api_client.get_minute_ohlcv(stock_code, start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d'))
+            
+            if not api_df_part.empty:
+                pytime.sleep(0.1)
+            else:
+                return pd.DataFrame()
+
+            api_df_part['stock_code'] = stock_code
+            api_df_part['change_rate'] = 0.0
+            api_df_part['trading_value'] = 0
+
+            df_for_saving = api_df_part.reset_index()
+            data_to_save_list = []
+            for _, row in df_for_saving.iterrows():
+                record = {
+                    'stock_code': stock_code, 'datetime': row['datetime'],
+                    'open': row['open'], 'high': row['high'], 'low': row['low'],
+                    'close': row['close'], 'volume': row['volume'],
+                    'change_rate': row.get('change_rate', 0.0), 'trading_value': row.get('trading_value', 0)
+                }
+                data_to_save_list.append(record)
+            
+            self.db_manager.save_minute_price(data_to_save_list)
+            logger.debug(f"API로부터 {stock_code}의 분봉 데이터 {len(api_df_part)}개 DB 저장 완료")
+            
+            return api_df_part
+            
+        except Exception as e:
+            logger.error(f"API 분봉 호출 또는 DB 저장 실패: {stock_code} - {e}", exc_info=True)
+            return pd.DataFrame()
 
     def get_stock_info_map(self) -> dict:
         """

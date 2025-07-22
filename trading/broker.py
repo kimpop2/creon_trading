@@ -123,6 +123,10 @@ class Broker(AbstractBroker):
     def get_portfolio_value(self, current_prices: Dict[str, float]) -> float:
         holdings_value = sum(pos_info['size'] * current_prices.get(stock_code, pos_info['avg_price']) for stock_code, pos_info in self.positions.items())
         return self._current_cash_balance + holdings_value
+    
+    def get_unfilled_stock_codes(self) -> set:
+        """미체결 상태인 주문들의 종목 코드 집합을 반환합니다."""
+        return set()
 
     # 개별 종목 손절/익절/보유기간 손절/트레일링 스탑(매도) 와
     # 포토폴리오 손절을 함께 처리

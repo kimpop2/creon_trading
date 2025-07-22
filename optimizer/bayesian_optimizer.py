@@ -533,7 +533,7 @@ def run_bayesian_backtest(params: Dict[str, Any],
             )
         else:
             # OpenMinute 전략 사용
-            from strategies.open_minute import OpenMinute
+            from strategies.pass_minute import OpenMinute
             minute_params = {
                 'num_top_stocks': num_top_stocks
             }

@@ -12,8 +12,6 @@ from typing import Optional, List, Dict, Any, Callable, Tuple
 import threading
 from enum import Enum
 
-# API 요청 간격 (크레온 API 제한 준수)
-API_REQUEST_INTERVAL = 1.5
 
 # 로거 설정
 logger = logging.getLogger(__name__)
@@ -158,7 +156,22 @@ class CreonAPIClient:
     """
     _api_request_lock = threading.Lock()
     _realtime_sub_lock = threading.Lock()
+    _REQUEST_INTERVALS = {
+        # 가격/시세 조회 (짧은 간격)
+        "MarketEye": 0.25, # 복수종목 현재가가
+        "StockMst": 0.25,  # 호가
+        "StockChart": 0.25, # 일봉 분봉봉
 
+        # 주문/잔고 관련 (긴 간격)
+        "CpTd0311": 1.5,   # 매수/매도도 주문
+        "CpTd0313": 1.5,   # 정정 주문
+        "CpTd0314": 1.5,   # 취소소 주문
+        "CpTdNew5331A": 1,   # 계좌 잔고
+
+        # 필요한 다른 COM 객체들을 여기에 추가...
+    }
+    # 딕셔너리에 정의되지 않은 COM 객체를 위한 기본 요청 간격
+    _DEFAULT_INTERVAL = 0.3
     def __init__(self):
         self.connected = False
         self.cp_code_mgr = None
@@ -232,15 +245,21 @@ class CreonAPIClient:
     def _execute_block_request(self, com_object: Any, method_name: str = "BlockRequest") -> Tuple[int, str]:
         """
         COM 객체에 대한 BlockRequest를 실행하고 공통 오류를 처리합니다.
+        객체 이름에 따라 동적으로 sleep 시간을 조절합니다.
         """
+        # 객체 식별자를 먼저 가져옵니다.
+        obj_identifier = getattr(com_object, '__class__', None).__name__ or str(type(com_object))
+
         with CreonAPIClient._api_request_lock:
             try:
-                time.sleep(API_REQUEST_INTERVAL)
+                # 딕셔너리에서 객체에 맞는 인터벌을 조회하고, 없으면 기본값을 사용합니다.
+                interval = self._REQUEST_INTERVALS.get(obj_identifier, self._DEFAULT_INTERVAL)
+                logger.debug(f"Executing {obj_identifier}. Applying sleep interval: {interval}s")
+                time.sleep(interval)
 
                 ret = getattr(com_object, method_name)()
                 
                 if ret != 0:
-                    obj_identifier = getattr(com_object, '__class__', None).__name__ or str(type(com_object))
                     error_msg = f"COM 객체 {obj_identifier} {method_name} 호출 실패. 반환 코드: {ret}"
                     logger.error(error_msg)
                     return ret, error_msg
@@ -249,16 +268,45 @@ class CreonAPIClient:
                 msg = com_object.GetDibMsg1()
 
                 if status != 0:
-                    obj_identifier = getattr(com_object, '__class__', None).__name__ or str(type(com_object))
                     error_msg = f"COM 객체 {obj_identifier} {method_name} 통신 오류: 상태={status}, 메시지={msg}"
                     logger.error(error_msg)
                     return status, msg
                 
                 return 0, "Success"
             except Exception as e:
-                obj_identifier = getattr(com_object, '__class__', None).__name__ or str(type(com_object))
                 logger.error(f"COM 객체 {obj_identifier} {method_name} 실행 중 예외 발생: {e}", exc_info=True)
                 return -1, f"내부 예외 발생: {str(e)}"
+
+    # def _execute_block_request(self, com_object: Any, method_name: str = "BlockRequest") -> Tuple[int, str]:
+    #     """
+    #     COM 객체에 대한 BlockRequest를 실행하고 공통 오류를 처리합니다.
+    #     """
+    #     with CreonAPIClient._api_request_lock:
+    #         try:
+    #             time.sleep(API_REQUEST_INTERVAL)
+
+    #             ret = getattr(com_object, method_name)()
+                
+    #             if ret != 0:
+    #                 obj_identifier = getattr(com_object, '__class__', None).__name__ or str(type(com_object))
+    #                 error_msg = f"COM 객체 {obj_identifier} {method_name} 호출 실패. 반환 코드: {ret}"
+    #                 logger.error(error_msg)
+    #                 return ret, error_msg
+
+    #             status = com_object.GetDibStatus()
+    #             msg = com_object.GetDibMsg1()
+
+    #             if status != 0:
+    #                 obj_identifier = getattr(com_object, '__class__', None).__name__ or str(type(com_object))
+    #                 error_msg = f"COM 객체 {obj_identifier} {method_name} 통신 오류: 상태={status}, 메시지={msg}"
+    #                 logger.error(error_msg)
+    #                 return status, msg
+                
+    #             return 0, "Success"
+    #         except Exception as e:
+    #             obj_identifier = getattr(com_object, '__class__', None).__name__ or str(type(com_object))
+    #             logger.error(f"COM 객체 {obj_identifier} {method_name} 실행 중 예외 발생: {e}", exc_info=True)
+    #             return -1, f"내부 예외 발생: {str(e)}"
 
     def _check_creon_status(self):
         """Creon API 사용 가능한지 상태를 확인합니다."""
@@ -378,9 +426,11 @@ class CreonAPIClient:
         # 단일 문자열로 반환된 경우
         return code
 
+
+
     def get_current_prices_bulk(self, stock_codes: List[str]) -> Dict[str, Dict[str, float]]:
         """
-        [수정] MarketEye를 사용하여 여러 종목의 당일 OHLCV 데이터를 일괄 조회합니다.
+        [수정] MarketEye를 사용하여 여러 종목의 당일 OHLCV 및 '시각' 데이터를 일괄 조회합니다.
         """
         if not stock_codes:
             return {}
@@ -390,30 +440,38 @@ class CreonAPIClient:
         CHUNK_SIZE = 200
         for i in range(0, len(stock_codes), CHUNK_SIZE):
             chunk = stock_codes[i:i + CHUNK_SIZE]
-            logger.info(f"{len(chunk)}개 종목의 OHLCV를 MarketEye로 일괄 조회합니다.")
+            logger.info(f"{len(chunk)}개 종목의 OHLCV 및 시각 정보를 MarketEye로 일괄 조회합니다.")
             
             objMarketEye = win32com.client.Dispatch("CpSysDib.MarketEye")
 
-            # [수정] 요청 필드: 0(코드), 4(현재가=종가), 5(시가), 6(고가), 7(저가), 10(거래량)
-            request_fields = [0, 4, 5, 6, 7, 10]
+            # 요청 필드에 1(시간) 추가. [0:코드, 1:시간, 4:현재가, 5:시가, 6:고가, 7:저가, 10:거래량]
+            # [수정] 거래량 필드 코드를 10으로 변경하여 정확한 값을 가져옵니다.
+            request_fields = [0, 1, 4, 5, 6, 7, 10]
             objMarketEye.SetInputValue(0, request_fields)
             objMarketEye.SetInputValue(1, chunk)
 
             status_code, msg = self._execute_block_request(objMarketEye)
             if status_code != 0:
+                logger.error(f"MarketEye 요청 실패: {msg}")
                 continue
 
             count = objMarketEye.GetHeaderValue(2)
             for j in range(count):
                 code = objMarketEye.GetDataValue(0, j)
-                # 요청 필드 [0, 4, 5, 6, 7, 10] 순서에 따른 인덱스
-                price = objMarketEye.GetDataValue(1, j) # 현재가
-                open_p = objMarketEye.GetDataValue(2, j) # 시가
-                high_p = objMarketEye.GetDataValue(3, j) # 고가
-                low_p = objMarketEye.GetDataValue(4, j)  # 저가
-                volume = objMarketEye.GetDataValue(5, j) # 거래량
+                
+                # 요청 필드 [0, 1, 4, 5, 6, 7, 10] 순서에 따른 인덱스
+                time_val = objMarketEye.GetDataValue(1, j)  # 시간 (hhmm)
+                price = objMarketEye.GetDataValue(2, j)    # 현재가
+                open_p = objMarketEye.GetDataValue(3, j)   # 시가
+                high_p = objMarketEye.GetDataValue(4, j)   # 고가
+                low_p = objMarketEye.GetDataValue(5, j)    # 저가
+                volume = objMarketEye.GetDataValue(6, j)   # 거래량
+
+                if volume == 0:
+                    logger.debug(f"거래량 0 발견: {code}, 가격: {price}, 시가: {open_p}, 고가: {high_p}, 저가: {low_p}")
 
                 all_results[code] = {
+                    'time': int(time_val),      # hhmm 형식의 시간 정보 추가
                     'open': float(open_p),
                     'high': float(high_p),
                     'low': float(low_p),
@@ -422,7 +480,6 @@ class CreonAPIClient:
                 }
 
         return all_results
-
 
     def get_current_price_and_quotes(self, stock_code: str) -> Optional[Dict[str, Any]]:
         """
@@ -663,8 +720,8 @@ class CreonAPIClient:
 
     def send_order(self, stock_code: str, order_type: OrderType, quantity: int, price: int = 0, origin_order_id: Optional[int] = 0, order_condition: str = "0", order_unit: str = "01") -> Dict[str, Any]: # <-- 변경
         """주식 주문 (매수, 매도, 정정, 취소)을 전송합니다."""
-        logger.info(f"주문 요청 - 유형: {order_type.name}, 종목: {stock_code}, 수량: {quantity}, 가격: {price}, 원주문번호: {origin_order_id}") # <-- 변경
-
+        order_price = self.round_to_tick(price) if price > 0 else 0
+        logger.info(f"주문 요청 - 유형: {order_type.name}, 종목: {stock_code}, 수량: {quantity}, 가격: {order_price}, 원주문번호: {origin_order_id}") # <-- 변경
         com_obj = None
         # 매수/매도 주문
         if order_type in [OrderType.BUY, OrderType.SELL]:
@@ -674,7 +731,7 @@ class CreonAPIClient:
             com_obj.SetInputValue(2, self.account_flag)
             com_obj.SetInputValue(3, stock_code)
             com_obj.SetInputValue(4, quantity) # <-- 변경
-            com_obj.SetInputValue(5, self.round_to_tick(price) if price > 0 else 0)
+            com_obj.SetInputValue(5, order_price)
             com_obj.SetInputValue(7, order_condition)
             com_obj.SetInputValue(8, order_unit)
         # 정정 주문    
@@ -685,7 +742,7 @@ class CreonAPIClient:
             com_obj.SetInputValue(3, self.account_flag)
             com_obj.SetInputValue(4, stock_code)
             com_obj.SetInputValue(5, quantity) # <-- 변경
-            com_obj.SetInputValue(6, self.round_to_tick(price) if price > 0 else 0)
+            com_obj.SetInputValue(6, order_price)
         # 취소주문    
         elif order_type == OrderType.CANCEL:
             com_obj = win32com.client.Dispatch("CpTrade.CpTd0314")
