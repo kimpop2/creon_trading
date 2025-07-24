@@ -294,7 +294,29 @@ class DBManager:
         except Exception as e:
             logger.error(f"시장 캘린더 내역 저장/업데이트 오류: {e}", exc_info=True)
             return False
+        
+    def get_previous_trading_day(self, current_date: date) -> Optional[date]:
+        """
+        DB의 market_calendar 테이블을 기준으로 주어진 날짜의 직전 영업일을 찾습니다.
+        """
+        conn = self.get_db_connection()
+        if not conn:
+            return None
 
+        sql = """
+            SELECT MAX(date) AS prev_date
+            FROM market_calendar
+            WHERE date < %s AND is_holiday = FALSE
+        """
+        try:
+            cursor = self.execute_sql(sql, (current_date,))
+            if cursor:
+                result = cursor.fetchone()
+                return result.get('prev_date') if result else None
+            return None
+        except Exception as e:
+            logger.error(f"이전 영업일 조회 중 오류 발생: {e}", exc_info=True)
+            return None
     # ----------------------------------------------------------------------------
     # 종목/주가 관리 테이블
     # ----------------------------------------------------------------------------
@@ -388,7 +410,18 @@ class DBManager:
             cursor = self.execute_sql(sql, tuple(params) if params else None)
             if cursor:
                 result = cursor.fetchall()
-                return pd.DataFrame(result)
+                df = pd.DataFrame(result)
+                # --- [수정] 숫자 타입 변환 로직 추가 ---
+                if not df.empty:
+                    numeric_cols = [
+                        'per', 'pbr', 'eps', 'roe', 'debt_ratio', 
+                        'sales', 'operating_profit', 'net_profit'
+                    ]
+                    for col in numeric_cols:
+                        if col in df.columns:
+                            df[col] = pd.to_numeric(df[col], errors='coerce')
+                # --- 수정 끝 ---
+                return df
             else:
                 return pd.DataFrame()
         except Exception as e:
@@ -884,7 +917,19 @@ class DBManager:
             cursor = self.execute_sql(sql, tuple(params) if params else None)
             if cursor:
                 result = cursor.fetchall()
-                return pd.DataFrame(result)
+                df = pd.DataFrame(result)
+                
+                # --- [수정] 숫자 타입 변환 로직 추가 ---
+                if not df.empty:
+                    numeric_cols = [
+                        'initial_capital', 'final_capital', 'total_profit_loss',
+                        'cumulative_return', 'max_drawdown'
+                    ]
+                    for col in numeric_cols:
+                        if col in df.columns:
+                            df[col] = pd.to_numeric(df[col], errors='coerce')
+                # --- 수정 끝 ---
+                return df
             else:
                 return pd.DataFrame()
         except Exception as e:
@@ -1165,7 +1210,18 @@ class DBManager:
                     'price_trend_score', 'trading_volume_score', 'volatility_score', 'theme_mention_score',
                     'theme_id', 'theme'
                 ]
-                return pd.DataFrame(result, columns=columns)
+                df = pd.DataFrame(result, columns=columns)
+                # --- [수정] 숫자 타입 변환 로직 추가 ---
+                if not df.empty:
+                    numeric_cols = [
+                        'stock_score', 'price_trend_score', 'trading_volume_score',
+                        'volatility_score', 'theme_mention_score'
+                    ]
+                    for col in numeric_cols:
+                        if col in df.columns:
+                            df[col] = pd.to_numeric(df[col], errors='coerce')
+                # --- 수정 끝 ---
+                return df
             else:
                 return pd.DataFrame()
         except Exception as e:
@@ -1291,6 +1347,15 @@ class DBManager:
                     axis=1
                 )
                 df.set_index('trading_datetime', inplace=True)
+                # --- [수정] 숫자 타입 변환 로직 추가 ---
+                numeric_cols = [
+                    'order_price', 'order_quantity', 'filled_price', 'filled_quantity',
+                    'unfilled_quantity', 'commission', 'tax', 'net_amount'
+                ]
+                for col in numeric_cols:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+                # --- 수정 끝 ---
                 logger.debug(f"거래 로그 {len(df)}건 조회 완료 (기간: {start_date} ~ {end_date}, 종목: {stock_code or '전체'})")
             else:
                 logger.debug(f"조회된 거래 로그가 없습니다 (기간: {start_date} ~ {end_date}, 종목: {stock_code or '전체'})")
@@ -1355,6 +1420,16 @@ class DBManager:
             if not df.empty:
                 df['record_date'] = pd.to_datetime(df['record_date']).dt.normalize()
                 df.set_index('record_date', inplace=True)
+                # --- [수정] 숫자 타입 변환 로직 추가 ---
+                numeric_cols = [
+                    'total_capital', 'cash_balance', 'total_asset_value',
+                    'daily_profit_loss', 'daily_return_rate', 'cumulative_profit_loss',
+                    'cumulative_return_rate', 'max_drawdown'
+                ]
+                for col in numeric_cols:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+                # --- 수정 끝 ---
                 logger.debug(f"일별 포트폴리오 {len(df)}건 조회 완료 (기간: {start_date} ~ {end_date})")
             else:
                 logger.debug(f"조회된 일별 포트폴리오가 없습니다 (기간: {start_date} ~ {end_date})")
@@ -1373,6 +1448,16 @@ class DBManager:
             result = cursor.fetchone()
             cursor.close()
             if result:
+                # --- [수정] 반환 전 숫자 타입을 float으로 변환 ---
+                numeric_keys = [
+                    'total_capital', 'cash_balance', 'total_asset_value', 
+                    'daily_profit_loss', 'daily_return_rate', 'cumulative_profit_loss', 
+                    'cumulative_return_rate', 'max_drawdown'
+                ]
+                for key in numeric_keys:
+                    if key in result and result[key] is not None:
+                        result[key] = float(result[key])
+                # --- 수정 끝 ---
                 logger.debug(f"최신 일별 포트폴리오 조회 완료: {result['record_date']}")
             else:
                 logger.debug("최신 일별 포트폴리오가 없습니다.")
@@ -1444,6 +1529,16 @@ class DBManager:
             results = cursor.fetchall()
             cursor.close()
             if results:
+                # --- [수정] 반환 전 리스트의 모든 딕셔너리에서 숫자 타입을 float으로 변환
+                numeric_keys = [
+                    'quantity', 'sell_avail_qty', 'avg_price',
+                    'eval_profit_loss', 'eval_return_rate'
+                ]
+                for row in results:
+                    for key in numeric_keys:
+                        if key in row and row[key] is not None:
+                            row[key] = float(row[key])
+                # --- 수정 끝 ---
                 logger.debug(f"현재 보유 종목 {len(results)}건 조회 완료.")
                 return list(results)
             else:
@@ -1507,6 +1602,12 @@ class DBManager:
             results = cursor.fetchall()
             cursor.close()
             if results:
+                # --- [수정] 반환 전 숫자 타입을 float으로 변환 ---
+                numeric_keys = ['target_price', 'target_quantity']
+                for row in results:
+                    for key in numeric_keys:
+                        if key in row and row[key] is not None:
+                            row[key] = float(row[key])
                 logger.debug(f"매매 신호 {len(results)}건 조회 완료 (날짜: {signal_date}, 실행 여부: {is_executed})")
             else:
                 logger.debug(f"조회된 매매 신호가 없습니다 (날짜: {signal_date}, 실행 여부: {is_executed})")
@@ -1858,6 +1959,13 @@ class DBManager:
             cursor.close()
             if not df.empty:
                 df['analysis_date'] = pd.to_datetime(df['analysis_date']).dt.date
+                # --- [수정] 숫자 타입 변환 로직 추가 ---
+                numeric_cols = ['relevance_score', 'mention_count']
+                for col in numeric_cols:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+                # --- 수정 끝 ---
+
                 df['relevance_score'] = df['relevance_score'].apply(lambda x: float(x) if isinstance(x, Decimal) else x)
             return df
         return pd.DataFrame() 

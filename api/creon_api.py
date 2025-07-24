@@ -817,34 +817,46 @@ class CreonAPIClient:
         obj_unfilled = win32com.client.Dispatch("CpTrade.CpTd5339")
         obj_unfilled.SetInputValue(0, self.account_number)
         obj_unfilled.SetInputValue(1, self.account_flag)
-        obj_unfilled.SetInputValue(2, 50)
+        obj_unfilled.SetInputValue(4, "0")  # 0: 전체
+        obj_unfilled.SetInputValue(5, "1")  # 1: 역순 (최신 주문부터)
+        # [수정] 매뉴얼에 명시된 최대 요청 개수인 20으로 변경
+        obj_unfilled.SetInputValue(7, 20)
 
         unfilled_orders = []
         while True:
             status_code, message = self._execute_block_request(obj_unfilled)
             if status_code != 0: break
 
-            cnt = obj_unfilled.GetHeaderValue(7) 
+            cnt = obj_unfilled.GetHeaderValue(5) 
             if not isinstance(cnt, int) or cnt <= 0: break
 
             for i in range(cnt):
                 try:
-                    if obj_unfilled.GetDataValue(9, i) > 0:
+                    # [핵심 수정] 미체결 수량은 '정정취소가능수량'인 인덱스 11을 사용
+                    unfilled_qty = obj_unfilled.GetDataValue(11, i)
+                    
+                    if unfilled_qty > 0:
+                        buy_sell_code = obj_unfilled.GetDataValue(13, i)
                         unfilled_orders.append({
-                            'order_id': obj_unfilled.GetDataValue(5, i),
-                            'stock_code': obj_unfilled.GetDataValue(12, i),
-                            'side': 'sell' if obj_unfilled.GetDataValue(13, i) == '1' else 'buy',
-                            'quantity': obj_unfilled.GetDataValue(7, i),
-                            'price': obj_unfilled.GetDataValue(6, i),
+                            # [수정] 모든 GetDataValue 인덱스를 매뉴얼 기준으로 재조정
+                            'order_id': obj_unfilled.GetDataValue(1, i),
+                            'original_order_id': obj_unfilled.GetDataValue(2, i),
+                            'stock_code': obj_unfilled.GetDataValue(3, i),
+                            'stock_name': obj_unfilled.GetDataValue(4, i),
+                            'order_type': 'sell' if buy_sell_code == '1' else 'buy',
+                            'quantity': obj_unfilled.GetDataValue(6, i),
+                            'price': obj_unfilled.GetDataValue(7, i),
                             'filled_quantity': obj_unfilled.GetDataValue(8, i),
-                            'unfilled_quantity': obj_unfilled.GetDataValue(9, i),
+                            'unfilled_quantity': unfilled_qty
                         })
                 except Exception as e:
                     logger.error(f"미체결 주문 데이터 처리 중 오류: {e}", exc_info=True)
+            
             if not obj_unfilled.Continue: break
         
         return unfilled_orders
 
+    
     def get_unexecuted_orders(self, stock_code: str):
         all_unfilled_orders = self.get_unfilled_orders()
         return [order for order in all_unfilled_orders if order.get('stock_code') == stock_code]

@@ -14,13 +14,14 @@ logger = logging.getLogger(__name__)
 # logger.setLevel(logging.DEBUG) # 테스트 시 DEBUG로 설정하여 모든 로그 출력 - 제거
 # sys.path에 프로젝트 루트 추가 (db_manager 및 creon_api 임포트를 위함)
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..')) 
-sys.path.insert(0, project_root)
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 logger.debug(f"Project root added to sys.path: {project_root}")
 
 from manager.db_manager import DBManager
 from api.creon_api import CreonAPIClient # CreonAPI 클래스 이름 일치
 from util.strategies_util import calculate_sma, calculate_rsi, calculate_ema, calculate_macd
-
+from config.sector_stocks import sector_stocks
 
 class BacktestManager:
     """
@@ -33,23 +34,13 @@ class BacktestManager:
         
         self.api_client = api_client
         self.db_manager = db_manager
-        # DB 데이터로 종목정보 구성        
-        self.stock_names: Dict[str, str] = {} # 종목 코드: 종목명 매핑 캐시
-        self._load_stock_names() # 종목명 캐시 초기화
+        self.stock_info_map: Dict[str, str] = {} # 종목 코드:종목명 매핑을 위한 캐시
+        self._load_stock_info_map()
 
-        logger.info(f"BacktestManager 초기화 완료: {len(self.stock_names)} 종목, CreonAPIClient 및 DBManager 연결")
+        logger.info(f"BacktestManager 초기화 완료: {len(self.stock_info_map)} 종목, CreonAPIClient 및 DBManager 연결")
+ 
 
-    def close(self):
-        """DBManager의 연결을 종료합니다."""
-        if self.db_manager:
-            self.db_manager.close()
-            logger.info("BacktestManager를 통해 DB 연결을 종료했습니다.")
-    def _load_stock_names(self):
-        """DB에서 모든 종목 코드와 이름을 로드하여 캐시합니다."""
-        self.stock_names = self.get_stock_info_map()
-        logger.info(f"종목명 {len(self.stock_names)}건 캐시 완료.")
-    
-    def get_stock_info_map(self) -> dict:
+    def _load_stock_info_map(self) -> dict:
         """
         DB의 stock_info 테이블에서 모든 종목의 코드와 이름을 가져와
         {'종목코드': '종목명'} 형태의 딕셔너리로 반환합니다.
@@ -69,21 +60,447 @@ class BacktestManager:
         except Exception as e:
             logger.error(f"종목 정보 로딩 중 오류 발생: {e}")
             return {}
-        
-    def get_stock_name(self, stock_code: str) -> str:
-        """종목 코드로 종목명을 조회합니다. 캐시에 없으면 DB에서 조회 후 캐시합니다."""
-        if stock_code not in self.stock_names:
-            stock_info = self.db_manager.fetch_stock_info(stock_code)
-            if stock_info:
-                self.stock_names[stock_code] = stock_info['stock_name']
-            else:
-                self.stock_names[stock_code] = "알 수 없음" # 또는 에러 처리
-        return self.stock_names.get(stock_code, "알 수 없음")
 
-    def get_all_stock_list(self) -> List[Tuple[str, str]]:
-        """캐시된 모든 종목의 코드와 이름을 반환합니다."""
-        return [(code, name) for code, name in self.stock_names.items()]
+
+            
+    def get_stock_name(self, stock_code: str) -> str:
+        """
+        미리 생성된 내부 캐시(self.stock_info_map)에서 종목명을 매우 빠르게 조회합니다.
+        캐시에 없는 경우 "알 수 없음"을 반환합니다.
+        """
+        # API 호출 대신, 메모리에 있는 딕셔너리에서 즉시 값을 찾습니다.
+        return self.stock_info_map.get(stock_code, "알 수 없음")
+
+    def get_universe_codes(self) -> List[str]:
+        """
+        config/sector_stocks.py 에서 유니버스 종목 목록을 가져와
+        종목명을 코드로 변환한 뒤, 유니크한 종목 코드 리스트를 반환합니다.
+        """
+        logger.info("유니버스 종목 코드 목록 생성을 시작합니다.")
+
+        # 1. sector_stocks 설정에서 모든 종목 이름을 수집하고 중복을 제거합니다.
+        all_stock_names = set()
+        for stocks_in_sector in sector_stocks.values():
+            for stock_name, theme in stocks_in_sector:
+                all_stock_names.add(stock_name)
+        
+        logger.debug(f"고유 유니버스 종목명 {len(all_stock_names)}개 수집 완료.")
+
+        # 2. 종목명을 종목 코드로 변환합니다.
+        universe_codes = []
+        for name in sorted(list(all_stock_names)): # 정렬하여 처리 순서 고정
+            code = self.api_client.get_stock_code(name)
+            
+            # 3. 코드가 유효한 경우에만 리스트에 추가하고, 없으면 경고 로그를 남깁니다.
+            if code:
+                universe_codes.append(code)
+            else:
+                logger.warning(f"유니버스 구성 중 종목명을 코드로 변환할 수 없습니다: '{name}'. 해당 종목을 건너뜁니다.")
+        
+        logger.info(f"최종 유니버스 종목 코드 {len(universe_codes)}개 생성 완료.")
+        return universe_codes
     
+    # def get_all_stock_list(self) -> List[Tuple[str, str]]:
+    #     """캐시된 모든 종목의 코드와 이름을 반환합니다."""
+    #     return [(code, name) for code, name in self.stock_info_map.items()]
+    
+    def cache_daily_ohlcv(self, stock_code: str, from_date: date, to_date: date, all_trading_dates: Optional[set] = None) -> pd.DataFrame:
+        """
+        DB와 증권사 API를 사용하여 특정 종목의 일봉 데이터를 캐싱하고 반환합니다.
+        분봉 캐싱 로직과 유사하게 수정되었습니다.
+        :param stock_code: 종목 코드
+        :param from_date: 조회 시작일 (datetime.date 객체)
+        :param to_date: 조회 종료일 (datetime.date 객체)
+        :return: Pandas DataFrame (DB와 API 데이터를 합친 최종 데이터)
+        """
+        logger.debug(f"일봉 데이터 캐싱 시작: {stock_code} ({from_date.strftime('%Y%m%d')} ~ {to_date.strftime('%Y%m%d')})")
+
+        # 1. DB에서 데이터 조회 시도
+        db_df = self.db_manager.fetch_daily_price(stock_code, from_date, to_date)
+        
+        # db_df.index는 pd.Timestamp 객체로 구성된 Index임을 가정합니다.
+        # .normalize()를 사용하여 시간 정보를 제거하고 순수 날짜로만 비교
+        db_existing_dates = set(db_df.index.normalize()) if not db_df.empty else set()
+        
+        if db_existing_dates:
+            logger.debug(f"DB에서 {stock_code}의 일봉 데이터 {len(db_df)}개 로드됨. ({min(db_existing_dates).strftime('%Y-%m-%d')} ~ {max(db_existing_dates).strftime('%Y-%m-%d')})")
+        else:
+            logger.debug(f"DB에서 {stock_code}의 기존 일봉 데이터가 없습니다.")
+        
+        # 2. market_calendar에서 필요한 모든 실제 거래일 조회
+        # get_all_trading_days는 pd.Timestamp 객체를 반환한다고 가정
+        if all_trading_dates is None:
+            all_trading_dates = set(self.db_manager.get_all_trading_days(from_date, to_date))
+
+        # 3. DB에 누락된 날짜 (market_calendar에는 있지만 DB daily_price에는 없는 날짜) 계산
+        missing_dates = sorted(list(all_trading_dates - db_existing_dates))
+        # 요청 범위 내의 날짜만 필터링 (get_all_trading_days가 더 넓은 범위 줄 수도 있어서 안전 장치)
+        missing_dates = [d for d in missing_dates if pd.Timestamp(from_date).normalize() <= d.normalize() <= pd.Timestamp(to_date).normalize()]
+        
+        # 4. 누락된 데이터 API 호출 및 DB 저장 (연속된 구간 처리)
+        api_fetched_dfs = []
+        if missing_dates:
+            logger.debug(f"DB에 누락된 일봉 데이터 발견: {len(missing_dates)}개 날짜. API 호출 시작.")
+            
+            # 분봉 방식과 동일하게, 누락된 날짜들의 시작과 끝으로 구간을 묶어 API 호출
+            current_start = missing_dates[0].date() # datetime.date로 변환하여 전달
+            current_end = missing_dates[-1].date() # datetime.date로 변환하여 전달
+            
+            try:
+                # _fetch_and_store_daily_range가 data_type 'daily'를 처리하도록
+                api_df = self._fetch_and_store_daily_range(stock_code, current_start, current_end)
+                if not api_df.empty:
+                    api_fetched_dfs.append(api_df)
+            except Exception as e:
+                logger.error(f"API로부터 일봉 데이터 가져오기 실패: {stock_code} - {str(e)}")
+
+        # 5. 최종 데이터 반환
+        if api_fetched_dfs:
+            # API에서 가져온 데이터와 DB 데이터를 합침
+            final_df = pd.concat([db_df] + api_fetched_dfs)
+            # 중복 제거 (혹시 모를 중복 데이터 처리)
+            # 일봉 데이터도 인덱스(날짜)가 중복될 수 있으므로 duplicated 처리
+            final_df = final_df[~final_df.index.duplicated(keep='first')]
+            logger.debug(f"{stock_code}의 최종 일봉 데이터 {len(final_df)}개 준비 완료.")
+            return final_df.sort_index()
+        else:
+            # API에서 추가 데이터를 가져오지 못했거나, 처음부터 모든 데이터가 DB에 있었던 경우
+            logger.debug(f"{stock_code}의 모든 일봉 데이터가 DB에 존재하거나 API에서 추가 데이터를 가져오지 못했습니다. DB 데이터만 반환합니다.")
+            return db_df # db_df가 비어있을 수도 있으니 sort_index() 호출 안전하게 유지
+
+    def cache_minute_ohlcv(self, stock_code: str, from_date: date, to_date: date, interval: int = 1, all_trading_dates: Optional[set] = None) -> pd.DataFrame:
+        """
+        분봉 데이터를 캐싱하고 반환합니다. DB에 있는 데이터는 재사용하고, 없는 데이터만 API에서 가져옵니다.
+        """
+        logger.debug(f"분봉 데이터 캐싱 시작: {stock_code} ({from_date} ~ {to_date}), Interval: {interval}분")
+        
+        # 1. DB에서 데이터 조회 (한 번만 조회)
+        db_df = self.db_manager.fetch_minute_price(stock_code, from_date, to_date)
+        
+        # 2. DB에 있는 날짜들을 pd.Timestamp로 변환하여 set으로 저장
+        db_existing_dates = set()
+        if not db_df.empty:
+            # 인덱스의 날짜 부분만 추출하여 set으로 변환
+            db_existing_dates = {pd.Timestamp(d).normalize() for d in db_df.index.date}
+            logger.debug(f"DB에서 {stock_code}의 분봉 데이터가 존재하는 날짜: {len(db_existing_dates)}개")
+            if db_existing_dates:
+                logger.debug(f"데이터 범위: {min(db_existing_dates).strftime('%Y-%m-%d')} ~ {max(db_existing_dates).strftime('%Y-%m-%d')}")
+        
+        # 3. 거래일 목록 조회 (이미 pd.Timestamp 객체)
+        if all_trading_dates is None:
+            all_trading_dates = set(self.db_manager.get_all_trading_days(from_date, to_date))
+            
+        
+        # 4. 거래일 중 DB에 없는 날짜만 필터링
+        missing_dates = sorted(list(all_trading_dates - db_existing_dates))
+
+        if not missing_dates:
+            logger.debug(f"모든 요청 날짜({from_date} ~ {to_date})의 분봉 데이터가 DB에 존재합니다. API 호출 안함.")
+            return db_df
+        
+        logger.debug(f"DB에 누락된 분봉 데이터 발견: {len(missing_dates)}개 날짜")
+        logger.debug(f"API에서 분봉 데이터를 가져올 날짜들: {[d.strftime('%Y-%m-%d') for d in missing_dates]}")
+
+        # 5. 누락된 데이터를 API에서 가져오기
+        api_fetched_dfs = []
+        if missing_dates:
+            # 연속된 날짜들을 하나의 구간으로 처리
+            current_start = missing_dates[0]
+            current_end = missing_dates[-1]
+            
+            try:
+                api_df = self._fetch_and_store_minute_range(stock_code, current_start, current_end)
+                if not api_df.empty:
+                    api_fetched_dfs.append(api_df)
+            except Exception as e:
+                logger.error(f"API 데이터 가져오기 실패: {stock_code} - {str(e)}")
+
+        # 6. 최종 데이터 반환
+        if api_fetched_dfs:
+            # API에서 가져온 데이터와 DB 데이터를 합침
+            final_df = pd.concat([db_df] + api_fetched_dfs).sort_index()
+            # 중복 제거 (혹시 모를 중복 데이터 처리)
+            final_df = final_df[~final_df.index.duplicated(keep='first')]
+            logger.debug(f"{stock_code}의 최종 분봉 데이터 {len(final_df)}개 준비 완료.")
+            return final_df
+        else:
+            logger.debug(f"API에서 추가 데이터를 가져오지 못했습니다. DB 데이터만 반환합니다.")
+            return db_df
+
+    def _fetch_and_store_daily_range(self, stock_code: str, start_date: date, end_date: date) -> pd.DataFrame:
+        """
+        API에서 데이터를 가져와 DB에 저장합니다. API 호출 실패 시 빈 DataFrame을 반환합니다.
+        """
+        logger.debug(f"API로부터 {stock_code} 일봉 데이터 요청: {start_date} ~ {end_date}")
+        
+        api_df_part = pd.DataFrame()
+        try:
+            # API 호출
+            api_df_part = self.api_client.get_daily_ohlcv(stock_code, start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d'))
+            if api_df_part.empty:
+                return pd.DataFrame()
+            
+            # DB 저장을 위한 데이터 변환
+            data_to_save_list = []
+            for index_val, row in api_df_part.iterrows():
+                record = {
+                    'stock_code': stock_code,
+                    'open': row['open'],
+                    'high': row['high'],
+                    'low': row['low'],
+                    'close': row['close'],
+                    'volume': row['volume'],
+                    'change_rate': row.get('change_rate', 0.0),
+                    'trading_value': row.get('trading_value', 0)
+                }
+                
+                record['date'] = index_val.date()
+                
+                data_to_save_list.append(record)
+            
+            # DB 저장 시도
+            try:
+                self.db_manager.save_daily_price(data_to_save_list)
+                
+                logger.debug(f"API로부터 {stock_code}의 일봉 데이터 {len(api_df_part)}개 DB 저장 완료")
+            except Exception as e:
+                logger.error(f"DB 저장 실패: {stock_code} - {str(e)}")
+                # DB 저장 실패해도 API 데이터는 반환
+            
+            return api_df_part
+            
+        except Exception as e:
+            logger.error(f"API 호출 실패: {stock_code} - {str(e)}")
+            return pd.DataFrame()
+
+
+    def _fetch_and_store_minute_range(self, stock_code: str, start_date: date, end_date: date) -> pd.DataFrame:
+        """
+        API에서 분봉 데이터를 가져와 DB에 저장합니다. API 호출 실패 시 빈 DataFrame을 반환합니다.
+        """
+        logger.debug(f"API로부터 {stock_code} 분봉 데이터 요청: {start_date} ~ {end_date}")
+        
+        api_df_part = pd.DataFrame()
+        try:
+            # API 호출
+            api_df_part = self.api_client.get_minute_ohlcv(stock_code, start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d'))
+            # 분봉 데이터 API 호출 시 지연 적용
+            if api_df_part.empty:
+                return pd.DataFrame()
+            
+            # DB 저장을 위한 데이터 변환
+            data_to_save_list = []
+            for index_val, row in api_df_part.iterrows():
+                record = {
+                    'stock_code': stock_code,
+                    'open': row['open'],
+                    'high': row['high'],
+                    'low': row['low'],
+                    'close': row['close'],
+                    'volume': row['volume'],
+                    'change_rate': row.get('change_rate', 0.0),
+                    'trading_value': row.get('trading_value', 0)
+                }
+                
+                record['datetime'] = index_val
+                
+                data_to_save_list.append(record)
+            
+            # DB 저장 시도
+            try:
+                self.db_manager.save_minute_price(data_to_save_list)
+                logger.debug(f"API로부터 {stock_code}의 분봉 데이터 {len(api_df_part)}개 DB 저장 완료")
+            except Exception as e:
+                logger.error(f"DB 저장 실패: {stock_code} - {str(e)}")
+                # DB 저장 실패해도 API 데이터는 반환
+            
+            return api_df_part
+            
+        except Exception as e:
+            logger.error(f"API 호출 실패: {stock_code} - {str(e)}")
+            return pd.DataFrame()
+
+    def fetch_market_calendar(self, from_date: date, to_date: date) -> pd.DataFrame:
+        """DB에서 시장 캘린더 데이터를 조회합니다."""
+        return self.db_manager.fetch_market_calendar(from_date, to_date)
+
+    def get_previous_trading_day(self, current_date: date) -> Optional[date]:
+        """
+        [수정] TradingManager를 통해 DB에서 직접 이전 영업일을 조회합니다.
+        """
+        # broker -> manager를 통해 DB 조회 기능에 접근
+        prev_day = self.db_manager.get_previous_trading_day(current_date)
+        if prev_day is None:
+            logger.warning(f"{current_date}의 이전 영업일을 찾을 수 없습니다.")
+        return prev_day
+
+    def get_db_manager(self) -> DBManager:
+        """리포팅 모듈에 DBManager 인스턴스를 전달하기 위한 메서드"""
+        return self.db_manager
+
+    def close(self):
+        """DBManager의 연결을 종료합니다."""
+        if self.db_manager:
+            self.db_manager.close()
+            logger.info("BacktestManager를 통해 DB 연결을 종료했습니다.")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    # --- 데이터 수집 및 캐싱 관련 메소드 ---
+    # def fetch_daily_ohlcv(self, stock_code: str, from_date: date, to_date: date) -> pd.DataFrame:
+    #     """
+    #     DB에서 일봉 OHLCV 데이터를 조회합니다.
+    #     필요시 Creon API를 통해 데이터를 업데이트할 수 있습니다.
+    #     """
+    #     df = self.db_manager.fetch_daily_price(stock_code, from_date, to_date)
+    #     if df.empty:
+    #         logger.warning(f"DB에 {stock_code}의 일봉 데이터가 없습니다. Creon API를 통해 조회 시도합니다.")
+    #         # Creon API를 통해 데이터 조회 및 저장 로직 추가
+    #         # get_price_data는 count 기반이므로, 기간 기반으로 가져오려면 여러 번 호출해야 할 수 있음.
+    #         # 여기서는 단순화를 위해 마지막 365개 일봉을 가져오는 것으로 가정.
+    #         df_from_api = self.api_client.get_price_data(stock_code, 'D', (to_date - from_date).days + 1)
+    #         if not df_from_api.empty:
+    #             # DB에 저장
+    #             df_from_api['stock_code'] = stock_code
+    #             df_from_api['stock_name'] = self.get_stock_name(stock_code)
+    #             df_from_api.rename(columns={'datetime': 'date'}, inplace=True) # 컬럼명 일치
+    #             df_from_api['date'] = df_from_api['date'].dt.date # datetime을 date로 변환
+    #             # DBManager의 insert_df_to_db는 if_exists='append'만 지원하므로, 중복 방지를 위해 직접 SQL 사용
+    #             conn = self.db_manager.get_db_connection()
+    #             if conn:
+    #                 try:
+    #                     with conn.cursor() as cursor:
+    #                         for index, row in df_from_api.iterrows():
+    #                             sql = """
+    #                                 INSERT INTO daily_price (stock_code, stock_name, date, open, high, low, close, volume)
+    #                                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+    #                                 ON DUPLICATE KEY UPDATE
+    #                                     open = VALUES(open), high = VALUES(high), low = VALUES(low), close = VALUES(close), volume = VALUES(volume),
+    #                                     updated_at = CURRENT_TIMESTAMP
+    #                             """
+    #                             params = (
+    #                                 row['stock_code'], row['stock_name'], row['date'],
+    #                                 row['open'], row['high'], row['low'], row['close'], row['volume']
+    #                             )
+    #                             cursor.execute(sql, params)
+    #                         conn.commit()
+    #                         logger.info(f"종목 {stock_code}의 일봉 데이터 {len(df_from_api)}건 API 조회 및 DB 업데이트 완료.")
+    #                         df = self.db_manager.fetch_daily_price(stock_code, from_date, to_date) # 새로 저장된 데이터 다시 로드
+    #                 except Exception as e:
+    #                     logger.error(f"일봉 데이터 API 조회 및 DB 저장 중 오류: {e}")
+    #                     conn.rollback()
+    #         else:
+    #             logger.warning(f"Creon API에서도 {stock_code}의 일봉 데이터를 가져올 수 없습니다.")
+    #     return df
+
+    # def fetch_minute_ohlcv(self, stock_code: str, from_datetime: datetime, to_datetime: datetime) -> pd.DataFrame:
+    #     """
+    #     DB에서 분봉 OHLCV 데이터를 조회합니다.
+    #     필요시 Creon API를 통해 데이터를 업데이트할 수 있습니다.
+    #     """
+    #     df = self.db_manager.fetch_minute_price(stock_code, from_datetime, to_datetime)
+    #     if df.empty:
+    #         logger.warning(f"DB에 {stock_code}의 분봉 데이터가 없습니다. Creon API를 통해 조회 시도합니다.")
+    #         # Creon API를 통해 데이터 조회 및 저장 로직 추가
+    #         # get_price_data는 count 기반이므로, 기간 기반으로 가져오려면 여러 번 호출해야 할 수 있음.
+    #         # 여기서는 편의상 최근 200개 분봉을 가져오는 것으로 가정.
+    #         df_from_api = self.api_client.get_price_data(stock_code, 'm', 200) # 200분봉
+    #         if not df_from_api.empty:
+    #             # DB에 저장
+    #             df_from_api['stock_code'] = stock_code
+    #             df_from_api['stock_name'] = self.get_stock_name(stock_code)
+    #             # DBManager의 insert_df_to_db는 if_exists='append'만 지원하므로, 중복 방지를 위해 직접 SQL 사용
+    #             conn = self.db_manager.get_db_connection()
+    #             if conn:
+    #                 try:
+    #                     with conn.cursor() as cursor:
+    #                         for index, row in df_from_api.iterrows():
+    #                             sql = """
+    #                                 INSERT INTO minute_price (stock_code, stock_name, datetime, open, high, low, close, volume)
+    #                                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+    #                                 ON DUPLICATE KEY UPDATE
+    #                                     open = VALUES(open), high = VALUES(high), low = VALUES(low), close = VALUES(close), volume = VALUES(volume),
+    #                                     updated_at = CURRENT_TIMESTAMP
+    #                             """
+    #                             params = (
+    #                                 row['stock_code'], row['stock_name'], row['datetime'],
+    #                                 row['open'], row['high'], row['low'], row['close'], row['volume']
+    #                             )
+    #                             cursor.execute(sql, params)
+    #                         conn.commit()
+    #                         logger.info(f"종목 {stock_code}의 분봉 데이터 {len(df_from_api)}건 API 조회 및 DB 업데이트 완료.")
+    #                         df = self.db_manager.fetch_minute_price(stock_code, from_datetime, to_datetime) # 새로 저장된 데이터 다시 로드
+    #                 except Exception as e:
+    #                     logger.error(f"분봉 데이터 API 조회 및 DB 저장 중 오류: {e}")
+    #                     conn.rollback()
+    #         else:
+    #             logger.warning(f"Creon API에서도 {stock_code}의 분봉 데이터를 가져올 수 없습니다.")
+    #     return df
+
+
+
+    # def _load_stock_names_from_db(self):
+    #     """
+    #     시스템 시작 시 DB의 stock_info 테이블에서 모든 종목 정보를 가져와
+    #     self.stock_info_map 딕셔너리에 캐시합니다.
+    #     """
+    #     logger.info("DB로부터 전체 종목명 캐시를 시작합니다.")
+    #     try:
+    #         # DBManager를 통해 모든 종목 정보를 DataFrame으로 조회
+    #         stock_info_df = self.db_manager.fetch_stock_info() 
+    #         if not stock_info_df.empty:
+    #             # 'stock_code'를 키로, 'stock_name'을 값으로 하는 딕셔너리 생성
+    #             self.stock_info_map = pd.Series(
+    #                 stock_info_df.stock_name.values, 
+    #                 index=stock_info_df.stock_code
+    #             ).to_dict()
+    #             logger.info(f"종목명 {len(self.stock_info_map)}건 캐시 완료.")
+    #         else:
+    #             logger.warning("DB에서 종목 정보를 가져오지 못했습니다. stock_info 테이블이 비어있을 수 있습니다.")
+    #     except Exception as e:
+    #         logger.error(f"종목 정보 캐시 중 오류 발생: {e}")
+
+    # def get_stock_info_map(self) -> dict:
+    #     """
+    #     DB의 stock_info 테이블에서 모든 종목의 코드와 이름을 가져와
+    #     {'종목코드': '종목명'} 형태의 딕셔너리로 반환합니다.
+    #     """
+    #     logger.debug("종목 정보 맵(딕셔너리) 로딩 시작")
+    #     try:
+    #         # fetch_stock_info()를 인자 없이 호출하여 모든 종목 정보를 가져옵니다.
+    #         stock_info_df = self.db_manager.fetch_stock_info() 
+    #         if not stock_info_df.empty:
+    #             # 'stock_code'를 인덱스로, 'stock_name'을 값으로 하는 딕셔너리 생성
+    #             stock_map = pd.Series(stock_info_df.stock_name.values, index=stock_info_df.stock_code).to_dict()
+    #             logger.debug(f"{len(stock_map)}개의 종목 정보 로딩 완료")
+    #             return stock_map
+    #         else:
+    #             logger.warning("DB에서 종목 정보를 가져오지 못했습니다. stock_info 테이블이 비어있을 수 있습니다.")
+    #             return {}
+    #     except Exception as e:
+    #         logger.error(f"종목 정보 로딩 중 오류 발생: {e}")
+    #         return {}
+
+    # ========================================================
+    # ========================================================
+    # setup_manager 와 관련있는 부분
+    # ========================================================    
+    # ========================================================    
+    # 영업일 캘린더 업데이트
     def fetch_market_calendar_initial_data(self, years: int = 3):
         """
         Creon API를 통해 과거 특정 기간의 거래일 데이터를 가져와 market_calendar 테이블에 초기 데이터를 삽입합니다.
@@ -134,378 +551,7 @@ class BacktestManager:
             logger.info(f"Market Calendar 테이블에 {len(df_to_insert)}개의 새로운 거래일 데이터 삽입 완료.")
         else:
             logger.info("삽입할 새로운 거래일 데이터가 없습니다.")
-
-    # --- 데이터 수집 및 캐싱 관련 메소드 ---
-    def fetch_daily_ohlcv(self, stock_code: str, from_date: date, to_date: date) -> pd.DataFrame:
-        """
-        DB에서 일봉 OHLCV 데이터를 조회합니다.
-        필요시 Creon API를 통해 데이터를 업데이트할 수 있습니다.
-        """
-        df = self.db_manager.fetch_daily_price(stock_code, from_date, to_date)
-        if df.empty:
-            logger.warning(f"DB에 {stock_code}의 일봉 데이터가 없습니다. Creon API를 통해 조회 시도합니다.")
-            # Creon API를 통해 데이터 조회 및 저장 로직 추가
-            # get_price_data는 count 기반이므로, 기간 기반으로 가져오려면 여러 번 호출해야 할 수 있음.
-            # 여기서는 단순화를 위해 마지막 365개 일봉을 가져오는 것으로 가정.
-            df_from_api = self.api_client.get_price_data(stock_code, 'D', (to_date - from_date).days + 1)
-            if not df_from_api.empty:
-                # DB에 저장
-                df_from_api['stock_code'] = stock_code
-                df_from_api['stock_name'] = self.get_stock_name(stock_code)
-                df_from_api.rename(columns={'datetime': 'date'}, inplace=True) # 컬럼명 일치
-                df_from_api['date'] = df_from_api['date'].dt.date # datetime을 date로 변환
-                # DBManager의 insert_df_to_db는 if_exists='append'만 지원하므로, 중복 방지를 위해 직접 SQL 사용
-                conn = self.db_manager.get_db_connection()
-                if conn:
-                    try:
-                        with conn.cursor() as cursor:
-                            for index, row in df_from_api.iterrows():
-                                sql = """
-                                    INSERT INTO daily_price (stock_code, stock_name, date, open, high, low, close, volume)
-                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                                    ON DUPLICATE KEY UPDATE
-                                        open = VALUES(open), high = VALUES(high), low = VALUES(low), close = VALUES(close), volume = VALUES(volume),
-                                        updated_at = CURRENT_TIMESTAMP
-                                """
-                                params = (
-                                    row['stock_code'], row['stock_name'], row['date'],
-                                    row['open'], row['high'], row['low'], row['close'], row['volume']
-                                )
-                                cursor.execute(sql, params)
-                            conn.commit()
-                            logger.info(f"종목 {stock_code}의 일봉 데이터 {len(df_from_api)}건 API 조회 및 DB 업데이트 완료.")
-                            df = self.db_manager.fetch_daily_price(stock_code, from_date, to_date) # 새로 저장된 데이터 다시 로드
-                    except Exception as e:
-                        logger.error(f"일봉 데이터 API 조회 및 DB 저장 중 오류: {e}")
-                        conn.rollback()
-            else:
-                logger.warning(f"Creon API에서도 {stock_code}의 일봉 데이터를 가져올 수 없습니다.")
-        return df
-
-    def fetch_minute_ohlcv(self, stock_code: str, from_datetime: datetime, to_datetime: datetime) -> pd.DataFrame:
-        """
-        DB에서 분봉 OHLCV 데이터를 조회합니다.
-        필요시 Creon API를 통해 데이터를 업데이트할 수 있습니다.
-        """
-        df = self.db_manager.fetch_minute_price(stock_code, from_datetime, to_datetime)
-        if df.empty:
-            logger.warning(f"DB에 {stock_code}의 분봉 데이터가 없습니다. Creon API를 통해 조회 시도합니다.")
-            # Creon API를 통해 데이터 조회 및 저장 로직 추가
-            # get_price_data는 count 기반이므로, 기간 기반으로 가져오려면 여러 번 호출해야 할 수 있음.
-            # 여기서는 편의상 최근 200개 분봉을 가져오는 것으로 가정.
-            df_from_api = self.api_client.get_price_data(stock_code, 'm', 200) # 200분봉
-            if not df_from_api.empty:
-                # DB에 저장
-                df_from_api['stock_code'] = stock_code
-                df_from_api['stock_name'] = self.get_stock_name(stock_code)
-                # DBManager의 insert_df_to_db는 if_exists='append'만 지원하므로, 중복 방지를 위해 직접 SQL 사용
-                conn = self.db_manager.get_db_connection()
-                if conn:
-                    try:
-                        with conn.cursor() as cursor:
-                            for index, row in df_from_api.iterrows():
-                                sql = """
-                                    INSERT INTO minute_price (stock_code, stock_name, datetime, open, high, low, close, volume)
-                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                                    ON DUPLICATE KEY UPDATE
-                                        open = VALUES(open), high = VALUES(high), low = VALUES(low), close = VALUES(close), volume = VALUES(volume),
-                                        updated_at = CURRENT_TIMESTAMP
-                                """
-                                params = (
-                                    row['stock_code'], row['stock_name'], row['datetime'],
-                                    row['open'], row['high'], row['low'], row['close'], row['volume']
-                                )
-                                cursor.execute(sql, params)
-                            conn.commit()
-                            logger.info(f"종목 {stock_code}의 분봉 데이터 {len(df_from_api)}건 API 조회 및 DB 업데이트 완료.")
-                            df = self.db_manager.fetch_minute_price(stock_code, from_datetime, to_datetime) # 새로 저장된 데이터 다시 로드
-                    except Exception as e:
-                        logger.error(f"분봉 데이터 API 조회 및 DB 저장 중 오류: {e}")
-                        conn.rollback()
-            else:
-                logger.warning(f"Creon API에서도 {stock_code}의 분봉 데이터를 가져올 수 없습니다.")
-        return df
-
-    def cache_daily_ohlcv(self, stock_code: str, from_date: date, to_date: date) -> pd.DataFrame:
-        """
-        DB와 증권사 API를 사용하여 특정 종목의 일봉 데이터를 캐싱하고 반환합니다.
-        분봉 캐싱 로직과 유사하게 수정되었습니다.
-        :param stock_code: 종목 코드
-        :param from_date: 조회 시작일 (datetime.date 객체)
-        :param to_date: 조회 종료일 (datetime.date 객체)
-        :return: Pandas DataFrame (DB와 API 데이터를 합친 최종 데이터)
-        """
-        logger.debug(f"일봉 데이터 캐싱 시작: {stock_code} ({from_date.strftime('%Y%m%d')} ~ {to_date.strftime('%Y%m%d')})")
-
-        # 1. DB에서 데이터 조회 시도
-        db_df = self.db_manager.fetch_daily_price(stock_code, from_date, to_date)
-        
-        # db_df.index는 pd.Timestamp 객체로 구성된 Index임을 가정합니다.
-        # .normalize()를 사용하여 시간 정보를 제거하고 순수 날짜로만 비교
-        db_existing_dates = set(db_df.index.normalize()) if not db_df.empty else set()
-        
-        if db_existing_dates:
-            logger.debug(f"DB에서 {stock_code}의 일봉 데이터 {len(db_df)}개 로드됨. ({min(db_existing_dates).strftime('%Y-%m-%d')} ~ {max(db_existing_dates).strftime('%Y-%m-%d')})")
-        else:
-            logger.debug(f"DB에서 {stock_code}의 기존 일봉 데이터가 없습니다.")
-        
-        # 2. market_calendar에서 필요한 모든 실제 거래일 조회
-        # get_all_trading_days는 pd.Timestamp 객체를 반환한다고 가정
-        all_trading_dates = set(self.db_manager.get_all_trading_days(from_date, to_date))
-
-        # 3. DB에 누락된 날짜 (market_calendar에는 있지만 DB daily_price에는 없는 날짜) 계산
-        missing_dates = sorted(list(all_trading_dates - db_existing_dates))
-        # 요청 범위 내의 날짜만 필터링 (get_all_trading_days가 더 넓은 범위 줄 수도 있어서 안전 장치)
-        missing_dates = [d for d in missing_dates if pd.Timestamp(from_date).normalize() <= d.normalize() <= pd.Timestamp(to_date).normalize()]
-        
-        # 4. 누락된 데이터 API 호출 및 DB 저장 (연속된 구간 처리)
-        api_fetched_dfs = []
-        if missing_dates:
-            logger.debug(f"DB에 누락된 일봉 데이터 발견: {len(missing_dates)}개 날짜. API 호출 시작.")
-            
-            # 분봉 방식과 동일하게, 누락된 날짜들의 시작과 끝으로 구간을 묶어 API 호출
-            current_start = missing_dates[0].date() # datetime.date로 변환하여 전달
-            current_end = missing_dates[-1].date() # datetime.date로 변환하여 전달
-            
-            try:
-                # _fetch_and_store_daily_range가 data_type 'daily'를 처리하도록
-                api_df = self._fetch_and_store_daily_range(stock_code, current_start, current_end, 'daily')
-                if not api_df.empty:
-                    api_fetched_dfs.append(api_df)
-            except Exception as e:
-                logger.error(f"API로부터 일봉 데이터 가져오기 실패: {stock_code} - {str(e)}")
-
-        # 5. 최종 데이터 반환
-        if api_fetched_dfs:
-            # API에서 가져온 데이터와 DB 데이터를 합침
-            final_df = pd.concat([db_df] + api_fetched_dfs)
-            # 중복 제거 (혹시 모를 중복 데이터 처리)
-            # 일봉 데이터도 인덱스(날짜)가 중복될 수 있으므로 duplicated 처리
-            final_df = final_df[~final_df.index.duplicated(keep='first')]
-            logger.debug(f"{stock_code}의 최종 일봉 데이터 {len(final_df)}개 준비 완료.")
-            return final_df.sort_index()
-        else:
-            # API에서 추가 데이터를 가져오지 못했거나, 처음부터 모든 데이터가 DB에 있었던 경우
-            logger.debug(f"{stock_code}의 모든 일봉 데이터가 DB에 존재하거나 API에서 추가 데이터를 가져오지 못했습니다. DB 데이터만 반환합니다.")
-            return db_df # db_df가 비어있을 수도 있으니 sort_index() 호출 안전하게 유지
-
-    def cache_minute_ohlcv(self, stock_code: str, from_date: date, to_date: date, interval: int = 1) -> pd.DataFrame:
-        """
-        분봉 데이터를 캐싱하고 반환합니다. DB에 있는 데이터는 재사용하고, 없는 데이터만 API에서 가져옵니다.
-        """
-        logger.debug(f"분봉 데이터 캐싱 시작: {stock_code} ({from_date} ~ {to_date}), Interval: {interval}분")
-        
-        # 1. DB에서 데이터 조회 (한 번만 조회)
-        db_df = self.db_manager.fetch_minute_price(stock_code, from_date, to_date)
-        
-        # 2. DB에 있는 날짜들을 pd.Timestamp로 변환하여 set으로 저장
-        db_existing_dates = set()
-        if not db_df.empty:
-            # 인덱스의 날짜 부분만 추출하여 set으로 변환
-            db_existing_dates = {pd.Timestamp(d).normalize() for d in db_df.index.date}
-            logger.debug(f"DB에서 {stock_code}의 분봉 데이터가 존재하는 날짜: {len(db_existing_dates)}개")
-            if db_existing_dates:
-                logger.debug(f"데이터 범위: {min(db_existing_dates).strftime('%Y-%m-%d')} ~ {max(db_existing_dates).strftime('%Y-%m-%d')}")
-        
-        # 3. 거래일 목록 조회 (이미 pd.Timestamp 객체)
-        all_trading_dates = set(self.db_manager.get_all_trading_days(from_date, to_date))
-        
-        # 4. 거래일 중 DB에 없는 날짜만 필터링
-        missing_dates = sorted(list(all_trading_dates - db_existing_dates))
-
-        if not missing_dates:
-            logger.debug(f"모든 요청 날짜({from_date} ~ {to_date})의 분봉 데이터가 DB에 존재합니다. API 호출 안함.")
-            return db_df
-        
-        logger.debug(f"DB에 누락된 분봉 데이터 발견: {len(missing_dates)}개 날짜")
-        logger.debug(f"API에서 분봉 데이터를 가져올 날짜들: {[d.strftime('%Y-%m-%d') for d in missing_dates]}")
-
-        # 5. 누락된 데이터를 API에서 가져오기
-        api_fetched_dfs = []
-        if missing_dates:
-            # 연속된 날짜들을 하나의 구간으로 처리
-            current_start = missing_dates[0]
-            current_end = missing_dates[-1]
-            
-            try:
-                api_df = self._fetch_and_store_daily_range(stock_code, current_start, current_end, 'minute')
-                if not api_df.empty:
-                    api_fetched_dfs.append(api_df)
-            except Exception as e:
-                logger.error(f"API 데이터 가져오기 실패: {stock_code} - {str(e)}")
-
-        # 6. 최종 데이터 반환
-        if api_fetched_dfs:
-            # API에서 가져온 데이터와 DB 데이터를 합침
-            final_df = pd.concat([db_df] + api_fetched_dfs).sort_index()
-            # 중복 제거 (혹시 모를 중복 데이터 처리)
-            final_df = final_df[~final_df.index.duplicated(keep='first')]
-            logger.debug(f"{stock_code}의 최종 분봉 데이터 {len(final_df)}개 준비 완료.")
-            return final_df
-        else:
-            logger.debug(f"API에서 추가 데이터를 가져오지 못했습니다. DB 데이터만 반환합니다.")
-            return db_df
-
-    def _fetch_and_store_daily_range(self, stock_code: str, start_date: date, end_date: date, data_type: str) -> pd.DataFrame:
-        """
-        API에서 데이터를 가져와 DB에 저장합니다. API 호출 실패 시 빈 DataFrame을 반환합니다.
-        """
-        logger.debug(f"API로부터 {stock_code} {data_type} 데이터 요청: {start_date} ~ {end_date}")
-        
-        api_df_part = pd.DataFrame()
-        try:
-            # API 호출
-            if data_type == 'daily':
-                api_df_part = self.api_client.get_daily_ohlcv(stock_code, start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d'))
-            elif data_type == 'minute':
-                api_df_part = self.api_client.get_minute_ohlcv(stock_code, start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d'))
-                # 분봉 데이터 API 호출 시 지연 적용
-                if not api_df_part.empty:
-                    time.sleep(0.1)  # 0.1초로 변경
-            else:
-                logger.error(f"알 수 없는 data_type: {data_type}")
-                return pd.DataFrame()
-            
-            if api_df_part.empty:
-                return pd.DataFrame()
-            
-            # DB 저장을 위한 데이터 변환
-            data_to_save_list = []
-            for index_val, row in api_df_part.iterrows():
-                record = {
-                    'stock_code': stock_code,
-                    'open': row['open'],
-                    'high': row['high'],
-                    'low': row['low'],
-                    'close': row['close'],
-                    'volume': row['volume'],
-                    'change_rate': row.get('change_rate', 0.0),
-                    'trading_value': row.get('trading_value', 0)
-                }
-                
-                if data_type == 'daily':
-                    record['date'] = index_val.date()
-                elif data_type == 'minute':
-                    record['datetime'] = index_val
-                
-                data_to_save_list.append(record)
-            
-            # DB 저장 시도
-            try:
-                if data_type == 'daily':
-                    self.db_manager.save_daily_price(data_to_save_list)
-                elif data_type == 'minute':
-                    self.db_manager.save_minute_price(data_to_save_list)
-                logger.debug(f"API로부터 {stock_code}의 {data_type} 데이터 {len(api_df_part)}개 DB 저장 완료")
-            except Exception as e:
-                logger.error(f"DB 저장 실패: {stock_code} - {str(e)}")
-                # DB 저장 실패해도 API 데이터는 반환
-            
-            return api_df_part
-            
-        except Exception as e:
-            logger.error(f"API 호출 실패: {stock_code} - {str(e)}")
-            return pd.DataFrame()
-
-    def get_stock_info_map(self) -> dict:
-        """
-        DB의 stock_info 테이블에서 모든 종목의 코드와 이름을 가져와
-        {'종목코드': '종목명'} 형태의 딕셔너리로 반환합니다.
-        """
-        logger.debug("종목 정보 맵(딕셔너리) 로딩 시작")
-        try:
-            # fetch_stock_info()를 인자 없이 호출하여 모든 종목 정보를 가져옵니다.
-            stock_info_df = self.db_manager.fetch_stock_info() 
-            if not stock_info_df.empty:
-                # 'stock_code'를 인덱스로, 'stock_name'을 값으로 하는 딕셔너리 생성
-                stock_map = pd.Series(stock_info_df.stock_name.values, index=stock_info_df.stock_code).to_dict()
-                logger.debug(f"{len(stock_map)}개의 종목 정보 로딩 완료")
-                return stock_map
-            else:
-                logger.warning("DB에서 종목 정보를 가져오지 못했습니다. stock_info 테이블이 비어있을 수 있습니다.")
-                return {}
-        except Exception as e:
-            logger.error(f"종목 정보 로딩 중 오류 발생: {e}")
-            return {}
-        
-    # def update_all_stock_info(self):
-    #     """
-    #     Creon API에서 모든 종목 정보를 가져와 DB의 stock_info 테이블에 저장/업데이트합니다.
-    #     매매의 기본이 되는 모든 종목의 기본 정보를 셋업합니다.
-    #     """
-    #     logger.info("모든 종목 기본 정보 업데이트를 시작합니다.")
-    #     if not self.api_client.connected:
-    #         logger.error("Creon API가 연결되어 있지 않아 종목 정보를 가져올 수 없습니다.")
-    #         return False
-
-    #     try:
-    #         filtered_codes = self.api_client.get_filtered_stock_list()
-    #         stock_info_list = []
-    #         for code in filtered_codes:
-    #             name = self.api_client.get_stock_name(code)
-    #             market_type = 'KOSPI' if code in self.api_client.cp_code_mgr.GetStockListByMarket(1) else 'KOSDAQ'
-
-    #             stock_info_list.append({
-    #                 'stock_code': code,
-    #                 'stock_name': name,
-    #                 'market_type': market_type,
-    #                 'sector': None, # CpCodeMgr.GetStockSector() 등으로 가져올 수 있으나, 현재는 제외
-    #                 'per': None, 'pbr': None, 'eps': None, 'roe': None, 'debt_ratio': None, # 초기값 None
-    #                 'sales': None, 'operating_profit': None, 'net_profit': None,
-    #                 'recent_financial_date': None
-    #             })
-
-    #         if stock_info_list:
-    #             # 직접 DBManager를 통해 저장
-    #             if self.db_manager.save_stock_info(stock_info_list):
-    #                 logger.info(f"{len(stock_info_list)}개의 종목 기본 정보를 성공적으로 DB에 업데이트했습니다.")
-    #                 return True
-    #             else:
-    #                 logger.error("종목 기본 정보 DB 저장에 실패했습니다.")
-    #                 return False
-    #         else:
-    #             logger.warning("가져올 종목 정보가 없습니다. Creon HTS 연결 상태 및 종목 필터링 조건을 확인하세요.")
-    #             return False
-    #     except Exception as e:
-    #         logger.error(f"모든 종목 기본 정보 업데이트 중 오류 발생: {e}", exc_info=True)
-    #         return False
-        
-    def update_all_stock_info(self):
-        """ 모든 종목의 기본 정보를 API에서 가져와 DB에 업데이트합니다. """
-        if not self.api_client.connected: return False
-        
-        # filtered_stock_list() is not in CreonAPIClient, needs to be implemented
-        # This is a simplified version
-        kospi_codes = self.api_client.cp_code_mgr.GetStockListByMarket(1)
-        kosdaq_codes = self.api_client.cp_code_mgr.GetStockListByMarket(2)
-        all_codes = kospi_codes + kosdaq_codes
-        
-        stock_info_list = []
-        for code in all_codes:
-            name = self.api_client.get_stock_name(code)
-            if not name: continue
-            # Add filtering logic here if needed (spac, preferred, etc.)
-            market_type = 'KOSPI' if code in kospi_codes else 'KOSDAQ'
-            stock_info_list.append({
-                'stock_code': code,
-                'stock_name': name,
-                'market_type': market_type,
-                'sector': None, # CpCodeMgr.GetStockSector() 등으로 가져올 수 있으나, 현재는 제외
-                'per': None, 'pbr': None, 'eps': None, 'roe': None, 'debt_ratio': None, # 초기값 None
-                'sales': None, 'operating_profit': None, 'net_profit': None,
-                'recent_financial_date': None
-            })
-        
-        if stock_info_list:
-            return self.db_manager.save_stock_info(stock_info_list)
-        return False
-        
-    def update_stock_financials(self, stock_code: str):
-        """ 특정 종목의 최신 재무 데이터를 API에서 가져와 DB에 업데이트합니다. """
-        finance_df = self.api_client.get_latest_financial_data(stock_code)
-        if finance_df.empty: return
-        return self.db_manager.save_stock_info(finance_df.to_dict('records'))
-
+    
     def update_market_calendar(self, start_date: date = None, end_date: date = None):
         """
         주식시장 캘린더 정보를 업데이트합니다.
@@ -577,6 +623,45 @@ class BacktestManager:
             logger.error(f"주식시장 캘린더 업데이트 중 오류 발생: {e}", exc_info=True)
             return False
 
+
+
+    def update_all_stock_info(self):
+        """ 모든 종목의 기본 정보를 API에서 가져와 DB에 업데이트합니다. """
+        if not self.api_client.connected: return False
+        
+        # filtered_stock_list() is not in CreonAPIClient, needs to be implemented
+        # This is a simplified version
+        kospi_codes = self.api_client.cp_code_mgr.GetStockListByMarket(1)
+        kosdaq_codes = self.api_client.cp_code_mgr.GetStockListByMarket(2)
+        all_codes = kospi_codes + kosdaq_codes
+        
+        stock_info_list = []
+        for code in all_codes:
+            name = self.api_client.get_stock_name(code)
+            if not name: continue
+            # Add filtering logic here if needed (spac, preferred, etc.)
+            market_type = 'KOSPI' if code in kospi_codes else 'KOSDAQ'
+            stock_info_list.append({
+                'stock_code': code,
+                'stock_name': name,
+                'market_type': market_type,
+                'sector': None, # CpCodeMgr.GetStockSector() 등으로 가져올 수 있으나, 현재는 제외
+                'per': None, 'pbr': None, 'eps': None, 'roe': None, 'debt_ratio': None, # 초기값 None
+                'sales': None, 'operating_profit': None, 'net_profit': None,
+                'recent_financial_date': None
+            })
+        
+        if stock_info_list:
+            return self.db_manager.save_stock_info(stock_info_list)
+        return False
+        
+    def update_stock_financials(self, stock_code: str):
+        """ 특정 종목의 최신 재무 데이터를 API에서 가져와 DB에 업데이트합니다. """
+        finance_df = self.api_client.get_latest_financial_data(stock_code)
+        if finance_df.empty: return
+        return self.db_manager.save_stock_info(finance_df.to_dict('records'))
+
+
     def update_financial_data_for_stock_info(self, stock_code):
         """
         특정 종목의 최신 재무 데이터를 CreonAPIClient (MarketEye)에서 가져와
@@ -605,8 +690,16 @@ class BacktestManager:
             logger.error(f"stock_info 재무 데이터 업데이트 중 오류 발생: {e}", exc_info=True)
         logger.info(f"{stock_code} 재무 데이터 업데이트 완료.")
 
-    # --- Backtest Result Analysis ---
 
+
+
+
+
+    # ========================================================
+    # ========================================================
+    # 매매결과 시각화 analyzer_manager 와 관련있는 부분
+    # ========================================================    
+    # ========================================================   
     def get_backtest_runs(self, run_id: int = None, start_date: date = None, end_date: date = None) -> pd.DataFrame:
         """ DB에서 백테스트 실행 정보를 조회하고 가공합니다. """
         df = self.db_manager.fetch_backtest_run(run_id, start_date, end_date)

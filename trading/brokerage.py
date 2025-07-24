@@ -26,10 +26,12 @@ class Brokerage(AbstractBroker):
         self.api_client = api_client
         self.manager = manager
         self.notifier = notifier
+
         self.initial_cash=initial_cash
         self.commission_rate = 0.0015
         self.tax_rate_sell = 0.002
         self._current_cash_balance: float = 0.0
+        
         self.positions: Dict[str, Dict[str, Any]] = {}
         self.transaction_log: list = []
         self._active_orders: Dict[str, Dict[str, Any]] = {}
@@ -42,10 +44,11 @@ class Brokerage(AbstractBroker):
         self.stop_loss_params = stop_loss_params
         logging.info(f"자동매매 브로커 손절매 파라미터 설정 완료: {stop_loss_params}")
 
-    def execute_order(self, stock_code: str, order_type: str, price: float, quantity: int, order_time: datetime, order_id: Optional[str] = None) -> Optional[str]: # 성공 시 주문 ID(str), 실패 시 None
-        """ [수정] 주문 성공 여부를 bool 값으로 반환하도록 인터페이스와 일치시킵니다. """
+    def execute_order(self, stock_code: str, order_type: str, price: float, quantity: int, order_time: datetime, order_id: Optional[str] = None) -> Optional[str]:
+        """ 주문을 실행하고, 성공 시 주문 ID를, 실패 시 None을 반환합니다. """
         order_type_enum = OrderType.BUY if order_type.lower() == 'buy' else OrderType.SELL
-        order_unit = "03" if price == 0 else "01"
+        # 시장가 주문을 위해 가격이 0이면 주문 단위를 "03"으로 설정
+        order_unit = "03" if price == 0 else "01" 
         price_to_send = 0 if order_unit == "03" else int(price)
         
         result = self.api_client.send_order(
@@ -65,7 +68,7 @@ class Brokerage(AbstractBroker):
                 'stock_code': stock_code,
                 'stock_name': self.manager.get_stock_name(stock_code),
                 'order_type': order_type.lower(),
-                'order_status': '접수',  # '접수' 상태
+                'order_status': '접수',
                 'order_price': price,
                 'order_quantity': quantity,
                 'filled_quantity': 0,
@@ -76,9 +79,18 @@ class Brokerage(AbstractBroker):
             return order_id
             
         else:
+            # --- [핵심 수정] 주문 실패 시, 에러 메시지를 확인하여 상태 자동 교정 ---
+            error_message = result.get('message', '')
+            if '13036' in error_message or '주문가능수량' in error_message:
+                logger.critical(f"상태 불일치 감지! [{stock_code}]의 실제 잔고가 0입니다. 내부 포지션을 강제 동기화(제거)합니다.")
+                # 내부 포지션 목록에서 해당 '유령 포지션'을 즉시 제거
+                if stock_code in self.positions:
+                    del self.positions[stock_code]
+            # --- 수정 끝 ---
+
             stock_name = self.manager.get_stock_name(stock_code)
             self.notifier.send_message(f"❌ 주문 실패: {stock_name}({stock_code})")
-            logger.error(f"주문 실패: {stock_code}, 메시지: {result.get('message', 'N/A')}")
+            logger.error(f"주문 실패: {stock_code}, 메시지: {error_message}")
             return None
     
     def get_current_cash_balance(self) -> float:
@@ -94,7 +106,6 @@ class Brokerage(AbstractBroker):
 
     def get_portfolio_value(self, current_prices: Dict[str, Any]) -> float:
         "주식 가치 계산 로직"
-        cash = self._current_cash_balance
 
         holdings_value = 0
         for code, pos in self.positions.items():
@@ -103,6 +114,7 @@ class Brokerage(AbstractBroker):
             price_to_use = price_data['close'] if price_data and 'close' in price_data else pos.get('avg_price', 0)
             holdings_value += pos.get('quantity', 0) * price_to_use
         
+        return holdings_value   
     
     def get_unfilled_stock_codes(self) -> set:
         """미체결 상태인 주문들의 종목 코드 집합을 반환합니다."""
@@ -282,40 +294,55 @@ class Brokerage(AbstractBroker):
 
     def sync_account_status(self):
         """
-        [수정] API에서 계좌 정보를 가져와 내부 상태(현금, 포지션)를 업데이트합니다.
-        프로그램 시작 시, 미체결 내역을 _active_orders로 복원합니다.
+        [수정] API와 내부 상태의 '양방향 동기화'를 수행합니다.
+        API에 없는 내부 미체결 주문은 제거하여 '유령 주문'을 방지합니다.
         """
-        logger.info("계좌 상태 동기화 시작...")
+        logger.info("계좌 상태 양방향 동기화 시작...")
 
-        # 1. 현금 잔고 업데이트
+        # 1. 현금 잔고 및 보유 종목 업데이트 (기존과 동일)
         balance_info = self.api_client.get_account_balance()
         self._current_cash_balance = balance_info.get('cash_balance', 0.0) if balance_info else 0.0
         logger.info(f"현금 잔고 업데이트: {self._current_cash_balance:,.0f}원")
 
-        # 2. 보유 종목 업데이트
         positions_list = self.api_client.get_portfolio_positions()
         self.positions = {pos['stock_code']: pos for pos in positions_list}
         logger.info(f"보유 종목 업데이트: 총 {len(self.positions)}건")
 
-        # 3. 미체결 주문을 _active_orders로 복원 (주로 프로그램 시작 시)
+        # --- 2. [핵심 수정] 미체결 주문 양방향 동기화 ---
+        # 실제 증권사 API에서 미체결 주문 목록을 가져옴
         unfilled_orders_from_api = self.api_client.get_unfilled_orders()
-        # 현재 _active_orders에 없는 미체결 주문만 추가 (중복 방지)
-        for order in unfilled_orders_from_api:
-            order_id = order.get('order_id')
-            if order_id not in self._active_orders:
-                self._active_orders[order_id] = {
-                    'stock_code': order.get('stock_code'),
-                    'order_type': 'buy' if order.get('buy_sell') == '매수' else 'sell',
-                    'order_status': 'submitted', # API 미체결은 '접수' 상태로 간주
-                    'order_price': order.get('price'),
-                    'order_quantity': order.get('quantity'),
-                    'filled_quantity': order.get('filled_quantity', 0),
-                    'unfilled_quantity': order.get('unfilled_quantity'),
-                    'order_time': order.get('time'),
-                    'original_order_id': None
-                }
-                logger.info(f"미체결 주문 복원: 주문번호 {order_id}")
-        
+        api_order_ids = {order.get('order_id') for order in unfilled_orders_from_api}
+
+        # 현재 시스템 내부에 기록된 미체결 주문 목록
+        internal_order_ids = set(self._active_orders.keys())
+
+        # 2-1. (제거) 내부에 있지만 API에는 없는 주문 (사용자가 취소한 경우)
+        orders_to_remove = internal_order_ids - api_order_ids
+        for order_id in orders_to_remove:
+            stock_code = self._active_orders[order_id].get('stock_code', 'N/A')
+            del self._active_orders[order_id]
+            logger.warning(f"유령 주문 제거: API에 존재하지 않는 미체결 주문({order_id}, {stock_code})을 내부 목록에서 삭제합니다.")
+
+        # 2-2. (추가) API에는 있지만 내부에 없는 주문 (시스템이 놓친 경우)
+        orders_to_add = api_order_ids - internal_order_ids
+        # API 응답을 기반으로 주문 정보를 구성 (기존 로직과 유사)
+        api_orders_map = {order.get('order_id'): order for order in unfilled_orders_from_api}
+        for order_id in orders_to_add:
+            order_info = api_orders_map[order_id]
+            self._active_orders[order_id] = {
+                'stock_code': order_info.get('stock_code'),
+                'order_type': 'buy' if order_info.get('buy_sell') == '매수' else 'sell',
+                'order_status': 'submitted', # API 미체결은 '접수' 상태로 간주
+                'order_price': order_info.get('price'),
+                'order_quantity': order_info.get('quantity'),
+                'filled_quantity': order_info.get('filled_quantity', 0),
+                'unfilled_quantity': order_info.get('unfilled_quantity'),
+                'order_time': order_info.get('time'),
+                'original_order_id': None
+            }
+            logger.info(f"미체결 주문 복원: 주문번호 {order_id}")
+            
+        logger.info(f"미체결 주문 동기화 완료. 현재 활성 주문: {len(self._active_orders)}건")
         logger.info("계좌 상태 동기화 완료.")
 
     def get_unfilled_orders(self) -> List[Dict[str, Any]]:

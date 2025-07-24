@@ -1,4 +1,4 @@
-# trading/trading.py
+# trading/trading.py (최종 수정본)
 import pandas as pd
 import logging
 from datetime import datetime, date, timedelta, time
@@ -6,83 +6,77 @@ import time as pytime
 from typing import Dict, Any, List, Optional
 import sys
 import os
+import json
 import pythoncom
-# --- [수정] 필요한 모듈 임포트 ---
+
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from trading.abstract_broker import AbstractBroker
+#from trading.abstract_broker import AbstractBroker
 from trading.brokerage import Brokerage
-from trading.abstract_report import ReportGenerator, TradingDB # Live 용 Storage 클래스 이름 사용
+from trading.abstract_report import ReportGenerator, TradingDB
 
 from api.creon_api import CreonAPIClient
 from manager.db_manager import DBManager
 from manager.trading_manager import TradingManager
 from strategies.strategy import DailyStrategy, MinuteStrategy
 from util.notifier import Notifier
+from config.settings import MIN_STOCK_CAPITAL
+from manager.capital_manager import CapitalManager
+from config.settings import (
+    MIN_STOCK_CAPITAL, PRINCIPAL_RATIO, STRATEGY_CONFIGS, COMMON_PARAMS,
+    MARKET_OPEN_TIME, MARKET_CLOSE_TIME
+)
 
-logger = logging.getLogger(__name__) # <-- 이 코드가 있어야 합니다.
+logger = logging.getLogger(__name__)
 
 class Trading:
-    """
-    자동매매 시스템의 메인 오케스트레이터 클래스입니다.
-    """
-    def __init__(self, api_client: CreonAPIClient, db_manager: DBManager, notifier: Notifier, initial_cash: float):
+    def __init__(self, api_client: CreonAPIClient, manager: TradingManager, notifier: Notifier, initial_cash: float):
         self.api_client = api_client
-        self.db_manager = db_manager
         self.notifier = notifier
 
-        # --- [수정] __init__ 생성자 정리 ---
-        # 1. Manager를 먼저 생성합니다.
-        self.manager = TradingManager(self.api_client, self.db_manager)
-        # 2. Brokerage 생성 시 Manager를 주입하고, 타입 힌트는 AbstractBroker를 사용합니다.
-        self.broker: AbstractBroker = Brokerage(self.api_client, self.manager, self.notifier, initial_cash=initial_cash)
-        
-        self.daily_strategy: Optional[DailyStrategy] = None
+        self.manager = manager
+        self.broker = Brokerage(self.api_client, self.manager, self.notifier, initial_cash=initial_cash)
+        self.capital_manager = CapitalManager(self.broker, STRATEGY_CONFIGS)
+
+        self.daily_strategies: List[DailyStrategy] = []
         self.minute_strategy: Optional[MinuteStrategy] = None
         
         self.data_store = {'daily': {}, 'minute': {}}
         
         self.is_running = True
-        self.market_open_time = time(9, 0)
-        self.market_close_time = time(15, 30)
+        self.market_open_time = datetime.strptime(MARKET_OPEN_TIME, '%H:%M:%S').time()
+        self.market_close_time = datetime.strptime(MARKET_CLOSE_TIME, '%H:%M:%S').time()
+        self.last_sync_time = 0 # 주기적 동기화를 위한 타이머
+        self.last_daily_run_time = None
+        self._last_update_log_time: Dict[str, float] = {}
+        self._last_cumulative_volume: Dict[str, int] = {}
         
-        self.last_daily_run_time = None                   # 일일 전략의 마지막 실행 시간을 추적하기 위한 변수
-        self._last_update_log_time: Dict[str, float] = {} # 실시간 데이터 업데이트 로그 출력을 제어하기 위한 변수
-        self._last_cumulative_volume: Dict[str, int] = {} # 분봉 거래량 계산을 위해 마지막 누적 거래량을 저장하는 변수
-        # Creon API의 실시간 체결 콜백을 Brokerage의 핸들러에 연결
         self.api_client.set_conclusion_callback(self.broker.handle_order_conclusion)
-        #self.api_client.set_price_update_callback(self.handle_price_update) # 실시간 가격 콜백 핸들러 등록
-
+        
         logger.info("Trading 시스템 초기화 완료.")
 
-    def set_strategies(self, daily_strategy: DailyStrategy, minute_strategy: MinuteStrategy, stop_loss_params: dict = None):
-        self.daily_strategy = daily_strategy
+    def set_strategies(self, daily_strategies: List[DailyStrategy], minute_strategy: MinuteStrategy, stop_loss_params: dict = None):
+        self.daily_strategies = daily_strategies
         self.minute_strategy = minute_strategy
         if stop_loss_params:
             self.broker.set_stop_loss_params(stop_loss_params)
-        logger.info(f"전략 설정 완료: Daily='{daily_strategy.__class__.__name__}', Minute='{minute_strategy.__class__.__name__}'")
+        daily_strategy_names = ', '.join([s.__class__.__name__ for s in self.daily_strategies])
+        logger.info(f"전략 설정 완료: Daily(s)='{daily_strategy_names}', Minute='{self.minute_strategy.__class__.__name__}'")
 
     def set_broker_stop_loss_params(self, params: dict = None):
         self.broker.set_stop_loss_params(params)
         logging.info("브로커 손절매 파라미터 설정 완료.")
 
     def handle_price_update(self, stock_code: str, current_price: float, volume: int, timestamp: float):
-        """CreonAPIClient로부터 실시간 현재가 및 거래량 업데이트를 수신하는 콜백 함수."""
         self._update_realtime_data(stock_code, current_price, volume)
 
     def prepare_for_system(self) -> bool:
-        """
-        [신규] 시스템 시작 시, 거래에 필요한 모든 상태를 준비하고 복원합니다.
-        성공 시 True, 실패 시 False를 반환합니다.
-        """
         trading_date = datetime.now().date()
         logger.info(f"--- {trading_date} 거래 준비 시작 ---")
         self.notifier.send_message(f"--- {trading_date} 거래 준비 시작 ---")
 
-        # --- 1. 증권사 계좌 동기화 및 초기 유니버스 로드 ---
-        # 가용 현금과 현재 보유 포지션을 파악하기 위해 계좌를 먼저 동기화합니다.
         self.broker.sync_account_status()
         logger.info("1. 증권사 계좌 상태 동기화 완료.")
 
@@ -92,47 +86,37 @@ class Trading:
             return False
         logger.info(f"초기 유니버스 {len(initial_universe_codes)}개 종목 로드 완료.")
 
-        # --- 2. 유니버스 사전 필터링 (가격 기준) ---
-        # 할당된 자본으로 최소 1주도 매수할 수 없는 고가 종목을 제외합니다.
-        logger.info("2. 유니버스 사전 필터링을 시작합니다 (가격 기준).")
-        available_cash = self.broker.get_current_cash_balance()
-        num_top_stocks = self.daily_strategy.strategy_params.get('num_top_stocks', 0)
-        investment_per_stock = available_cash / num_top_stocks if num_top_stocks > 0 else 0
-
-        if investment_per_stock > 0:
-            initial_prices_data = self.manager.api_client.get_current_prices_bulk(initial_universe_codes)
+        logger.info(f"2. 유니버스 사전 필터링을 시작합니다 ('최소 투자금': {MIN_STOCK_CAPITAL:,.0f}원 기준).")
+        initial_prices_data = self.manager.api_client.get_current_prices_bulk(initial_universe_codes)
+        
+        final_universe_codes = [code for code in initial_universe_codes if code.startswith('U')]
+        for code in initial_universe_codes:
+            if code.startswith('U'): continue
             
-            final_universe_codes = []
-            for code in initial_universe_codes:
-                # 코스피/코스닥 지수(U001)는 그대로 포함
-                if code == 'U001':
-                    final_universe_codes.append(code)
-                    continue
+            price_data = initial_prices_data.get(code)
+            current_price = price_data.get('close', 0) if price_data else 0
 
-                price_data = initial_prices_data.get(code)
-                current_price = price_data.get('close', 0) if price_data else 0
-
-                # 할당액이 최소 1주 가격보다 큰 종목만 최종 유니버스에 포함
-                if current_price > 0 and investment_per_stock >= current_price:
-                    final_universe_codes.append(code)
-                elif current_price > 0:
-                    logger.info(f"사전 필터링: [{code}] 제외 (가격: {current_price:,.0f}원 > 할당액: {investment_per_stock:,.0f}원)")
-                else:
-                    logger.warning(f"사전 필터링: [{code}] 가격 정보를 가져올 수 없어 제외됩니다.")
-        else:
-            # 종목당 투자금이 0이면 가격 필터링을 건너뜁니다.
-            final_universe_codes = initial_universe_codes
-            logger.warning("종목당 할당 투자금이 0원입니다. 가격 기반 필터링을 건너뜁니다.")
-            
+            if 0 < current_price <= MIN_STOCK_CAPITAL:
+                final_universe_codes.append(code)
+            elif current_price > 0:
+                logger.info(f"사전 필터링: [{code}] 제외 (현재가: {current_price:,.0f}원 > 최소 투자금)")
+            else:
+                logger.warning(f"사전 필터링: [{code}] 가격 정보를 가져올 수 없어 제외됩니다.")
+        
         logger.info(f"사전 필터링 완료. 유니버스 종목 수: {len(initial_universe_codes)}개 -> {len(final_universe_codes)}개")
 
-        # --- 3. 필요 데이터 로드를 위한 최종 종목 리스트 통합 및 데이터 로드 ---
-        # 필터링된 유니버스와 현재 보유 종목을 합쳐 필요한 모든 종목 리스트를 생성합니다.
         current_positions = self.broker.get_current_positions().keys()
         required_codes_for_data = set(final_universe_codes) | set(current_positions)
+
+        # 지수인텍스 코드 market_index_code 추가
+        market_code = COMMON_PARAMS.get('market_index_code')
+        required_codes_for_data.add(market_code)
+        # 안전자산 코드 safe_asset_code 추가
+        safe_asset_code = COMMON_PARAMS.get('safe_asset_code')
+        required_codes_for_data.add(safe_asset_code)
+        
         logger.info(f"3. 총 {len(required_codes_for_data)}개 종목에 대한 과거 데이터 로드를 시작합니다.")
 
-        # 일봉 데이터 로드
         fetch_start_date = trading_date - timedelta(days=90)
         for code in required_codes_for_data:
             daily_df = self.manager.cache_daily_ohlcv(code, fetch_start_date, trading_date)
@@ -141,33 +125,20 @@ class Trading:
             else:
                 logger.warning(f"{code}의 일봉 데이터를 로드할 수 없습니다.")
         
-        # 누락된 분봉 데이터 '따라잡기'
         try:
-            # 직전 영업일을 계산하기 위해 시장 캘린더를 조회합니다.
-            market_calendar_df = self.db_manager.fetch_market_calendar(trading_date - timedelta(days=10), trading_date)
-            trading_days = market_calendar_df[market_calendar_df['is_holiday'] == 0]['date'].dt.date.sort_values().tolist()
+            market_calendar_df = self.manager.fetch_market_calendar(trading_date - timedelta(days=10), trading_date)
+            trading_days = market_calendar_df[market_calendar_df['is_holiday'] == 0]['date'].sort_values().tolist()
 
-            # N일 평균 거래량 비교를 위해 필요한 만큼의 과거 데이터를 로드합니다.
-            N = 5 # 5일 평균을 사용한다고 가정
-            # N일 전 거래일을 계산합니다.
+            N = 5
             start_fetch_date = trading_days[-N] if len(trading_days) >= N else trading_days[0]
             
             logger.info(f"분봉 데이터 따라잡기를 {start_fetch_date}부터 시작합니다. (최근 {N} 거래일)")
             for code in required_codes_for_data:
-                
-                # 수정된 시작 날짜를 사용하여 N일치의 데이터를 캐싱합니다.
                 minute_df = self.manager.cache_minute_ohlcv(code, start_fetch_date, trading_date)
-                
-                # 불러온 데이터가 비어있지 않은 경우에만 처리
                 if not minute_df.empty:
-                    # 종목 코드에 해당하는 딕셔너리가 없으면 생성
                     self.data_store['minute'].setdefault(code, {})
-                    
-                    # 불러온 데이터를 날짜별로 그룹화하여 저장
                     for group_date, group_df in minute_df.groupby(minute_df.index.date):
                         self.data_store['minute'][code][group_date] = group_df
-                # [수정 끝]
-
         except IndexError:
             logger.error("캘린더에서 직전 영업일을 확인할 수 없습니다. 분봉 데이터 따라잡기를 중단합니다.")
         except Exception as e:
@@ -175,26 +146,15 @@ class Trading:
 
         logger.info("과거 데이터 로드 완료.")
 
-        # --- 4. 포지션 상태 복원 및 트레이딩 신호 생성 ---
-        # 현재 보유 중인 포지션의 상태(예: 매수 이후 최고가)를 복원합니다.
         self.broker._restore_positions_state(self.data_store)
         logger.info("4. 보유 포지션 상태(최고가 등) 복원 완료.")
-
-        # 일일 전략을 실행하여 오늘의 매매 신호를 생성합니다.
-        self.daily_strategy.run_daily_logic(trading_date)
-        self.minute_strategy.update_signals(self.daily_strategy.signals)
-        logger.info("일일 전략 실행 및 신호 생성 완료.")
-
-        # --- 5. 준비 완료 ---
+        
         logger.info(f"--- {trading_date} 모든 준비 완료. 장 시작 대기 ---")
         self.notifier.send_message(f"--- {trading_date} 모든 준비 완료. ---")
         return True
     
     def run(self) -> None:
-        """
-        [수정] 장중 실시간 매매 루프만 담당합니다.
-        """
-        if not self.daily_strategy or not self.minute_strategy:
+        if not self.daily_strategies or not self.minute_strategy:
             logger.error("전략이 설정되지 않았습니다. 자동매매를 중단합니다.")
             return
 
@@ -212,62 +172,60 @@ class Trading:
                     last_heartbeat_time = pytime.time()
                 
                 if self.market_open_time <= current_time < self.market_close_time:
-                    # [로그 추가] 루프의 시작을 명확히 표시
                     logger.info("="*50)
                     logger.info(f"[{now.strftime('%H:%M:%S')}] 장중 매매 루프 시작...")
-                    
-                    # 1. (필요시) 일일 전략을 다시 실행하여 최신 신호를 생성합니다.
+                    if pytime.time() - self.last_sync_time > 600: # 600초 = 10분
+                        logger.info("🔄 주기적인 계좌 상태 동기화를 수행합니다...")
+                        self.broker.sync_account_status()
+                        self.last_sync_time = pytime.time()
+
                     if self.last_daily_run_time is None or (now - self.last_daily_run_time) >= timedelta(minutes=1):
-                        logger.info("1. 일일 전략 재실행...")
-                        self.daily_strategy.run_daily_logic(now.date())
-                        self.minute_strategy.update_signals(self.daily_strategy.signals)
-                        self.last_daily_run_time = now
-                        # [로그 추가] 일일 전략 실행 결과
-                        logger.info(f"-> 일일 전략 실행 완료. 총 {len(self.daily_strategy.signals)}개 신호 생성/업데이트.")
+                        logger.info("1. 일일 전략 재실행 및 자금 할당 시작...")
+                        
+                        all_codes = set(self.data_store['daily'].keys()) | set(self.broker.get_current_positions().keys())
+                        current_prices = self.manager.api_client.get_current_prices_bulk(list(all_codes))
+                        account_equity = self.capital_manager.get_account_equity(current_prices)
+                        total_principal = self.capital_manager.get_total_principal(account_equity, PRINCIPAL_RATIO)
                     
-                    # 2. 업데이트 및 전략 실행에 필요한 모든 종목 리스트를 통합합니다.
+                        for strategy in self.daily_strategies:
+                            strategy_capital = self.capital_manager.get_strategy_capital(strategy.strategy_name, total_principal)
+                            strategy.run_daily_logic(now.date(), strategy_capital)
+                    
+                        final_signals = self._aggregate_signals() 
+                        self.minute_strategy.update_signals(final_signals)
+                        self.last_daily_run_time = now
+                        logger.info(f"-> 일일 전략 실행 및 신호 통합 완료. 최종 유효 신호: {len(final_signals)}개")
+                    
                     stocks_to_process = set(self.data_store['daily'].keys()) | set(self.broker.get_current_positions().keys()) | set(self.minute_strategy.signals.keys())
-                    # [로그 추가] 처리 대상 종목 수
                     logger.info(f"2. 처리 대상 종목 통합 완료: 총 {len(stocks_to_process)}개")
                     
-                    # 3. 통합된 리스트의 모든 종목에 대해 데이터를 폴링하고 업데이트합니다.
                     if stocks_to_process:
+                        codes_to_poll_stocks = [code for code in stocks_to_process]
+                        # 지수인텍스 코드 market_index_code 추가
+                        market_code = COMMON_PARAMS.get('market_index_code')
+                        codes_to_poll_stocks.append(market_code)
+                        # 안전자산 코드 safe_asset_code 추가
+                        safe_asset_code = COMMON_PARAMS.get('safe_asset_code')
+                        codes_to_poll_stocks.append(safe_asset_code)
                         
-                        # --- [핵심 수정] 시장 지수 조회와 일반 종목 조회를 분리 ---
-                        market_index_code = self.daily_strategy.strategy_params.get('market_index_code')
-                        
-                        # 3-1. 일반 종목들만 먼저 폴링합니다.
-                        codes_to_poll_stocks = [code for code in stocks_to_process if code != market_index_code]
                         if codes_to_poll_stocks:
-                            logger.info(f"3-1. 일반 종목 {len(codes_to_poll_stocks)}개 실시간 데이터 폴링...")
+                            logger.info(f"종목 {len(codes_to_poll_stocks)}개 실시간 데이터 폴링...")
                             latest_stock_data = self.manager.api_client.get_current_prices_bulk(codes_to_poll_stocks)
                             for code, data in latest_stock_data.items():
                                 self._update_data_store_from_poll(code, data)
 
-                        # 3-2. 시장 지수만 별도로 폴링하여 안정성을 높입니다.
-                        if market_index_code:
-                            logger.info(f"3-2. 시장 지수({market_index_code}) 데이터 폴링...")
-                            latest_index_data = self.manager.api_client.get_current_prices_bulk([market_index_code])
-                            if market_index_code in latest_index_data:
-                                self._update_data_store_from_poll(market_index_code, latest_index_data[market_index_code])
-                            else:
-                                logger.warning(f"시장 지수({market_index_code}) 데이터 조회에 실패했습니다.")
-
                         logger.info("-> 데이터 폴링 및 업데이트 완료.")
-
-                    # 4. 분봉 전략 및 리스크 관리를 실행합니다. (데이터가 최신 상태임이 보장됨)
+                    
                     logger.info("4. 개별 종목 분봉 전략 및 리스크 관리 시작...")
-                    for stock_code in stocks_to_process:
+                    for stock_code in list(stocks_to_process):
                         self._ensure_minute_data_exists(stock_code, now.date())
                         self.minute_strategy.run_minute_logic(now, stock_code)
                     
-                    # 리스크 관리 (손절/익절)
                     owned_codes = list(self.broker.get_current_positions().keys())
-                    current_prices_for_positions = {code: latest_stock_data[code] for code in owned_codes if code in latest_stock_data}
+                    current_prices_for_positions = self.manager.api_client.get_current_prices_bulk(owned_codes)
                     self.broker.check_and_execute_stop_loss(current_prices_for_positions, now)
                     logger.info("-> 분봉 전략 및 리스크 관리 완료.")
                     
-                    # [로그 추가] 루프의 끝과 대기 시간 안내
                     logger.info(f"루프 1회 실행 완료. 20초 후 다음 루프를 시작합니다.")
                     logger.info("="*50 + "\n")
                     pytime.sleep(20)
@@ -277,7 +235,7 @@ class Trading:
                     self.record_daily_performance(now.date())
                     self.stop_trading()
                 
-                else: # 장 시작 전
+                else:
                     logger.info(f"장 시작({self.market_open_time.strftime('%H:%M')}) 대기 중...")
                     pytime.sleep(20)
 
@@ -289,8 +247,6 @@ class Trading:
                 self.notifier.send_message(f"🚨 시스템 오류 발생: {e}")
                 pytime.sleep(60)
 
-
-
     def stop_trading(self) -> None:
         self.is_running = False
         logger.info("자동매매 시스템 종료 요청 수신.")
@@ -301,41 +257,16 @@ class Trading:
             self.broker.cleanup()
         if self.api_client:
             self.api_client.cleanup()
-        if self.db_manager:
-            self.db_manager.close()
+        if self.manager:
+            self.manager.close_db_connection()
         logger.info("Trading 시스템 cleanup 완료.")
 
-
-    def get_current_market_prices(self, stock_codes: List[str]) -> Dict[str, float]:
-        """
-        현재 시점의 시장 가격을 가져옵니다. 백테스트 시뮬레이션에서는 data_store에서 가져옵니다.
-        """
-        prices = {}
-        for code in stock_codes:
-            # 가장 최신 분봉의 종가를 현재 가격으로 간주
-            if code in self.data_store['minute'] and self.data_store['minute'][code]:
-                # 마지막 날짜의 마지막 분봉 데이터를 가져옴
-                latest_date = max(self.data_store['minute'][code].keys())
-                latest_minute_df = self.data_store['minute'][code][latest_date]
-                if not latest_minute_df.empty:
-                    prices[code] = latest_minute_df.iloc[-1]['close']
-                else:
-                    logging.warning(f"종목 {code}의 분봉 데이터에 유효한 가격이 없습니다.")
-            else:
-                logging.warning(f"종목 {code}의 분봉 데이터가 data_store에 없습니다. 가격을 0으로 설정합니다.")
-                prices[code] = 0.0 # 데이터가 없을 경우 0으로 처리하거나 에러 처리
-        return prices
-
-
     def _update_data_store_from_poll(self, stock_code: str, market_data: Dict[str, Any]):
-        """
-        [수정] API에서 받은 시각 정보를 사용하여 분봉 데이터를 생성합니다.
-        """
-        api_time = market_data.get('time') # hhmm 형식 (예: 915)
-        if api_time is None:
-            logger.warning(f"[{stock_code}] 데이터에 시각 정보가 없어 시스템 시간으로 대체합니다.")
+        api_time_str = market_data.get('time')
+        if api_time_str is None:
             now = datetime.now()
         else:
+            api_time = int(api_time_str)
             hour = api_time // 100
             minute = api_time % 100
             now = datetime.now().replace(hour=hour, minute=minute)
@@ -343,102 +274,109 @@ class Trading:
         current_minute = now.replace(second=0, microsecond=0)
         today = now.date()
         today_ts = pd.Timestamp(today)
-        # [수정] 다음 1분봉이 아닌, 현재 수신한 시각이 속한 분봉에 기록하도록 변경
-        write_key = current_minute
-
+        
         MINUTE_DF_COLUMNS = ['stock_code', 'open', 'high', 'low', 'close', 'volume', 'change_rate', 'trading_value']
 
         if stock_code in self.data_store['daily']:
-            # [수정] market_data에서 OHLCV만 추출하여 일봉 데이터 업데이트
-            ohlcv_data = {k: v for k, v in market_data.items() if k != 'time'}
-            self.data_store['daily'][stock_code].loc[today_ts] = ohlcv_data
+            ohlcv_data = {k: v for k, v in market_data.items() if k in ['open', 'high', 'low', 'close', 'volume']}
+            
+            if len(ohlcv_data) == 5:
+
+                # change_rate 및 trading_value 계산 로직 
+                daily_df = self.data_store['daily'][stock_code]
+                
+                # 1. 등락률(change_rate) 계산
+                change_rate = 0.0
+                # DataFrame에 데이터가 최소 1줄 이상 있어야 전일 종가 조회 가능
+                if not daily_df.empty:
+                    # 마지막 행이 전일 데이터
+                    yesterday_close = daily_df['close'].iloc[-1]
+                    today_close = ohlcv_data['close']
+                    
+                    if yesterday_close > 0:
+                        change_rate = ((today_close - yesterday_close) / yesterday_close) * 100
+                
+                # 2. 거래대금(trading_value) 계산
+                trading_value = ohlcv_data['close'] * ohlcv_data['volume']
+
+                # 데이터프레임의 모든 컬럼에 맞는 데이터를 딕셔너리 형태로 준비합니다.
+                # 누락된 컬럼(change_rate, trading_value 등)에 기본값을 채워줍니다.
+                new_row_data = {
+                    'open': ohlcv_data['open'],
+                    'high': ohlcv_data['high'],
+                    'low': ohlcv_data['low'],
+                    'close': ohlcv_data['close'],
+                    'volume': ohlcv_data['volume'],
+                    'stock_code': stock_code,
+                    # [수정] 계산된 값으로 대체
+                    'change_rate': change_rate,
+                    'trading_value': trading_value
+                }               
+                
+                self.data_store['daily'][stock_code].loc[today_ts] = new_row_data
 
         stock_minute_data = self.data_store['minute'].setdefault(stock_code, {})
-
         if today not in stock_minute_data:
             stock_minute_data[today] = pd.DataFrame(columns=MINUTE_DF_COLUMNS).set_index(pd.to_datetime([]))
 
         minute_df = stock_minute_data[today]
         
-        # [수정] market_data에서 직접 값을 가져옵니다.
         current_price = market_data['close']
         cumulative_volume = market_data['volume']
         last_known_volume = self._last_cumulative_volume.get(stock_code, 0)
         
         minute_volume = cumulative_volume - last_known_volume
-        if minute_volume < 0: # 장 시작 등 누적 거래량이 초기화된 경우
+        if minute_volume < 0:
             minute_volume = cumulative_volume 
 
-        if write_key in minute_df.index:
-            minute_df.loc[write_key, 'high'] = max(minute_df.loc[write_key, 'high'], current_price)
-            minute_df.loc[write_key, 'low'] = min(minute_df.loc[write_key, 'low'], current_price)
-            minute_df.loc[write_key, 'close'] = current_price
-            minute_df.loc[write_key, 'volume'] += minute_volume
+        if current_minute in minute_df.index:
+            minute_df.loc[current_minute, 'high'] = max(minute_df.loc[current_minute, 'high'], current_price)
+            minute_df.loc[current_minute, 'low'] = min(minute_df.loc[current_minute, 'low'], current_price)
+            minute_df.loc[current_minute, 'close'] = current_price
+            minute_df.loc[current_minute, 'volume'] += minute_volume
         else:
-            new_row = {
-                'stock_code': stock_code,
-                'open': current_price, 
-                'high': current_price, 
-                'low': current_price, 
-                'close': current_price, 
-                'volume': minute_volume,
-                'change_rate': 0.0,
-                'trading_value': 0.0
-            }
-            # [수정] 새로운 행 추가 방식 변경
-            new_df_row = pd.DataFrame([new_row], index=[write_key])
-            stock_minute_data[today] = pd.concat([minute_df, new_df_row])
+            new_row_data = [stock_code, current_price, current_price, current_price, current_price, minute_volume, 0.0, 0.0]
+            new_row = pd.DataFrame([new_row_data], columns=MINUTE_DF_COLUMNS, index=[current_minute])
+            new_row.index = pd.to_datetime(new_row.index)
+            stock_minute_data[today] = pd.concat([minute_df, new_row])
         
         self._last_cumulative_volume[stock_code] = cumulative_volume
 
-    # def _run_minute_strategy_and_realtime_checks(self, current_dt: datetime) -> None:
-    #     """
-    #     분봉 전략 및 실시간 데이터를 기반으로 매매 로직을 실행합니다.
-    #     - 매수/매도 신호 처리
-    #     - 보유 종목 손절매/익절매 체크
-    #     """
-    #     # 현재 활성화된 매수 신호들을 확인
-    #     active_buy_signals = self.manager.load_daily_signals(current_dt.date(), is_executed=False, signal_type='BUY')
-
-    #     # 모든 종목의 실시간 현재가 데이터를 업데이트 (TradingManager를 통해 CreonAPIClient 사용)
-    #     # 이 함수는 TradingManager가 시장 데이터로부터 실시간으로 받아오거나, 필요시 조회하여 업데이트할 것임.
-    #     # 실제로는 CreonAPIClient의 실시간 시세 구독을 통해 이루어짐.
-    #     # 여기서는 편의상 TradingManager가 최신 현재가를 가져온다고 가정
-    #     current_prices = self.get_current_market_prices(list(self.broker.get_current_positions().keys()) + \
-    #                                                                     list(active_buy_signals.keys()))
-    #     # 분봉 전략 실행
-    #     if self.minute_strategy:
-    #         for stock_code, signal_info in active_buy_signals.items():
-    #             if signal_info['stock_code'] == stock_code and signal_info['is_executed'] == False: # 아직 체결되지 않은 매수 신호
-    #                 try:
-    #                     # 분봉 전략에 현재 시간과 종목 코드를 전달하여 매매 판단
-    #                     # [수정] '초'를 제거한 현재 분(minute)의 시작 시각을 전달합니다.
-    #                     current_minute = current_dt.replace(second=0, microsecond=0)
-    #                     self.minute_strategy.run_minute_logic(current_minute, stock_code)
-    #                 except Exception as e:
-    #                     logger.error(f"분봉 전략 '{self.minute_strategy.strategy_name}' 실행 중 오류 발생 ({stock_code}): {e}", exc_info=True)
-    #                     self.notifier.send_message(f"❗ 분봉 전략 오류: {stock_code} - {e}")
-
-    #     # 손절매/익절매 조건 체크 (보유 종목에 대해)
-    #     self.broker.check_and_execute_stop_loss(current_prices, current_dt)
+    def _aggregate_signals(self) -> Dict[str, Any]:
+        aggregated_signals: Dict[str, Any] = {}
+        for strategy in self.daily_strategies:
+            for stock_code, signal_info in strategy.signals.items():
+                existing_signal = aggregated_signals.get(stock_code)
+                new_signal_type = signal_info.get('signal_type')
+                if not existing_signal:
+                    aggregated_signals[stock_code] = signal_info
+                    continue
+                if existing_signal['signal_type'] == 'sell':
+                    continue
+                if new_signal_type == 'sell':
+                    aggregated_signals[stock_code] = signal_info
+                    logging.debug(f"[{stock_code}] 신호 변경: 기존 '{existing_signal['signal_type']}' -> 신규 'sell'")
+                    continue
+                if existing_signal['signal_type'] == 'buy' and new_signal_type == 'hold':
+                    continue
+                aggregated_signals[stock_code] = signal_info
         
+        final_signals = {
+            code: signal for code, signal in aggregated_signals.items()
+            if signal.get('signal_type') in ['buy', 'sell']
+        }
+        logging.info(f"신호 통합 완료. 최종 신호: {len(final_signals)}개")
+        return final_signals
+
     def _ensure_minute_data_exists(self, stock_code: str, current_date: date):
-        """특정 종목의 당일 분봉 데이터가 data_store에 없으면 DB/API에서 가져와 채웁니다."""
-        
         stock_minute_data = self.data_store['minute'].get(stock_code, {})
-        
         if current_date not in stock_minute_data:
             logger.info(f"[{stock_code}] 종목의 당일 분봉 데이터가 없어 따라잡기를 실행합니다.")
-            
             try:
-                # 직전 영업일 계산
                 market_calendar_df = self.db_manager.fetch_market_calendar(current_date - timedelta(days=10), current_date)
                 trading_days = market_calendar_df[market_calendar_df['is_holiday'] == 0]['date'].dt.date.sort_values().tolist()
                 prev_trading_date = trading_days[-2] if len(trading_days) > 1 else current_date - timedelta(days=1)
-                
-                # 데이터 캐싱
                 minute_df = self.manager.cache_minute_ohlcv(stock_code, prev_trading_date, current_date)
-                
                 if not minute_df.empty:
                     self.data_store['minute'].setdefault(stock_code, {})
                     for group_date, group_df in minute_df.groupby(minute_df.index.date):
@@ -446,117 +384,98 @@ class Trading:
                     logger.info(f"[{stock_code}] 분봉 데이터 따라잡기 완료.")
                 else:
                     logger.warning(f"[{stock_code}] 분봉 데이터 따라잡기를 시도했으나 데이터를 가져오지 못했습니다.")
-
             except Exception as e:
                 logger.error(f"[{stock_code}] 분봉 데이터 따라잡기 중 오류 발생: {e}")
 
-
     def record_daily_performance(self, current_date: date):
-        """[신규] 장 마감 후 ReportGenerator를 사용해 일일 성과를 기록하는 메서드"""
+        #storage = TradingDB(self.db_manager)
+        storage = TradingDB(self.manager.get_db_manager())
         
-        # 1. 자동매매용 저장 전략 선택
-        storage = TradingDB(self.db_manager)
-
-        # 2. 리포트 생성기에 저장 전략 주입
         reporter = ReportGenerator(storage_strategy=storage)
         
-        # 3. 리포트에 필요한 데이터 준비
-        end_value = self.broker.get_portfolio_value(self.manager.get_current_prices(list(self.broker.get_current_positions().keys())))
+        end_value = self.broker.get_portfolio_value(self.manager.api_client.get_current_prices_bulk(list(self.broker.get_current_positions().keys())))
+        if end_value is None:
+            end_value = self.broker.get_current_cash_balance()
+            logger.warning(f"포트폴리오 가치(end_value)가 None이므로 현재 현금 잔고({end_value:,.0f}원)로 대체합니다.")
+
         latest_portfolio = self.db_manager.fetch_latest_daily_portfolio()
         start_value = latest_portfolio.get('total_capital', self.broker.initial_cash) if latest_portfolio else self.broker.initial_cash
         
-        # [수정] Series를 생성하기 전에 모든 값을 float으로 변환하여 타입을 통일합니다.
+        if start_value is None:
+            start_value = self.broker.initial_cash
+            logger.warning(f"포트폴리오 시작 가치(start_value)가 None이므로 초기 투자금({start_value:,.0f}원)으로 대체합니다.")
+
         portfolio_series = pd.Series(
             [float(start_value), float(end_value)], 
             index=[pd.Timestamp(current_date - timedelta(days=1)), pd.Timestamp(current_date)]
         )
-
-        # 거래 로그는 DB에서 해당일의 로그를 다시 불러옴
         transaction_log = self.db_manager.fetch_trading_logs(current_date, current_date)
+        
+        daily_strategy_names = ', '.join([s.__class__.__name__ for s in self.daily_strategies])
+        daily_strategy_params_json = json.dumps({s.__class__.__name__: s.strategy_params for s in self.daily_strategies}, ensure_ascii=False, indent=2)
 
-        # 4. 리포트 생성 및 저장
         reporter.generate(
             start_date=current_date,
             end_date=current_date,
             initial_cash=start_value,
-            portfolio_value_series=portfolio_series, # 타입이 통일된 시리즈 전달
+            portfolio_value_series=portfolio_series,
             transaction_log=transaction_log.to_dict('records') if not transaction_log.empty else [],
             strategy_info={
-                'strategy_daily': self.daily_strategy.__class__.__name__,
+                'strategy_daily': daily_strategy_names,
                 'strategy_minute': self.minute_strategy.__class__.__name__,
-                'params_json_daily': self.daily_strategy.strategy_params,
-                'params_json_minute': self.minute_strategy.strategy_params
+                'params_json_daily': daily_strategy_params_json,
+                'params_json_minute': json.dumps(self.minute_strategy.strategy_params, ensure_ascii=False, indent=2)
             },
             cash_balance=self.broker.get_current_cash_balance()
         )
 
-
-
-# TODO: 실제 사용 시 main 함수에서 Trading 객체를 생성하고 루프 시작
-# 예시:
 if __name__ == "__main__":
     from datetime import date, datetime
-    # 설정 파일 로드
     from config.settings import (
         TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
-        INITIAL_CASH,
-        MARKET_OPEN_TIME, MARKET_CLOSE_TIME,
-        DAILY_STRATEGY_RUN_TIME, PORTFOLIO_UPDATE_TIME,
-        COMMON_PARAMS, SMA_DAILY_PARAMS, RSI_MINUTE_PARAMS, STOP_LOSS_PARAMS,
-        LOG_LEVEL, LOG_FILE
+        INITIAL_CASH, STOP_LOSS_PARAMS, COMMON_PARAMS,
+        SMA_DAILY_PARAMS, DUAL_MOMENTUM_DAILY_PARAMS, TRIPLE_SCREEN_DAILY_PARAMS
     )   
-    # 1. 전체 프로그램의 기본 로그 레벨을 INFO로 설정
     logging.basicConfig(level=logging.INFO,
                         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                         handlers=[logging.StreamHandler()])
 
-    # --- [추가] 특정 모듈(sma_daily)의 로그 레벨만 DEBUG로 설정 ---
-    # sma_daily.py 파일 내의 로거를 이름으로 가져옵니다.
     sma_daily_logger = logging.getLogger('strategies.sma_daily')
     sma_daily_logger.setLevel(logging.DEBUG)
-    # --- 추가 끝 ---
     try:
-        # 1. 필요한 인스턴스들 생성
         api_client = CreonAPIClient()
         db_manager = DBManager()
         notifier = Notifier(telegram_token=TELEGRAM_BOT_TOKEN, telegram_chat_id=TELEGRAM_CHAT_ID)
+        trading_manager = TradingManager(api_client, db_manager)
 
-        # 2. 자동매매 인스턴스 생성
         trading_system = Trading(
             api_client=api_client,
-            db_manager=db_manager,
+            manager=trading_manager,
             notifier=notifier,
             initial_cash=INITIAL_CASH
         )
         
-        # 3. 전략 설정
-        # SMA 전략 설정
         from strategies.sma_daily import SMADaily
-        daily_strategy = SMADaily(broker=trading_system.broker, data_store=trading_system.data_store, strategy_params=SMA_DAILY_PARAMS)
+        sma_daily = SMADaily(broker=trading_system.broker, data_store=trading_system.data_store, strategy_params=SMA_DAILY_PARAMS)
 
-        # RSI 분봉 전략 설정
-        # from strategies.rsi_minute import RSIMinute
-        # minute_strategy = RSIMinute(broker=trading_system.broker, data_store=trading_system.data_store, strategy_params=RSI_MINUTE_PARAMS)        
+        from strategies.triple_screen_daily import TripleScreenDaily
+        triple_screen_daily = TripleScreenDaily(broker=trading_system.broker, data_store=trading_system.data_store, strategy_params=TRIPLE_SCREEN_DAILY_PARAMS)
 
-        # 목표가 분봉 전략 설정 (최적화 결과 반영)
+        from strategies.dual_momentum_daily import DualMomentumDaily
+        dual_momentum_daily = DualMomentumDaily(broker=trading_system.broker, data_store=trading_system.data_store, strategy_params=DUAL_MOMENTUM_DAILY_PARAMS)
+        
         from strategies.target_price_minute import TargetPriceMinute
         minute_strategy = TargetPriceMinute(broker=trading_system.broker, data_store=trading_system.data_store, strategy_params=COMMON_PARAMS)        
 
-        # 일봉/분봉 전략 설정
-        trading_system.set_strategies(daily_strategy=daily_strategy, minute_strategy=minute_strategy)
-        # 손절매 파라미터 설정 (선택사항)
+        trading_system.set_strategies(
+            daily_strategies=[sma_daily, triple_screen_daily],
+            minute_strategy=minute_strategy
+        )
+        
         trading_system.set_broker_stop_loss_params(STOP_LOSS_PARAMS)
 
-        # 4. 일봉 데이터 로드
-        end_date = date.today()
-        start_date = end_date - timedelta(days=60)
-        
-        # 5. [수정] 거래 준비 단계 실행
         if trading_system.prepare_for_system():
-            # 6. [수정] 준비가 성공하면 매매 루프 실행
-            # --- [추가] COM 환경 초기화 ---
             pythoncom.CoInitialize()
-
             try:
                 logger.info("=== 자동매매 시작 ===")
                 trading_system.run()
@@ -564,9 +483,8 @@ if __name__ == "__main__":
                 logger.info("사용자에 의해 시스템 종료 요청됨.")
             finally:
                 trading_system.cleanup()
-                # --- [추가] COM 환경 정리 ---
                 pythoncom.CoUninitialize()
                 logger.info("시스템 종료 완료.")
 
     except Exception as e:
-        logger.error(f"Backtest 테스트 중 오류 발생: {e}", exc_info=True)            
+        logger.error(f"Backtest 테스트 중 오류 발생: {e}", exc_info=True)
