@@ -118,13 +118,13 @@ class DailyStrategy(BaseStrategy):
             return
 
         # 1. 각 전략의 고유 로직을 호출하여 매수/매도 후보를 받습니다.
-        buy_candidates, sell_candidates, sorted_buy_stocks, stock_target_prices = self._calculate_strategy_signals(
+        buy_candidates, sell_candidates, signal_attributes = self._calculate_strategy_signals(
             current_date, universe
         )
 
         # 2. 공통 신호 생성 로직을 호출합니다.
         final_positions = self._generate_signals(
-            current_date, buy_candidates, sorted_buy_stocks, stock_target_prices, sell_candidates, strategy_capital
+            current_date, buy_candidates, sell_candidates, signal_attributes, strategy_capital
         )
 
         # 3. 공통 요약 로그를 호출합니다.
@@ -185,92 +185,107 @@ class DailyStrategy(BaseStrategy):
         self.signals = {}
         logging.debug("일봉 전략 신호 초기화 완료.")
     
-    def _generate_signals(self, current_daily_date: date, buy_candidates: set, sorted_stocks: list, stock_target_prices: dict, sell_candidates: set, strategy_capital: float):
+    def _generate_signals(self, current_daily_date: date, buy_candidates: set, sell_candidates: set, signal_attributes: dict, strategy_capital: float):
         """
-        [최종 수정] '종목별 최소 투자금' 규칙에 따라, 할당된 예산 내에서 유연하게 매수 신호를 생성합니다.
-        가장 점수가 높은 신호부터 순차적으로 예산을 소진합니다.
+        통합된 signal_attributes를 사용하여 최종 매매 신호를 생성합니다.
+        - 점수 기반으로 매수 후보 정렬 및 상위 N개 선택
+        - 종목별 최소 투자금 규칙에 따라 예산을 소진하며 매수 신호 생성
+        - 매도/홀드 신호 생성
         """
         current_positions = set(self.broker.get_current_positions().keys())
         unfilled_order_codes = self.broker.get_unfilled_stock_codes()
         new_signals = {}
-        if unfilled_order_codes:
-            logger.info(f"[{self.strategy_name}] 신호 생성 전 미체결 주문 확인: {unfilled_order_codes}")
-        # --- 1. [신규] 매수 신호 생성 루프 ---
-        remaining_capital = strategy_capital  # 해당 전략에 할당된 가용 예산
+        
+        # --- 1. 매수 신호 생성 ---
+        remaining_capital = strategy_capital
+        num_top_stocks = self.strategy_params.get('num_top_stocks', len(buy_candidates))
 
-        # 점수가 높은 순서대로 매수 후보(sorted_stocks)를 순회
-        for stock_code, score in sorted_stocks:
-            # 매수 후보 목록에 없거나, 이미 보유/미체결 상태면 건너뛰기
-            if not (stock_code in buy_candidates and 
-                    stock_code not in current_positions and 
-                    stock_code not in unfilled_order_codes):
+        # 점수가 높은 순서대로 매수 후보 정렬 및 상위 N개 선택
+        sorted_buy_candidates = sorted(
+            buy_candidates,
+            key=lambda code: signal_attributes.get(code, {}).get('score', 0),
+            reverse=True
+        )[:num_top_stocks]
+
+        for stock_code in sorted_buy_candidates:
+            # (이중 체크) 이미 보유/미체결 상태면 건너뛰기
+            if stock_code in current_positions or stock_code in unfilled_order_codes:
                 continue
-            
-            # 1-1. 예산 확인: 남은 전략 예산이 '최소 투자금'보다 적으면 더 이상 매수 불가
+
             if remaining_capital < MIN_STOCK_CAPITAL:
                 logging.info(f"[{self.strategy_name}] 남은 예산({remaining_capital:,.0f}원)이 부족하여 '{stock_code}' 추가 매수를 중단합니다.")
-                break  # 매수 후보 처리를 종료
+                break
 
-            target_price = stock_target_prices.get(stock_code)
+            attributes = signal_attributes.get(stock_code)
+            if not attributes:
+                logging.warning(f"[{stock_code}]에 대한 신호 속성이 없어 매수 신호를 생성할 수 없습니다.")
+                continue
+
+            target_price = attributes.get('target_price')
+            execution_type = attributes.get('execution_type', 'touch')
+
             if not target_price or target_price <= 0:
                 logging.warning(f"[{stock_code}] 유효한 목표가격이 없어 매수 신호를 생성할 수 없습니다.")
                 continue
 
-            # 1-2. 수량 계산: '최소 투자금'을 기준으로 매수 수량 결정
-            budget_for_stock = MIN_STOCK_CAPITAL
             cost_per_share = target_price * (1 + self.broker.commission_rate)
-            target_quantity = int(budget_for_stock / cost_per_share) if cost_per_share > 0 else 0
+            target_quantity = int(MIN_STOCK_CAPITAL / cost_per_share) if cost_per_share > 0 else 0
 
             if target_quantity > 0:
                 new_signals[stock_code] = {
                     'signal_type': 'buy',
                     'signal_date': current_daily_date,
-                    'target_price': target_price,
                     'stock_code': stock_code,
+                    'stock_name': self.get_stock_name(stock_code),
                     'strategy_name': self.strategy_name,
-                    'is_executed': False,
-                    'target_quantity': target_quantity
+                    'score': attributes.get('score', 0),
+                    'target_price': target_price,
+                    'execution_type': execution_type,
+                    'target_quantity': target_quantity,
+                    'is_executed': False
                 }
                 
-                # 1-3. 예산 차감: 매수 신호를 생성했으므로, 전략 예산에서 사용한 만큼 차감
                 actual_cost = target_quantity * cost_per_share
                 remaining_capital -= actual_cost
                 
                 logging.info(f"매수 신호({self.strategy_name}) - {stock_code}: "
                              f"수량 {target_quantity}주 (사용한 예산: {actual_cost:,.0f}원 / 남은 예산: {remaining_capital:,.0f}원)")
         
-        # --- 2. 매도 및 홀드 신호 생성 루프 ---
+        # --- 2. 매도 및 홀드 신호 생성 ---
         stocks_to_process_for_sell_hold = sell_candidates | current_positions
         for stock_code in stocks_to_process_for_sell_hold:
-            # 위에서 이미 'buy' 신호가 생성된 종목은 건너뛴다.
-            if stock_code in new_signals:
-                continue
-
-            if stock_code in unfilled_order_codes:
-                logger.info(f"[{self.strategy_name}] '{stock_code}'는 이미 미체결 주문이 있어 매도/홀드 신호 생성을 건너뜁니다.")
+            if stock_code in new_signals or stock_code in unfilled_order_codes:
                 continue
 
             signal_type = 'sell' if stock_code in sell_candidates else 'hold'
             
+            # 매도/홀드 신호에 대한 속성도 signal_attributes에서 가져옴
+            attributes = signal_attributes.get(stock_code, {})
+            target_price = attributes.get('target_price')
+            # 매도 신호의 기본 전술은 'market', 홀드는 'touch'로 설정
+            default_tactic = 'market' if signal_type == 'sell' else 'touch'
+            execution_type = attributes.get('execution_type', default_tactic)
+
             signal_info = {
                 'signal_type': signal_type,
                 'signal_date': current_daily_date,
-                'target_price': stock_target_prices.get(stock_code),
                 'stock_code': stock_code,
-                'stock_name': self.broker.manager.get_stock_name(stock_code),
+                'stock_name': self.get_stock_name(stock_code),
                 'strategy_name': self.strategy_name,
-                'is_executed': False,
-                'target_quantity': self.broker.get_position_size(stock_code)
+                'score': attributes.get('score', 0),
+                'target_price': target_price,
+                'execution_type': execution_type,
+                'target_quantity': self.broker.get_position_size(stock_code),
+                'is_executed': False
             }
             new_signals[stock_code] = signal_info
 
             if signal_type == 'sell':
                 logging.info(f"매도 신호({self.strategy_name}) - {stock_code}: "
-                             f"수량 {signal_info['target_quantity']}주")
-        
+                             f"수량 {signal_info['target_quantity']}주, 전술: {execution_type}")
+
         self.signals = new_signals
         return current_positions
-
     
     def get_stock_name(self, stock_code: str) -> str:
         """브로커의 매니저를 통해 종목명을 조회하는 과정을 캡슐화합니다."""

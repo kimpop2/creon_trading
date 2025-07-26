@@ -36,59 +36,52 @@ class DualMomentumDaily(DailyStrategy): # DailyStrategy 상속
                    f"리밸런싱요일={self.strategy_params['rebalance_weekday']}, "
                    f"선택종목수={self.strategy_params['num_top_stocks']}개")
 
-    def _calculate_strategy_signals(self, current_date: datetime.date, universe: list) -> Tuple[set, set, list, dict]:
-        # --- 기존 run_daily_logic의 내용이 이 안으로 들어옵니다 ---
+    def _calculate_strategy_signals(self, current_date: datetime.date, universe: list) -> Tuple[set, set, dict]:
+        """
+        [수정됨] 신호 속성을 통합된 딕셔너리(signal_attributes)로 반환합니다.
+        """
+        signal_attributes = {} # [신규] 통합 속성 딕셔너리
         
-        # 듀얼 모멘텀 전략은 목표가를 사용하지 않으므로 빈 딕셔너리로 초기화
-        stock_target_prices = {}
-
-        prev_trading_day = self.broker.manager.get_previous_trading_day(current_date) # 단순화된 예시
+        prev_trading_day = self.broker.manager.get_previous_trading_day(current_date)
         if prev_trading_day is None:
-            logger.warning(f"[{self.strategy_name}] {current_date}의 이전 영업일을 찾을 수 없어 전략 실행을 건너뜁니다.")
-            # 빈 값을 반환하여 오류 없이 정상 종료
-            return set(), set(), [], {}
+            return set(), set(), {}
         
-        # 1. 모멘텀 스코어 계산
         momentum_scores = self._calculate_momentum_scores(prev_trading_day)
-        # 2. 안전자산 모멘텀 계산
         safe_asset_momentum = self._calculate_safe_asset_momentum(prev_trading_day)
         current_positions = set(self.broker.get_current_positions().keys())
         inverse_asset_code = self.strategy_params.get('inverse_asset_code')
         
         if safe_asset_momentum < 0:
             # 하락장: 모든 위험자산 매도, 인버스 ETF 매수
-            logger.info(f"[{self.strategy_name}] 절대 모멘텀 하락 감지. 인버스 ETF({inverse_asset_code})로 전환합니다.")
-            
-            # 1. 매수 후보는 오직 인버스 ETF 하나입니다.
-            buy_candidates = {inverse_asset_code}
-            sorted_buy_stocks = [(inverse_asset_code, 999)] # 점수는 임의로 높게 부여
-            
-            # 2. 매도 후보는 현재 보유 중인 모든 종목(인버스 ETF 제외)입니다.
+            buy_candidates = {inverse_asset_code} if inverse_asset_code else set()
             sell_candidates = {code for code in current_positions if code != inverse_asset_code}
+            
+            # [신규] 신호 속성 정의
+            if inverse_asset_code:
+                signal_attributes[inverse_asset_code] = {'score': 999, 'execution_type': 'market'}
+            for code in sell_candidates:
+                signal_attributes[code] = {'execution_type': 'market'}
         else:
-            # 상승장: 기존 상대 모멘텀 로직 수행
-            buy_candidates, sorted_buy_stocks = self._select_buy_candidates(momentum_scores, 0) # [수정] 이제 비교 기준은 0
-            
-            # 매도 후보는 현재 보유 종목 중 새로운 매수 후보에 포함되지 않은 모든 것
+            # 상승장: 상대 모멘텀 로직 수행
+            buy_candidates, _ = self._select_buy_candidates(momentum_scores, 0)
             sell_candidates = {code for code in current_positions if code not in buy_candidates}
-            
-            # 인버스 ETF를 보유하고 있다면 무조건 매도
             if inverse_asset_code and inverse_asset_code in current_positions:
-                sell_candidates.add(inverse_asset_code)        
-        
-        if buy_candidates:
-            logger.info(f"[{self.strategy_name}] 매수 후보 {buy_candidates}의 목표가(전일 종가)를 설정합니다.")
+                sell_candidates.add(inverse_asset_code)
+                
+            # [신규] 신호 속성 정의
             for code in buy_candidates:
-                # current_date 기준의 데이터는 당일 데이터이므로, prev_trading_day를 사용해야 함
-                historical_data = self._get_historical_data_up_to('daily', code, prev_trading_day)
-                if historical_data is not None and not historical_data.empty:
-                    # 데이터의 마지막 행(전일)의 종가를 목표가로 설정
-                    target_price = historical_data['close'].iloc[-1]
-                    stock_target_prices[code] = target_price
-                    logger.debug(f"  - {code}: 목표가 {target_price:,.0f}원 설정")
+                hist_data = self._get_historical_data_up_to('daily', code, prev_trading_day)
+                if not hist_data.empty:
+                    target_price = hist_data['close'].iloc[-1]
+                    signal_attributes[code] = {
+                        'score': momentum_scores.get(code, 0),
+                        'target_price': target_price,
+                        'execution_type': 'pullback' # 전일 종가 이하는 'pullback' 전술
+                    }
+            for code in sell_candidates:
+                signal_attributes[code] = {'execution_type': 'market'}
 
-        # 5. 최종적으로 계산된 값들을 튜플 형태로 반환
-        return buy_candidates, sell_candidates, sorted_buy_stocks, stock_target_prices
+        return buy_candidates, sell_candidates, signal_attributes
     
     def _calculate_momentum_scores(self, current_daily_date):
         """모든 종목의 모멘텀 스코어를 계산합니다."""

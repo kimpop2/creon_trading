@@ -49,26 +49,26 @@ class TradingManager:
             self.db_manager.close()
             logger.info("BacktestManager를 통해 DB 연결을 종료했습니다.")
 
-    def _load_stock_info_map(self) -> dict:
+    def _load_stock_info_map(self): # [수정] 반환 타입 힌트 제거
         """
-        DB의 stock_info 테이블에서 모든 종목의 코드와 이름을 가져와
-        {'종목코드': '종목명'} 형태의 딕셔너리로 반환합니다.
+        [수정됨] DB에서 모든 종목 정보를 가져와 self.stock_info_map에 직접 저장합니다.
         """
         logger.debug("종목 정보 맵(딕셔너리) 로딩 시작")
         try:
-            # fetch_stock_info()를 인자 없이 호출하여 모든 종목 정보를 가져옵니다.
             stock_info_df = self.db_manager.fetch_stock_info() 
             if not stock_info_df.empty:
-                # 'stock_code'를 인덱스로, 'stock_name'을 값으로 하는 딕셔너리 생성
                 stock_map = pd.Series(stock_info_df.stock_name.values, index=stock_info_df.stock_code).to_dict()
-                logger.debug(f"{len(stock_map)}개의 종목 정보 로딩 완료")
-                return stock_map
+                
+                # [핵심 수정] return 하는 대신, self.stock_info_map에 직접 할당합니다.
+                self.stock_info_map = stock_map
+                
+                logger.debug(f"{len(self.stock_info_map)}개의 종목 정보 로딩 완료")
             else:
                 logger.warning("DB에서 종목 정보를 가져오지 못했습니다. stock_info 테이블이 비어있을 수 있습니다.")
-                return {}
+                self.stock_info_map = {} # 비어있는 경우에도 초기화
         except Exception as e:
             logger.error(f"종목 정보 로딩 중 오류 발생: {e}")
-            return {}
+            self.stock_info_map = {} # 오류 발생 시에도 초기화
         
     # def _load_stock_names_from_db(self):
     #     """
@@ -468,7 +468,7 @@ class TradingManager:
                 'stock_name': stock_name,
                 'quantity': quantity,
                 # sell_avail_qty가 None이면 전체 수량(quantity)을 사용, 아니면 원래 값을 사용
-                'sell_avail_qty': sell_avail_qty if sell_avail_qty is not None else quantity,
+                'sell_avail_qty': sell_avail_qty if sell_avail_qty is not None else 0,
                 'avg_price': api_pos.get('avg_price', 0.0),
                 # 평가손익과 수익률이 None이면 0.0으로 처리
                 'eval_profit_loss': eval_profit_loss if eval_profit_loss is not None else 0.0,

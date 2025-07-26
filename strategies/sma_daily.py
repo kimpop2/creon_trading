@@ -66,24 +66,27 @@ class SMADaily(DailyStrategy):
         return int(volume_sum)
  
     def _calculate_strategy_signals(self, current_date: datetime.date, universe: list) -> Tuple[set, set, list, dict]:
-        # --- 기존 run_daily_logic의 내용이 이 안으로 들어옵니다 ---
+        """
+        [수정됨] 신호 속성을 통합된 딕셔너리(signal_attributes)로 반환합니다.
+        """
         # --- 1. 유니버스 필터링 ---
         owned_codes = set(self.broker.get_current_positions().keys())
         unfilled_codes = self.broker.get_unfilled_stock_codes()
         stocks_to_exclude = owned_codes | unfilled_codes
         universe_to_analyze = [code for code in universe if code not in stocks_to_exclude and not code.startswith('U')]
 
-        # --- 2. 점수 및 목표가 계산 ---
+        # --- 2. 신호 속성 계산 ---
         buy_scores = {}
         sell_scores = {}
-        stock_target_prices = {}
+        # [수정] 여러 딕셔너리를 하나로 통합
+        signal_attributes = {}
         
         # 파라미터 가져오기
         short_sma_period = self.strategy_params['short_sma_period']
         long_sma_period = self.strategy_params['long_sma_period']
         volume_lookback_days = self.strategy_params['volume_lookback_days']
         range_coefficient = self.strategy_params.get('range_coefficient', 0.5)
-
+        
         for stock_code in universe_to_analyze:
 
             if stock_code.startswith('U'): continue
@@ -92,85 +95,75 @@ class SMADaily(DailyStrategy):
             if len(historical_data) < long_sma_period + 1:
                 continue
 
-            # --- [핵심 수정] ---
-            # `datetime.now()` 대신, 데이터의 마지막 시간을 기준으로 현재 시각을 추론합니다.
-            # 이렇게 하면 백테스트와 실시간 거래 모두에서 올바르게 동작합니다.
             current_timestamp = historical_data.index[-1]
             current_time = current_timestamp.time()
-            # --- 수정 끝 ---
-
             today_cumulative_volume = historical_data['volume'].iloc[-1]
 
-            historical_volumes = []
-            for i in range(1, volume_lookback_days + 1):
-                # 데이터가 충분한지 확인
-                if len(historical_data.index) > 1 + i:
-                    past_date = historical_data.index[-1-i].date()
-                    past_volume = self._get_cumulative_volume_at_time(stock_code, past_date, current_time)
-                    if past_volume > 0:
-                        historical_volumes.append(past_volume)
-
+            # --- [신규] 모든 계산에 필요한 공통 데이터 준비 ---
             yesterday_high = historical_data['high'].iloc[-2]
             yesterday_low = historical_data['low'].iloc[-2]
             today_open = historical_data['open'].iloc[-1]
-            
-            # 변동성 돌파 전략의 매수 목표가 계산
             price_range = yesterday_high - yesterday_low
-            target_price = today_open + (price_range * range_coefficient)
-            stock_target_prices[stock_code] = target_price
             
-            expected_cumulative_volume = sum(historical_volumes) / len(historical_volumes) if historical_volumes else 0
             short_sma = calculate_sma(historical_data['close'], short_sma_period).iloc[-1]
             long_sma = calculate_sma(historical_data['close'], long_sma_period).iloc[-1]
             prev_short_sma = calculate_sma(historical_data['close'].iloc[:-1], short_sma_period).iloc[-1]
             prev_long_sma = calculate_sma(historical_data['close'].iloc[:-1], long_sma_period).iloc[-1]
 
-            if short_sma > long_sma and prev_short_sma <= prev_long_sma and today_cumulative_volume > expected_cumulative_volume :
+            historical_volumes = [self._get_cumulative_volume_at_time(stock_code, historical_data.index[-1-i].date(), current_time) 
+                                  for i in range(1, volume_lookback_days + 1) if len(historical_data.index) > 1 + i]
+            historical_volumes = [v for v in historical_volumes if v > 0]
+            expected_cumulative_volume = sum(historical_volumes) / len(historical_volumes) if historical_volumes else 0
+
+            # --- 3. 매수/매도 조건 판단 및 signal_attributes 채우기 ---
+            is_golden_cross = (short_sma > long_sma and prev_short_sma <= prev_long_sma)
+            is_volume_strong = (today_cumulative_volume > expected_cumulative_volume)
+
+            if is_golden_cross and is_volume_strong:
                 score = (short_sma - long_sma) / long_sma * 100
                 buy_scores[stock_code] = score
+                signal_attributes[stock_code] = {
+                    'score': score,
+                    'target_price': today_open + (price_range * range_coefficient),
+                    'execution_type': 'breakout'
+                }
                 logger.info(f"[{stock_code}] 매수 신호 발생. 현재 거래량({today_cumulative_volume:,.0f}) > 최근{len(historical_volumes)}일 평균({expected_cumulative_volume:,.0f})")
-            else:
-                reason = []
-                if short_sma <= long_sma: reason.append(f"단기SMA({short_sma:,.0f}) <= 장기SMA({long_sma:,.0f})")
-                if prev_short_sma > prev_long_sma: reason.append("전일 이미 골든크로스 상태")
-                if today_cumulative_volume <= expected_cumulative_volume : reason.append(f"거래량({today_cumulative_volume:,.0f}) <= 기대치({expected_cumulative_volume:,.0f})")
-                logger.debug(f"[{stock_code}] 매수 신호 미발생. 이유: {', '.join(reason)}")
 
-            if short_sma < long_sma and prev_short_sma >= prev_long_sma and today_cumulative_volume > expected_cumulative_volume :
+            is_dead_cross = (short_sma < long_sma and prev_short_sma >= prev_long_sma)
+            if is_dead_cross and is_volume_strong:
                 score = (long_sma - short_sma) / long_sma * 100
                 sell_scores[stock_code] = score
-        
+                signal_attributes[stock_code] = {
+                    'score': -score, # 매도 점수는 음수로 표현
+                    'target_price': today_open - (price_range * range_coefficient),
+                    'execution_type': 'breakdown' # 하향 돌파
+                }
+                        
         # --- [수정] 시장 장세 필터링 ---
         if self.strategy_params.get('market_sma_period'): # [수정] .get()으로 안전하게 접근
             market_index_code = self.strategy_params['market_index_code']
             market_sma_period = self.strategy_params['market_sma_period']
 
             market_data = self._get_historical_data_up_to('daily', market_index_code, current_date, lookback_period=market_sma_period + 1)
-            
-            if not market_data.empty and len(market_data) >= market_sma_period:
-                market_sma = calculate_sma(market_data['close'], period=market_sma_period).iloc[-1]
-                current_market_price = market_data['close'].iloc[-1]
-                # [디버깅 로그 추가] 실제 계산 값을 확인합니다.
-                logger.info(f"[디버깅] 시장({market_index_code}) 실시간 가격: {current_market_price:,.2f} | 계산된 {market_sma_period}일 SMA: {market_sma:,.2f}")
+            market_sma = calculate_sma(market_data['close'], period=market_sma_period).iloc[-1]
+            current_market_price = market_data['close'].iloc[-1]
+            # [디버깅 로그 추가] 실제 계산 값을 확인합니다.
+            logger.info(f"[디버깅] 시장({market_index_code}) 실시간 가격: {current_market_price:,.2f} | 계산된 {market_sma_period}일 SMA: {market_sma:,.2f}")
 
-                if current_market_price < market_sma:
-                    logger.info(f"[{current_date}] 시장({market_index_code})이 약세장({market_sma_period}일 SMA 하회)으로 판단되어, 신규 매수 신호를 제한합니다.")
-                    ########### buy_scores.clear() 
-                else:
-                    logger.info(f"[{current_date}] 시장({market_index_code})이 강세장({market_sma_period}일 SMA 상회)으로 판단됩니다.")
+            if current_market_price < market_sma:
+                logger.info(f"시장 약세로 모든 신규 매수 신호를 제거합니다.")
+                buy_scores = {} # 매수 점수 딕셔너리를 비움
             else:
-                logger.warning(f"[{current_date}] 시장 지수({market_index_code}) 데이터 부족 또는 기간 부족으로 시장 장세 판단을 건너뜁니다.")
-
+                logger.info(f"[{current_date}] 시장({market_index_code})이 강세장({market_sma_period}일 SMA 상회)으로 판단됩니다.")
+        
         # --- 4. 최종 후보 선정 ---
-        sorted_buy_stocks = sorted(buy_scores.items(), key=lambda x: x[1], reverse=True)
         buy_candidates = {
-            stock_code for rank, (stock_code, score) in enumerate(sorted_buy_stocks, 1)
-            if rank <= self.strategy_params['num_top_stocks']
+            code for code, score in buy_scores.items()
+            if score > 0 # 점수가 0보다 큰 것만 최종 후보로 인정
         }
         
-        sellable_positions = owned_codes - unfilled_codes
-        sell_candidates = {code for code in sellable_positions if code in sell_scores}
-        # (기존 매도 후보 선정 로직 통합)
+        # num_top_stocks 필터링은 _generate_signals에서 처리
+        sell_candidates = set(sell_scores.keys())
         
         # --- 5. 최종 결과 반환 ---
-        return buy_candidates, sell_candidates, sorted_buy_stocks, stock_target_prices
+        return buy_candidates, sell_candidates, signal_attributes

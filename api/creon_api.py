@@ -481,6 +481,85 @@ class CreonAPIClient:
 
         return all_results
 
+    def get_market_eye_datas(self, stock_codes: List[str]) -> Dict[str, Dict[str, Any]]:
+        """
+        [스타일 수정] MarketEye를 사용하여 팩터 계산에 필요한 여러 종목의 데이터를 일괄 조회합니다.
+        가독성 및 매뉴얼 비교 편의성을 위해 명시적 인덱스 파싱 스타일을 적용합니다.
+
+        :param stock_codes: 조회할 종목 코드 리스트
+        :return: { '종목코드': { '필드명': 값, ... }, ... } 형태의 딕셔너리
+        """
+        if not stock_codes:
+            return {}
+
+        # 1. 요청할 필드 ID 리스트를 순서대로 정의
+        request_fields = [0, 4, 11, 24, 67, 74, 89, 97, 98, 116, 118, 120, 123, 126, 127, 150]
+
+        all_results = {}
+        CHUNK_SIZE = 200
+
+        for i in range(0, len(stock_codes), CHUNK_SIZE):
+            chunk = stock_codes[i:i + CHUNK_SIZE]
+            logger.info(f"{len(chunk)}개 종목, {len(request_fields)}개 필드 MarketEye 데이터 일괄 조회 중...")
+
+            objMarketEye = win32com.client.Dispatch("CpSysDib.MarketEye")
+            objMarketEye.SetInputValue(0, request_fields)
+            objMarketEye.SetInputValue(1, chunk)
+
+            status_code, msg = self._execute_block_request(objMarketEye)
+            if status_code != 0:
+                logger.error(f"MarketEye 요청 실패: {msg}")
+                continue
+
+            # 2. 결과 파싱 (명시적 인덱스 기준)
+            count = objMarketEye.GetHeaderValue(2)
+            for j in range(count):
+                code = objMarketEye.GetDataValue(0, j)
+
+                # --- 각 필드 값을 순서대로 변수에 할당 ---
+                current_price_val = objMarketEye.GetDataValue(1, j)  # 현재가
+                trading_value_val = objMarketEye.GetDataValue(2, j)  # 거래대금
+                trading_intensity_val = objMarketEye.GetDataValue(3, j)  # 체결강도
+                per_val = objMarketEye.GetDataValue(4, j)  # PER
+                dividend_yield_val = objMarketEye.GetDataValue(5, j)  # 배당수익률
+                bps_val = objMarketEye.GetDataValue(6, j)  # BPS
+                q_revenue_growth_val = objMarketEye.GetDataValue(7, j)  # 분기 매출액 증가율
+                q_op_income_growth_val = objMarketEye.GetDataValue(8, j)  # 분기 영업이익 증가율
+                program_net_buy_val = objMarketEye.GetDataValue(9, j)  # 프로그램 순매수
+                foreigner_net_buy_val = objMarketEye.GetDataValue(10, j) # 외국인 순매수
+                institution_net_buy_val = objMarketEye.GetDataValue(11, j) # 기관 순매수
+                sps_val = objMarketEye.GetDataValue(12, j) # SPS
+                credit_ratio_val = objMarketEye.GetDataValue(13, j) # 신용잔고율
+                short_volume_val = objMarketEye.GetDataValue(14, j) # 공매도 수량
+                beta_coefficient_val = objMarketEye.GetDataValue(15, j) # 베타계수
+
+                # --- 안전한 타입 변환 후 딕셔너리 생성 ---
+                try:
+                    all_results[code] = {
+                        'stock_code': code,
+                        'current_price': float(current_price_val),
+                        'trading_value': float(trading_value_val),
+                        'trading_intensity': float(trading_intensity_val),
+                        'per': float(per_val),
+                        'dividend_yield': float(dividend_yield_val),
+                        'bps': float(bps_val),
+                        'q_revenue_growth_rate': float(q_revenue_growth_val),
+                        'q_op_income_growth_rate': float(q_op_income_growth_val),
+                        'program_net_buy': float(program_net_buy_val),
+                        'foreigner_net_buy': float(foreigner_net_buy_val),
+                        'institution_net_buy': float(institution_net_buy_val),
+                        'sps': float(sps_val),
+                        'credit_ratio': float(credit_ratio_val),
+                        'short_volume': float(short_volume_val),
+                        'beta_coefficient': float(beta_coefficient_val),
+                    }
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"[{code}] 종목의 데이터 타입 변환 중 오류 발생: {e}. 해당 종목을 건너뜁니다.")
+                    continue
+        
+        logger.info(f"총 {len(all_results)}개 종목에 대한 MarketEye 데이터 조회 완료.")
+        return all_results
+    
     def get_current_price_and_quotes(self, stock_code: str) -> Optional[Dict[str, Any]]:
         """
         특정 종목의 현재가(종가), 10차 호가 및 각 호가의 잔량을 조회합니다.

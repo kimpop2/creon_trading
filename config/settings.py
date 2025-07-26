@@ -179,17 +179,17 @@ MIN_STOCK_CAPITAL = 50_000 # 예시: 종목당 최소 5만원으로 매수
 STRATEGY_CONFIGS = [
     {
         'name': 'SMADaily',                 # 전략 클래스 이름과 일치해야 함
-        'weight': 0.6,                      # 총 투자원금 내에서 이 전략에 할당될 자금의 비중 (60%)
+        'weight': 0.33,                      # 총 투자원금 내에서 이 전략에 할당될 자금의 비중 (60%)
         'params': SMA_DAILY_PARAMS          # 위에서 정의한 파라미터 딕셔너리 연결
     },
     {
         'name': 'TripleScreenDaily',        # 전략 클래스 이름과 일치해야 함
-        'weight': 0.3,                      # 총 투자원금 내에서 이 전략에 할당될 자금의 비중 (60%)
+        'weight': 0.33,                      # 총 투자원금 내에서 이 전략에 할당될 자금의 비중 (60%)
         'params': TRIPLE_SCREEN_DAILY_PARAMS  # 위에서 정의한 파라미터 딕셔너리 연결
     },
     {
         'name': 'DualMomentumDaily',        # 다른 전략도 이런 식으로 추가
-        'weight': 0.3,                      # 총 투자원금 내에서 이 전략에 할당될 자금의 비중 (40%)
+        'weight': 0.33,                      # 총 투자원금 내에서 이 전략에 할당될 자금의 비중 (40%)
         'params': DUAL_MOMENTUM_DAILY_PARAMS
     }
 ]

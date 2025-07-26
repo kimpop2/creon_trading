@@ -121,35 +121,46 @@ class Backtest:
         return True        
     
 
-    def _aggregate_signals(self) -> Dict[str, Any]:
-        """모든 일봉 전략의 신호를 취합하여 최종 신호를 결정합니다."""
-        aggregated_signals: Dict[str, Any] = {}
-        for strategy in self.daily_strategies:
-            for stock_code, signal_info in strategy.signals.items():
-                existing_signal = aggregated_signals.get(stock_code)
-                new_signal_type = signal_info.get('signal_type')
-                if not existing_signal:
-                    aggregated_signals[stock_code] = signal_info
-                    continue
-                # 기존에 매도 신호가 있으면 유지
-                if existing_signal['signal_type'] == 'sell':
-                    continue
-                # 새로운 신호가 매도이면 덮어쓰기
-                if new_signal_type == 'sell':
-                    aggregated_signals[stock_code] = signal_info
-                    logging.debug(f"[{stock_code}] 신호 변경: 기존 '{existing_signal['signal_type']}' -> 신규 'sell'")
-                    continue
-                # 기존이 매수이고 신규가 홀드이면 매수 유지
-                if existing_signal['signal_type'] == 'buy' and new_signal_type == 'hold':
-                    continue
-                aggregated_signals[stock_code] = signal_info
+    def _aggregate_signals(self, signals_from_all_strategies: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        여러 전략에서 생성된 신호들을 제안된 정책에 따라 통합합니다.
+        정책 우선순위: 1.매도 우선 -> 2.스코어 절대값 -> 3.수량
+        """
+        final_signals = {}
         
-        # 실제 주문이 나갈 'buy' 또는 'sell' 신호만 필터링
-        final_signals = {
-            code: signal for code, signal in aggregated_signals.items()
-            if signal.get('signal_type') in ['buy', 'sell']
-        }
-        logging.info(f"신호 통합 완료. 최종 유효 신호: {len(final_signals)}개")
+        for strategy_signals in signals_from_all_strategies:
+            for stock_code, new_signal in strategy_signals.items():
+                if stock_code not in final_signals:
+                    # 새로운 종목의 신호는 바로 추가
+                    final_signals[stock_code] = new_signal
+                    continue
+
+                # --- 신호 충돌 발생 시 ---
+                existing_signal = final_signals[stock_code]
+
+                # 1. 매도 우선 정책
+                if existing_signal['signal_type'] == 'buy' and new_signal['signal_type'] == 'sell':
+                    final_signals[stock_code] = new_signal # 매도 신호로 덮어쓰기
+                    continue
+                if existing_signal['signal_type'] == 'sell' and new_signal['signal_type'] == 'buy':
+                    continue # 기존 매도 신호 유지
+
+                # 신호 타입이 같은 경우 (buy vs buy, sell vs sell)
+                # 2. 스코어 절대값 우선 정책
+                existing_score = abs(existing_signal.get('score', 0))
+                new_score = abs(new_signal.get('score', 0))
+                if new_score > existing_score:
+                    final_signals[stock_code] = new_signal
+                    continue
+                
+                # 3. 수량 우선 정책 (스코어가 같을 경우)
+                if new_score == existing_score:
+                    existing_qty = existing_signal.get('target_quantity', 0)
+                    new_qty = new_signal.get('target_quantity', 0)
+                    if new_qty > existing_qty:
+                        final_signals[stock_code] = new_signal
+                        continue
+        
         return final_signals
 
     # [신규] 특정 날짜의 종가를 가져오는 헬퍼 메서드
@@ -178,7 +189,8 @@ class Backtest:
     def run(self):
         start_date = self.start_date
         end_date = self.end_date
-        self.prepare_for_system()
+        # [수정] prepare_for_system()을 run 메서드 외부에서 호출하도록 변경 (최적화 시 유리)
+        # self.prepare_for_system() 
 
         logging.info(f"백테스트 시작: {start_date} 부터 {end_date} 까지")
         
@@ -189,28 +201,32 @@ class Backtest:
         market_calendar_df = self.manager.fetch_market_calendar(start_date, end_date)
         trading_dates = market_calendar_df[market_calendar_df['is_holiday'] == 0]['date'].dt.date.tolist()
         
-        # --- [핵심 수정] trading.py와 유사한 루프 구조 ---
         for i, current_date in enumerate(trading_dates):
             if not (start_date <= current_date <= end_date):
                 continue
 
             logging.info(f"\n--- 현재 백테스트 날짜: {current_date.isoformat()} ---")
             
-            # 1. 자금 할당 로직 (전일 종가 기준)
+            # 1. 자금 할당 로직
             prev_date = trading_dates[i - 1] if i > 0 else start_date - timedelta(days=1)
             prev_prices = self._get_prices_for_date(prev_date)
             
             account_equity = self.capital_manager.get_account_equity(prev_prices)
             total_principal = self.capital_manager.get_total_principal(account_equity, PRINCIPAL_RATIO)
 
-            # 2. 복수 일봉 전략 실행
+            # --- [핵심 수정] 신호 통합 로직 적용 ---
+            # 2. 복수 일봉 전략 실행 및 신호 수집
+            signals_from_all = []
             for strategy in self.daily_strategies:
                 strategy_capital = self.capital_manager.get_strategy_capital(strategy.strategy_name, total_principal)
                 strategy.run_daily_logic(current_date, strategy_capital)
+                signals_from_all.append(strategy.signals)
             
-            # 3. 신호 통합 및 분봉 전략에 전달
-            final_signals = self._aggregate_signals()
+            # 3. 신호 통합 정책을 적용하여 최종 신호를 결정합니다.
+            final_signals = self._aggregate_signals(signals_from_all)
             self.minute_strategy.update_signals(final_signals)
+            logging.info(f"신호 통합 완료. 최종 유효 신호: {len(final_signals)}개")
+            # --- 수정 끝 ---
 
             # 4. 분봉 루프 실행
             market_open_dt = datetime.combine(current_date, self.market_open_time)
@@ -225,10 +241,8 @@ class Backtest:
 
                     current_prices = self.get_all_current_prices(current_dt)
                     
-                    # 4-1. 손절/익절 로직 실행
                     self.broker.check_and_execute_stop_loss(current_prices, current_dt)
                     
-                    # 4-2. 분봉 매매 로직 실행
                     for stock_code in list(stocks_to_trade):
                         self.minute_strategy.run_minute_logic(current_dt, stock_code)
 
@@ -447,6 +461,9 @@ if __name__ == "__main__":
         from strategies.sma_daily import SMADaily
         sma_strategy = SMADaily(broker=backtest_system.broker, data_store=backtest_system.data_store, strategy_params=SMA_DAILY_PARAMS)
 
+        from strategies.triple_screen_daily import TripleScreenDaily
+        ts_strategy = TripleScreenDaily(broker=backtest_system.broker, data_store=backtest_system.data_store, strategy_params=TRIPLE_SCREEN_DAILY_PARAMS)
+
         from strategies.dual_momentum_daily import DualMomentumDaily
         dm_strategy = DualMomentumDaily(broker=backtest_system.broker, data_store=backtest_system.data_store, strategy_params=DUAL_MOMENTUM_DAILY_PARAMS)
 
@@ -455,12 +472,13 @@ if __name__ == "__main__":
 
         # 4. 전략 설정
         backtest_system.set_strategies(
-            #daily_strategies=[sma_strategy, dm_strategy],
-            daily_strategies=[sma_strategy],
+            #daily_strategies=[dm_strategy,],
+            daily_strategies=[sma_strategy, ts_strategy, dm_strategy],
             minute_strategy=minute_strategy,
             stop_loss_params=STOP_LOSS_PARAMS
         )
         # 5. 백테스트 실행
+        backtest_system.prepare_for_system()
         backtest_system.run()
 
     except Exception as e:

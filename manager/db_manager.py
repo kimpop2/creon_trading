@@ -261,18 +261,6 @@ class DBManager:
         data = []
         for entry in calendar_data_list:
             date_to_save = entry['date']
-            # Ensure date is a datetime.date object for the DB insertion
-            # if isinstance(entry['date'], datetime.datetime):
-            #     date_to_save = entry['date'].date()
-            # elif isinstance(entry['date'], datetime.date):
-            #     date_to_save = entry['date']
-            # else:
-            #     logger.warning(f"예상치 못한 'date' 타입: {type(entry['date'])}. datetime.date로 변환 시도.")
-            #     try:
-            #         date_to_save = datetime.datetime.strptime(str(entry['date']), '%Y-%m-%d').date()
-            #     except ValueError:
-            #         logger.error(f"날짜 변환 실패: {entry['date']}")
-            #         continue # Skip this entry if date conversion fails
 
             data.append((
                 date_to_save,
@@ -445,7 +433,7 @@ class DBManager:
         sql = """
         SELECT DISTINCT date 
         FROM market_calendar
-        WHERE date BETWEEN %s AND %s
+        WHERE date BETWEEN %s AND %s AND is_holiday = FALSE
         ORDER BY date ASC
         """
         params = (from_date, to_date)
@@ -1969,3 +1957,125 @@ class DBManager:
                 df['relevance_score'] = df['relevance_score'].apply(lambda x: float(x) if isinstance(x, Decimal) else x)
             return df
         return pd.DataFrame() 
+    
+
+    # ----------------------------------------------------------------------------
+    # 퀀트 팩터 관리 테이블 (신규 추가)
+    # ----------------------------------------------------------------------------
+    def create_factor_tables(self) -> bool:
+        """daily_factors 테이블을 생성합니다."""
+        return self.execute_sql_file('create_factors_table')
+
+    def drop_factor_tables(self) -> bool:
+        """daily_factors 테이블을 생성합니다."""
+        return self.execute_sql_file('drop_factors_table')
+
+    def save_daily_factors(self, factors_list: List[Dict[str, Any]]) -> bool:
+        """
+        [수정됨] 딕셔너리 리스트 형태의 일별 팩터 데이터를 DB에 저장하거나 업데이트합니다.
+        (date, stock_code) 복합 키를 기준으로 중복 시 업데이트합니다.
+        """
+        if not factors_list:
+            logger.info("저장할 daily_factors 데이터가 없습니다.")
+            return True
+        
+        sql = """
+            INSERT INTO daily_factors (
+                `date`, `stock_code`, `foreigner_net_buy`, `institution_net_buy`, 
+                `program_net_buy`, `trading_intensity`, `credit_ratio`, `short_volume`, 
+                `trading_value`, `per`, `pbr`, `psr`, `dividend_yield`, 
+                `relative_strength`, `beta_coefficient`, `days_since_52w_high`, 
+                `dist_from_ma20`, `historical_volatility_20d`, 
+                `q_revenue_growth_rate`, `q_op_income_growth_rate`
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            )
+            ON DUPLICATE KEY UPDATE
+                foreigner_net_buy = VALUES(foreigner_net_buy),
+                institution_net_buy = VALUES(institution_net_buy),
+                program_net_buy = VALUES(program_net_buy),
+                trading_intensity = VALUES(trading_intensity),
+                credit_ratio = VALUES(credit_ratio),
+                short_volume = VALUES(short_volume),
+                trading_value = VALUES(trading_value),
+                per = VALUES(per),
+                pbr = VALUES(pbr),
+                psr = VALUES(psr),
+                dividend_yield = VALUES(dividend_yield),
+                relative_strength = VALUES(relative_strength),
+                beta_coefficient = VALUES(beta_coefficient),
+                days_since_52w_high = VALUES(days_since_52w_high),
+                dist_from_ma20 = VALUES(dist_from_ma20),
+                historical_volatility_20d = VALUES(historical_volatility_20d),
+                q_revenue_growth_rate = VALUES(q_revenue_growth_rate),
+                q_op_income_growth_rate = VALUES(q_op_income_growth_rate)
+        """
+        
+        # SQL 쿼리에 정의된 컬럼 순서
+        column_order = [
+            'date', 'stock_code', 'foreigner_net_buy', 'institution_net_buy', 
+            'program_net_buy', 'trading_intensity', 'credit_ratio', 'short_volume', 
+            'trading_value', 'per', 'pbr', 'psr', 'dividend_yield', 
+            'relative_strength', 'beta_coefficient', 'days_since_52w_high', 
+            'dist_from_ma20', 'historical_volatility_20d', 
+            'q_revenue_growth_rate', 'q_op_income_growth_rate'
+        ]
+
+        data_tuples = []
+        for item_dict in factors_list:
+            # ✨ [핵심 수정] 딕셔너리의 각 값을 확인하여 NaN이면 None으로 변환하고, 순서에 맞게 튜플 생성
+            row_tuple = tuple(
+                None if pd.isna(item_dict.get(col)) else item_dict.get(col) 
+                for col in column_order
+            )
+            data_tuples.append(row_tuple)
+
+        try:
+            conn = self.get_db_connection()
+            cursor = conn.cursor()
+            cursor.executemany(sql, data_tuples)
+            conn.commit()
+            logger.info(f"{len(data_tuples)}개의 daily_factors 데이터를 저장/업데이트했습니다.")
+            return True
+        except Exception as e:
+            logger.error(f"daily_factors 저장/업데이트 중 오류 발생: {e}", exc_info=True)
+            if conn:
+                conn.rollback()
+            return False
+
+    def fetch_daily_factors(self, start_date: date, end_date: date, stock_code: str) -> pd.DataFrame:
+        """
+        [수정됨] DB에서 특정 종목의 일별 팩터 데이터를 조회하여 DataFrame으로 반환합니다.
+        'date'는 인덱스가 아닌 일반 컬럼으로 유지합니다.
+        """
+        conn = self.get_db_connection()
+        if not conn:
+            return pd.DataFrame()
+
+        sql = "SELECT * FROM daily_factors WHERE stock_code = %s AND date BETWEEN %s AND %s ORDER BY date ASC"
+        params = (stock_code, start_date, end_date)
+
+        try:
+            cursor = self.execute_sql(sql, params)
+            if cursor:
+                result = cursor.fetchall()
+                df = pd.DataFrame(result)
+                if not df.empty:
+                    df['date'] = pd.to_datetime(df['date']).dt.normalize()
+                    #df.set_index('date', inplace=True) # ✨ [수정] 이 라인을 삭제 또는 주석 처리
+                    numeric_cols = [
+                        'foreigner_net_buy', 'institution_net_buy', 'program_net_buy',
+                        'trading_intensity', 'credit_ratio', 'short_volume', 'trading_value',
+                        'per', 'pbr', 'psr', 'dividend_yield', 'relative_strength',
+                        'beta_coefficient', 'days_since_52w_high', 'dist_from_ma20',
+                        'historical_volatility_20d', 'q_revenue_growth_rate', 'q_op_income_growth_rate'
+                    ]
+                    for col in numeric_cols:
+                        if col in df.columns:
+                            df[col] = pd.to_numeric(df[col], errors='coerce')
+                return df
+            return pd.DataFrame()
+        except Exception as e:
+            logger.error(f"fetch_daily_factors 처리 중 예외 발생: {e}", exc_info=True)
+            return pd.DataFrame() 

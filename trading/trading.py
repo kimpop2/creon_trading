@@ -179,22 +179,38 @@ class Trading:
                         self.broker.sync_account_status()
                         self.last_sync_time = pytime.time()
 
-                    if self.last_daily_run_time is None or (now - self.last_daily_run_time) >= timedelta(minutes=1):
-                        logger.info("1. 일일 전략 재실행 및 자금 할당 시작...")
-                        
-                        all_codes = set(self.data_store['daily'].keys()) | set(self.broker.get_current_positions().keys())
-                        current_prices = self.manager.api_client.get_current_prices_bulk(list(all_codes))
+                    if self.last_daily_run_time is None or (now - self.last_daily_run_time) >= timedelta(minutes=5):
+                        logger.info("1. 모든 일일 전략 재실행 및 자금 재배분...")
+
+                        # --- [START] Capital Management Logic ---
+                        # Step 1: Calculate Account Equity. This requires current prices.
+                        codes_for_equity = set(self.data_store['daily'].keys()) | set(self.broker.get_current_positions().keys())
+                        current_prices = self.manager.api_client.get_current_prices_bulk(list(codes_for_equity))
                         account_equity = self.capital_manager.get_account_equity(current_prices)
+
+                        # Step 2: Calculate Total Principal
                         total_principal = self.capital_manager.get_total_principal(account_equity, PRINCIPAL_RATIO)
-                    
+                        logger.info(f"자금 계산 완료: 총자산={account_equity:,.0f}원, 총 투자원금={total_principal:,.0f}원")
+                        # --- [END] Capital Management Logic ---
+                        
+                        signals_from_all = []
                         for strategy in self.daily_strategies:
-                            strategy_capital = self.capital_manager.get_strategy_capital(strategy.strategy_name, total_principal)
+                            strategy_name = strategy.strategy_name
+                            
+                            # Step 3: Use the correct method to get strategy-specific capital
+                            strategy_capital = self.capital_manager.get_strategy_capital(strategy_name, total_principal)
+                            
+                            logger.info(f"-> 전략 '{strategy_name}' 실행 (할당 자본: {strategy_capital:,.0f}원)")
+                            
+                            # Pass the correctly calculated capital to the strategy
                             strategy.run_daily_logic(now.date(), strategy_capital)
-                    
-                        final_signals = self._aggregate_signals() 
+                            signals_from_all.append(strategy.signals)
+                        
+                        final_signals = self._aggregate_signals(signals_from_all)
                         self.minute_strategy.update_signals(final_signals)
                         self.last_daily_run_time = now
-                        logger.info(f"-> 일일 전략 실행 및 신호 통합 완료. 최종 유효 신호: {len(final_signals)}개")
+                        
+                        logger.info(f"-> 일일 전략 실행 및 신호 통합 완료. 최종 {len(final_signals)}개 신호 생성/업데이트.")
                     
                     stocks_to_process = set(self.data_store['daily'].keys()) | set(self.broker.get_current_positions().keys()) | set(self.minute_strategy.signals.keys())
                     logger.info(f"2. 처리 대상 종목 통합 완료: 총 {len(stocks_to_process)}개")
@@ -342,30 +358,46 @@ class Trading:
         
         self._last_cumulative_volume[stock_code] = cumulative_volume
 
-    def _aggregate_signals(self) -> Dict[str, Any]:
-        aggregated_signals: Dict[str, Any] = {}
-        for strategy in self.daily_strategies:
-            for stock_code, signal_info in strategy.signals.items():
-                existing_signal = aggregated_signals.get(stock_code)
-                new_signal_type = signal_info.get('signal_type')
-                if not existing_signal:
-                    aggregated_signals[stock_code] = signal_info
-                    continue
-                if existing_signal['signal_type'] == 'sell':
-                    continue
-                if new_signal_type == 'sell':
-                    aggregated_signals[stock_code] = signal_info
-                    logging.debug(f"[{stock_code}] 신호 변경: 기존 '{existing_signal['signal_type']}' -> 신규 'sell'")
-                    continue
-                if existing_signal['signal_type'] == 'buy' and new_signal_type == 'hold':
-                    continue
-                aggregated_signals[stock_code] = signal_info
+    def _aggregate_signals(self, signals_from_all_strategies: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        여러 전략에서 생성된 신호들을 제안된 정책에 따라 통합합니다.
+        정책 우선순위: 1.매도 우선 -> 2.스코어 절대값 -> 3.수량
+        """
+        final_signals = {}
         
-        final_signals = {
-            code: signal for code, signal in aggregated_signals.items()
-            if signal.get('signal_type') in ['buy', 'sell']
-        }
-        logging.info(f"신호 통합 완료. 최종 신호: {len(final_signals)}개")
+        for strategy_signals in signals_from_all_strategies:
+            for stock_code, new_signal in strategy_signals.items():
+                if stock_code not in final_signals:
+                    # 새로운 종목의 신호는 바로 추가
+                    final_signals[stock_code] = new_signal
+                    continue
+
+                # --- 신호 충돌 발생 시 ---
+                existing_signal = final_signals[stock_code]
+
+                # 1. 매도 우선 정책
+                if existing_signal['signal_type'] == 'buy' and new_signal['signal_type'] == 'sell':
+                    final_signals[stock_code] = new_signal # 매도 신호로 덮어쓰기
+                    continue
+                if existing_signal['signal_type'] == 'sell' and new_signal['signal_type'] == 'buy':
+                    continue # 기존 매도 신호 유지
+
+                # 신호 타입이 같은 경우 (buy vs buy, sell vs sell)
+                # 2. 스코어 절대값 우선 정책
+                existing_score = abs(existing_signal.get('score', 0))
+                new_score = abs(new_signal.get('score', 0))
+                if new_score > existing_score:
+                    final_signals[stock_code] = new_signal
+                    continue
+                
+                # 3. 수량 우선 정책 (스코어가 같을 경우)
+                if new_score == existing_score:
+                    existing_qty = existing_signal.get('target_quantity', 0)
+                    new_qty = new_signal.get('target_quantity', 0)
+                    if new_qty > existing_qty:
+                        final_signals[stock_code] = new_signal
+                        continue
+        
         return final_signals
 
     def _ensure_minute_data_exists(self, stock_code: str, current_date: date):
@@ -373,7 +405,7 @@ class Trading:
         if current_date not in stock_minute_data:
             logger.info(f"[{stock_code}] 종목의 당일 분봉 데이터가 없어 따라잡기를 실행합니다.")
             try:
-                market_calendar_df = self.db_manager.fetch_market_calendar(current_date - timedelta(days=10), current_date)
+                market_calendar_df = self.manager.fetch_market_calendar(current_date - timedelta(days=10), current_date)
                 trading_days = market_calendar_df[market_calendar_df['is_holiday'] == 0]['date'].dt.date.sort_values().tolist()
                 prev_trading_date = trading_days[-2] if len(trading_days) > 1 else current_date - timedelta(days=1)
                 minute_df = self.manager.cache_minute_ohlcv(stock_code, prev_trading_date, current_date)
@@ -398,7 +430,7 @@ class Trading:
             end_value = self.broker.get_current_cash_balance()
             logger.warning(f"포트폴리오 가치(end_value)가 None이므로 현재 현금 잔고({end_value:,.0f}원)로 대체합니다.")
 
-        latest_portfolio = self.db_manager.fetch_latest_daily_portfolio()
+        latest_portfolio = self.manager.fetch_latest_daily_portfolio()
         start_value = latest_portfolio.get('total_capital', self.broker.initial_cash) if latest_portfolio else self.broker.initial_cash
         
         if start_value is None:
@@ -409,7 +441,7 @@ class Trading:
             [float(start_value), float(end_value)], 
             index=[pd.Timestamp(current_date - timedelta(days=1)), pd.Timestamp(current_date)]
         )
-        transaction_log = self.db_manager.fetch_trading_logs(current_date, current_date)
+        transaction_log = self.manager.fetch_trading_logs(current_date, current_date)
         
         daily_strategy_names = ', '.join([s.__class__.__name__ for s in self.daily_strategies])
         daily_strategy_params_json = json.dumps({s.__class__.__name__: s.strategy_params for s in self.daily_strategies}, ensure_ascii=False, indent=2)
