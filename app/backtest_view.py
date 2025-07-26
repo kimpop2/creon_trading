@@ -23,21 +23,21 @@ plt.rcParams['axes.unicode_minus'] = False
 
 # 통합된 BacktestModel 임포트
 from app.backtest_model import BacktestModel
-
+from manager.app_manager import AppManager
 logger = logging.getLogger(__name__)
 
 class BacktestView(QWidget):
-    def __init__(self):
+    def __init__(self, app_manager: AppManager):
         super().__init__()
-        self.run_list_model = BacktestModel()
-        self.performance_model = BacktestModel()
-        self.traded_stocks_model = BacktestModel()
+        self.run_list_model = BacktestModel(app_manager)
+        self.performance_model = BacktestModel(app_manager)
+        self.traded_stocks_model = BacktestModel(app_manager)
         self.daily_selected_line = None  # 선택된 날짜를 표시하는 고정선
         self.daily_hover_line = None     # 마우스 커서를 따라다니는 임시선
         self.daily_chart_dates = None    # 일봉 차트의 날짜 인덱스 저장
         self.last_hover_date = None      # 마지막으로 호버링된 날짜 (중복 방지용)
         self.daily_ax1 = None            # 일봉 차트의 주가 축
-        self.stock_dic = {}              # 종목코드-종목명 매핑 딕셔너리
+        self.stock_dic = app_manager.get_stock_info_map # 종목코드-종목명 매핑 딕셔너리
         self.init_ui()
 
     def init_ui(self):

@@ -12,7 +12,7 @@ sys.path.insert(0, project_root)
 from app.backtest_view import BacktestView
 from app.backtest_controller import BacktestController
 from app.backtest_model import BacktestModel
-
+from manager.app_manager import AppManager
 
 def setup_logging():
     """로깅 기본 설정을 수행합니다."""
@@ -72,12 +72,12 @@ def main():
         progress.setLabelText("데이터 매니저를 초기화하는 중입니다...")
         progress.setValue(5)
         app.processEvents()
-        
+        app_manager = AppManager()
         
         progress.setLabelText("데이터 모델을 초기화하는 중입니다...")
         progress.setValue(15)
         app.processEvents()
-        model = BacktestModel()
+        model = BacktestModel(app_manager)
         
         # --- 실행목록 로딩 (전체 70%까지 진행) ---
         progress.setLabelText("백테스트 실행목록을 로딩하는 중입니다...")
@@ -90,21 +90,17 @@ def main():
             app.processEvents()
         
         all_runs_df = model.load_all_backtest_runs(progress_callback=update_progress)
-        # 전략 파라미터 파싱이 제거되어 70%에서 바로 완료
-        # progress.setValue(70)  # 이미 load_all_backtest_runs에서 70%로 설정됨
-        app.processEvents()
-        # --------------------------------------
-    
-        # 2. View와 Controller 생성 및 연결
+        
         progress.setLabelText("사용자 인터페이스를 구성하는 중입니다...")
         progress.setValue(85)
         app.processEvents()
-        view = BacktestView()
+        view = BacktestView(app_manager)
         
         progress.setLabelText("컨트롤러를 초기화하는 중입니다...")
         progress.setValue(95)
         app.processEvents()
-        controller = BacktestController(view, model)
+        # Controller는 Model을 통해 AppManager에 접근하므로 직접 전달할 필요 없음
+        controller = BacktestController(view, model) 
         
         # 로딩 다이얼로그 닫기
         progress.setLabelText("초기화 완료!")
@@ -123,8 +119,6 @@ def main():
         # 사용자에게 오류 메시지 박스를 보여주고 종료할 수 있음
         sys.exit(1)
     
-
-
 
 if __name__ == '__main__':
     main()
