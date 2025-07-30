@@ -180,33 +180,16 @@ class Trading:
                         self.last_sync_time = pytime.time()
 
                     if self.last_daily_run_time is None or (now - self.last_daily_run_time) >= timedelta(minutes=5):
-                        logger.info("1. 모든 일일 전략 재실행 및 자금 재배분...")
-
-                        # --- [START] Capital Management Logic ---
-                        # Step 1: Calculate Account Equity. This requires current prices.
-                        codes_for_equity = set(self.data_store['daily'].keys()) | set(self.broker.get_current_positions().keys())
-                        current_prices = self.manager.api_client.get_current_prices_bulk(list(codes_for_equity))
-                        account_equity = self.capital_manager.get_account_equity(current_prices)
-
-                        # Step 2: Calculate Total Principal
-                        total_principal = self.capital_manager.get_total_principal(account_equity, PRINCIPAL_RATIO)
-                        logger.info(f"자금 계산 완료: 총자산={account_equity:,.0f}원, 총 투자원금={total_principal:,.0f}원")
-                        # --- [END] Capital Management Logic ---
+                        logger.info("1. 모든 일일 전략 재실행...")
                         
                         signals_from_all = []
                         for strategy in self.daily_strategies:
-                            strategy_name = strategy.strategy_name
-                            
-                            # Step 3: Use the correct method to get strategy-specific capital
-                            strategy_capital = self.capital_manager.get_strategy_capital(strategy_name, total_principal)
-                            
-                            logger.info(f"-> 전략 '{strategy_name}' 실행 (할당 자본: {strategy_capital:,.0f}원)")
-                            
-                            # Pass the correctly calculated capital to the strategy
-                            strategy.run_daily_logic(now.date(), strategy_capital)
+                            strategy.run_daily_logic(now.date(), self.strategy_capital) # strategy_capital 전달
                             signals_from_all.append(strategy.signals)
                         
+                        # [핵심 수정] 신호 통합 정책을 적용하여 최종 신호를 결정합니다.
                         final_signals = self._aggregate_signals(signals_from_all)
+                        
                         self.minute_strategy.update_signals(final_signals)
                         self.last_daily_run_time = now
                         
@@ -470,7 +453,7 @@ if __name__ == "__main__":
         SMA_DAILY_PARAMS, DUAL_MOMENTUM_DAILY_PARAMS, TRIPLE_SCREEN_DAILY_PARAMS,
         VOL_QUALITY_DAILY_PARAMS, RSI_REVERSION_DAILY_PARAMS, VOL_BREAKOUT_DAILY_PARAMS,
         PAIRS_TRADING_DAILY_PARAMS, INVERSE_DAILY_PARAMS
-    ) 
+    )   
     logging.basicConfig(level=logging.INFO,
                         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                         handlers=[logging.StreamHandler()])
@@ -506,7 +489,7 @@ if __name__ == "__main__":
             daily_strategies=[sma_strategy, dm_strategy, vb_strategy],
             minute_strategy=minute_strategy
         )
-      
+        
         trading_system.set_broker_stop_loss_params(STOP_LOSS_PARAMS)
 
         if trading_system.prepare_for_system():

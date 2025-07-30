@@ -1,5 +1,5 @@
 # backtest/backtester.py
-from datetime import datetime, time, timedelta
+from datetime import datetime as dt, time, timedelta 
 import logging
 from typing import Dict, Any, List, Optional
 import pandas as pd
@@ -19,6 +19,10 @@ from util.strategies_util import *
 from strategies.strategy import DailyStrategy, MinuteStrategy
 from trading.abstract_report import ReportGenerator, BacktestDB
 from manager.capital_manager import CapitalManager
+from analyzer.hmm_model import RegimeAnalysisModel
+from analyzer.inference_service import RegimeInferenceService
+from analyzer.policy_map import PolicyMap
+from manager.portfolio_manager import PortfolioManager
 from config.settings import PRINCIPAL_RATIO, STRATEGY_CONFIGS # 자금 관리 설정 임포트
 
 # 설정 파일 로드
@@ -36,12 +40,13 @@ class Backtest:
     def __init__(self, 
                  manager: BacktestManager,
                  initial_cash: float, 
-                 start_date: datetime.date,
-                 end_date: datetime.date,
+                 start_date: dt.date,
+                 end_date: dt.date,
                  save_to_db: bool = True # DB 저장 여부
         ):
         self.manager = manager
         self.initial_cash = initial_cash
+        self.original_initial_cash = initial_cash # [추가] 리셋을 위한 원본 초기 자본금 저장
         self.broker = Broker(manager=manager, initial_cash=initial_cash)
         self.capital_manager = CapitalManager(self.broker, STRATEGY_CONFIGS)
         self.start_date = start_date
@@ -55,8 +60,8 @@ class Backtest:
         self.save_to_db = save_to_db
 
 
-        self.market_open_time = datetime.strptime(MARKET_OPEN_TIME, '%H:%M:%S').time()
-        self.market_close_time = datetime.strptime(MARKET_CLOSE_TIME, '%H:%M:%S').time()
+        self.market_open_time = dt.strptime(MARKET_OPEN_TIME, '%H:%M:%S').time()
+        self.market_close_time = dt.strptime(MARKET_CLOSE_TIME, '%H:%M:%S').time()
         
         self.last_portfolio_check = None # 포트폴리오 손절 체크 시간을 추적하기 위한 변수
         self.portfolio_stop_flag = False # 포트폴리오 손절 발생 시 당일 매매 중단 플래그
@@ -114,7 +119,7 @@ class Backtest:
                 self.data_store['minute'].setdefault(code, {})
                 # 불러온 분봉 데이터를 날짜별로 그룹화하여 저장
                 for group_date, group_df in minute_df.groupby(minute_df.index.date):
-                    # group_date는 datetime.date 객체
+                    # group_date는 dt.date 객체
                     self.data_store['minute'][code][group_date] = group_df
         
         logging.info(f"--- 모든 데이터 준비 완료 ---")
@@ -164,7 +169,7 @@ class Backtest:
         return final_signals
 
     # [신규] 특정 날짜의 종가를 가져오는 헬퍼 메서드
-    def _get_prices_for_date(self, target_date: datetime.date) -> Dict[str, float]:
+    def _get_prices_for_date(self, target_date: dt.date) -> Dict[str, float]:
         """data_store에서 특정 날짜의 모든 종목 종가를 조회합니다."""
         prices = {}
         for code, df in self.data_store['daily'].items():
@@ -185,7 +190,144 @@ class Backtest:
             if price_data is not None and not np.isnan(price_data['close']):
                 current_prices[code] = price_data['close']  
         return current_prices
+
+
+    def reset_and_rerun(self, daily_strategies: List[DailyStrategy], minute_strategy: MinuteStrategy, 
+                        mode: str = 'strategy', hmm_params: dict = None) -> tuple:
+        """
+        [신규] data_store는 유지한 채, 브로커와 전략만 리셋하고 백테스트를 재실행합니다.
+        Optimizer가 데이터 재로딩 없이 빠르게 반복 테스트를 수행하기 위해 사용됩니다.
+        """
+        logger.info("--- 백테스트 리셋 및 재실행 시작 ---")
+
+        # if not self.daily_strategies or not self.minute_strategy:
+        #     logger.error("일봉 또는 분봉 전략이 설정되지 않았습니다. 백테스트를 중단합니다.")
+        #     return pd.Series(dtype=float), {}
+                
+        # 1. 브로커 및 포트폴리오 상태 초기화
+        self.broker = Broker(manager=self.manager, initial_cash=self.original_initial_cash)
+        self.portfolio_values = []
+
+        # 2. HMM 모드일 경우, 동적 PortfolioManager 생성
+        if mode == 'hmm':
+            # --- [핵심 수정] ---
+            # 미리 저장된 모델을 로드하는 대신, 파라미터에 따라 모델을 동적으로 훈련합니다.
             
+            # 2.1 HMM 학습에 필요한 과거 시장 데이터 가져오기
+            # start_date는 이 백테스트의 시작일이므로, 그 이전 데이터로 학습해야 합니다.
+            hmm_training_data = self.manager.get_market_data_for_hmm(self.start_date)
+            if hmm_training_data.empty:
+                raise ValueError("HMM 모델 학습용 데이터를 가져올 수 없습니다.")
+
+            # 2.2 옵티마이저가 전달한 n_states 파라미터로 HMM 모델 생성 및 학습
+            n_states = hmm_params.get('hmm_n_states', 3) # 파라미터에서 상태 개수 가져오기
+            hmm_model = RegimeAnalysisModel(n_states=n_states)
+            hmm_model.fit(hmm_training_data)
+            inference_service = RegimeInferenceService(hmm_model)
+            
+            # 2.3 정책 맵 동적 생성 (기존 코드는 올바름)
+            policy_map = PolicyMap()
+            policy_map.rules = {
+                "regime_to_principal_ratio": {
+                    "0": 1.0, 
+                    "1": hmm_params.get('policy_bear_ratio', 0.5),
+                    "2": hmm_params.get('policy_crisis_ratio', 0.2)
+                }, "default_principal_ratio": 1.0
+            }
+            
+            # 2.4 HMM 두뇌를 탑재한 PortfolioManager 생성
+            self.portfolio_manager = PortfolioManager(
+                self.broker, STRATEGY_CONFIGS, inference_service, policy_map
+            )
+            
+            # 2.5 전략 프로파일 로드 (지금은 비워두어 정적 가중치 사용)
+            # 추후 '최적화 단계 분리'를 적용할 때 이 부분을 활성화합니다.
+            strategy_profiles = {} 
+        else:
+            # 'strategy' 모드일 경우, 기존의 정적 CapitalManager 사용
+            self.capital_manager = CapitalManager(self.broker, STRATEGY_CONFIGS)
+
+        # 3. 전략 객체들의 브로커 참조 업데이트 및 설정
+        for strategy in daily_strategies:
+            strategy.broker = self.broker
+
+        minute_strategy.broker = self.broker
+
+        self.set_strategies(daily_strategies, minute_strategy)
+
+        # =================================================================
+        # 3. 기존 run() 메서드의 핵심 실행 로직 (데이터 로딩 제외)
+        # =================================================================
+        # 4. 백테스트 메인 루프 실행
+        start_date = self.start_date
+        end_date = self.end_date      
+        market_calendar_df = self.manager.fetch_market_calendar(start_date, end_date)
+        trading_dates = market_calendar_df[market_calendar_df['is_holiday'] == 0]['date'].dt.date.tolist()
+
+        for i, current_date in enumerate(trading_dates):
+            # --- 자금 할당 로직 ---
+            prev_date = trading_dates[i - 1] if i > 0 else self.start_date - timedelta(days=1)
+            prev_prices = self._get_prices_for_date(prev_date)
+
+            if mode == 'hmm':
+                # HMM 모드: 동적 자산배분
+                account_equity = self.portfolio_manager.get_account_equity(prev_prices)
+                hmm_input_data = self.manager.get_market_data_for_hmm(current_date)
+                total_principal, regime_probs = self.portfolio_manager.get_total_principal(account_equity, hmm_input_data)
+                strategy_capitals = self.portfolio_manager.get_strategy_capitals(total_principal, regime_probs, strategy_profiles)
+            else:
+                # 전략 모드: 정적 자산배분
+                account_equity = self.capital_manager.get_account_equity(prev_prices)
+                total_principal = self.capital_manager.get_total_principal(account_equity, PRINCIPAL_RATIO)
+
+            # 복수 일봉 전략 실행 및 신호 통합
+            signals_from_all = []
+            for strategy in self.daily_strategies:
+                if mode == 'hmm':
+                    strategy_capital = strategy_capitals.get(strategy.strategy_name, 0)
+                else:
+                    strategy_capital = self.capital_manager.get_strategy_capital(strategy.strategy_name, total_principal)
+
+                strategy.run_daily_logic(current_date, strategy_capital)
+                signals_from_all.append(strategy.signals)
+            
+            final_signals = self._aggregate_signals(signals_from_all)
+            self.minute_strategy.update_signals(final_signals)
+
+            # 분봉 루프 실행
+            market_open_dt = dt.combine(current_date, self.market_open_time)
+            stocks_to_trade = set(self.broker.get_current_positions().keys()) | set(final_signals.keys())
+
+            for minute_offset in range(391):
+                current_dt = market_open_dt + timedelta(minutes=minute_offset)
+                if self.market_open_time < current_dt.time() <= self.market_close_time:
+                    if current_dt.time() < time(9, 1) or time(15, 20) < current_dt.time() < time(15, 30): 
+                        continue
+                    current_prices = self.get_all_current_prices(current_dt)
+                    self.broker.check_and_execute_stop_loss(current_prices, current_dt)
+                    for stock_code in list(stocks_to_trade):
+                        self.minute_strategy.run_minute_logic(current_dt, stock_code)
+
+            # 5. 하루 종료 후 포트폴리오 가치 기록
+            close_prices = self.get_all_current_prices(dt.combine(current_date, self.market_close_time))
+            daily_portfolio_value = self.broker.get_portfolio_value(close_prices)
+            self.portfolio_values.append((current_date, daily_portfolio_value))
+            logging.info(f"[{current_date.isoformat()}] 장 마감 포트폴리오 가치: {daily_portfolio_value:,.0f}원")
+
+        # =================================================================
+        # 4. 결과 반환 로직 (기존 run() 메서드와 동일)
+        # =================================================================
+        if len(self.portfolio_values) > 1:
+            portfolio_df = pd.DataFrame(self.portfolio_values[1:], columns=['Date', 'PortfolioValue'])
+            portfolio_df['Date'] = pd.to_datetime(portfolio_df['Date'])
+            portfolio_value_series = portfolio_df.set_index('Date')['PortfolioValue']
+        else:
+            portfolio_value_series = pd.Series(dtype=float)
+
+        # calculate_performance_metrics 함수가 외부에 있다고 가정
+        final_metrics = calculate_performance_metrics(portfolio_value_series)
+        return portfolio_value_series, final_metrics
+                
     def run(self):
         start_date = self.start_date
         end_date = self.end_date
@@ -229,7 +371,7 @@ class Backtest:
             # --- 수정 끝 ---
 
             # 4. 분봉 루프 실행
-            market_open_dt = datetime.combine(current_date, self.market_open_time)
+            market_open_dt = dt.combine(current_date, self.market_open_time)
             stocks_to_trade = set(self.broker.get_current_positions().keys()) | set(final_signals.keys())
 
             for minute_offset in range(391): # 9:00 ~ 15:30
@@ -247,10 +389,11 @@ class Backtest:
                         self.minute_strategy.run_minute_logic(current_dt, stock_code)
 
             # 5. 하루 종료 후 포트폴리오 가치 기록
-            close_prices = self.get_all_current_prices(datetime.combine(current_date, self.market_close_time))
+            close_prices = self.get_all_current_prices(dt.combine(current_date, self.market_close_time))
             daily_portfolio_value = self.broker.get_portfolio_value(close_prices)
             self.portfolio_values.append((current_date, daily_portfolio_value))
             logging.info(f"[{current_date.isoformat()}] 장 마감 포트폴리오 가치: {daily_portfolio_value:,.0f}원")
+
         
         # ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
         # 끝 매 영업일 반복
@@ -332,7 +475,7 @@ class Backtest:
     #     return False
 
     # 오늘의 일봉 데이터가 미래정보를 가지지 않도록 제한한
-    # def _update_daily_data_from_minute_bars(self, current_dt: datetime.datetime):
+    # def _update_daily_data_from_minute_bars(self, current_dt: dt.datetime):
     #     """
     #     매분 현재 시각까지의 1분봉 데이터를 집계하여 일봉 데이터를 생성하거나 업데이트합니다.
     #     _minute_data_cache를 활용하여 성능을 개선합니다.
@@ -431,7 +574,9 @@ if __name__ == "__main__":
     # 설정 파일 로드
     from config.settings import (
         INITIAL_CASH, STOP_LOSS_PARAMS, COMMON_PARAMS,
-        SMA_DAILY_PARAMS, DUAL_MOMENTUM_DAILY_PARAMS, TRIPLE_SCREEN_DAILY_PARAMS
+        SMA_DAILY_PARAMS, DUAL_MOMENTUM_DAILY_PARAMS, TRIPLE_SCREEN_DAILY_PARAMS,
+        VOL_QUALITY_DAILY_PARAMS, RSI_REVERSION_DAILY_PARAMS, VOL_BREAKOUT_DAILY_PARAMS,
+        PAIRS_TRADING_DAILY_PARAMS, INVERSE_DAILY_PARAMS
     )     
 
     logging.basicConfig(level=logging.INFO,
@@ -446,8 +591,8 @@ if __name__ == "__main__":
         db_manager = DBManager()
         backtest_manager = BacktestManager(api_client, db_manager)
         # 5. 백테스트 준비 및 실행
-        start_date = date(2025, 3, 1)
-        end_date = date(2025, 6, 1)
+        start_date = date(2025, 6, 1)
+        end_date = date(2025, 7, 1)
         # 2. Backtest 인스턴스 생성
         backtest_system = Backtest(
             manager=backtest_manager,
@@ -458,22 +603,45 @@ if __name__ == "__main__":
         )
 
         # 3. 전략 인스턴스 생성 (복수 전략)
+
         from strategies.sma_daily import SMADaily
         sma_strategy = SMADaily(broker=backtest_system.broker, data_store=backtest_system.data_store, strategy_params=SMA_DAILY_PARAMS)
+
+        from strategies.dual_momentum_daily import DualMomentumDaily
+        dm_strategy = DualMomentumDaily(broker=backtest_system.broker, data_store=backtest_system.data_store, strategy_params=DUAL_MOMENTUM_DAILY_PARAMS)
+        # 거래량 돌파 전략
+        from strategies.vol_breakout_daily import VolBreakoutDaily
+        vb_strategy = VolBreakoutDaily(broker=backtest_system.broker, data_store=backtest_system.data_store, strategy_params=VOL_BREAKOUT_DAILY_PARAMS)
 
         from strategies.triple_screen_daily import TripleScreenDaily
         ts_strategy = TripleScreenDaily(broker=backtest_system.broker, data_store=backtest_system.data_store, strategy_params=TRIPLE_SCREEN_DAILY_PARAMS)
 
-        from strategies.dual_momentum_daily import DualMomentumDaily
-        dm_strategy = DualMomentumDaily(broker=backtest_system.broker, data_store=backtest_system.data_store, strategy_params=DUAL_MOMENTUM_DAILY_PARAMS)
 
-        from strategies.target_price_minute import TargetPriceMinute
-        minute_strategy = TargetPriceMinute(broker=backtest_system.broker, data_store=backtest_system.data_store, strategy_params=COMMON_PARAMS)
+        from strategies.vol_quality_daily import VolQualityDaily
+        vq_strategy = VolQualityDaily(broker=backtest_system.broker, data_store=backtest_system.data_store, strategy_params=VOL_QUALITY_DAILY_PARAMS)
+        # 
+        from strategies.rsi_reversion_daily import RsiReversionDaily
+        rsi_strategy = RsiReversionDaily(broker=backtest_system.broker, data_store=backtest_system.data_store, strategy_params=RSI_REVERSION_DAILY_PARAMS)
+        
+        # 페어 전략
+        from strategies.pairs_trading_daily import PairsTradingDaily
+        pt_strategy = PairsTradingDaily(broker=backtest_system.broker, data_store=backtest_system.data_store, strategy_params=PAIRS_TRADING_DAILY_PARAMS)
+        # 역추세 전략
+        from strategies.inverse_daily import InverseDaily
+        inverse_strategy = InverseDaily(broker=backtest_system.broker, data_store=backtest_system.data_store, strategy_params=INVERSE_DAILY_PARAMS)
+        
+        # 매도 전략
+        # from strategies.target_price_minute import TargetPriceMinute
+        # minute_strategy = TargetPriceMinute(broker=backtest_system.broker, data_store=backtest_system.data_store, strategy_params=COMMON_PARAMS)
+        from strategies.pass_minute import PassMinute
+        minute_strategy = PassMinute(broker=backtest_system.broker, data_store=backtest_system.data_store, strategy_params=COMMON_PARAMS)
 
         # 4. 전략 설정
         backtest_system.set_strategies(
-            #daily_strategies=[dm_strategy,],
-            daily_strategies=[sma_strategy, ts_strategy, dm_strategy],
+            #daily_strategies=[sma_strategy, dm_strategy, vb_strategy],
+            daily_strategies=[sma_strategy],
+            #daily_strategies=[sma_strategy, ts_strategy, dm_strategy, vq_strategy, rsi_strategy, vb_strategy, pt_strategy, inverse_strategy],
+            #daily_strategies=[ts_strategy, pt_strategy, inverse_strategy],
             minute_strategy=minute_strategy,
             stop_loss_params=STOP_LOSS_PARAMS
         )

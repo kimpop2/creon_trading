@@ -620,9 +620,11 @@ class CreonAPIClient:
             objChart.SetInputValue(1, ord('2'))
             objChart.SetInputValue(4, count)
             objChart.SetInputValue(6, ord(period))
-            objChart.SetInputValue(9, ord('1')) # 0: 무수정, 1: 수정주가
+            objChart.SetInputValue(9, ord('1'))
 
-            chart_fields = [0, 1, 2, 3, 4, 5, 8] if period in ['m', 'T'] else [0, 2, 3, 4, 5, 8]
+            chart_fields = [0, 2, 3, 4, 5, 8, 9, 23]
+            if period in ['m', 'T']:
+                chart_fields.insert(1, 1)
             if period == 'm':
                 objChart.SetInputValue(7, 1)
             objChart.SetInputValue(5, chart_fields)
@@ -636,6 +638,13 @@ class CreonAPIClient:
             if data_count == 0:
                 logger.warning(f"종목 [{code}]에 대한 차트 데이터가 없습니다.")
                 return pd.DataFrame()
+
+            # ✅ 헤더 값으로 현재가와 전일 종가를 직접 가져와 등락률 미리 계산
+            current_price = objChart.GetHeaderValue(7)
+            prev_close = objChart.GetHeaderValue(6)
+            live_change_rate = 0.0
+            if prev_close > 0:
+                live_change_rate = round(((current_price - prev_close) / prev_close) * 100, 2)
 
             data_records = []
             for i in range(data_count):
@@ -659,6 +668,15 @@ class CreonAPIClient:
                 record['low'] = objChart.GetDataValue(chart_fields.index(4), i)
                 record['close'] = objChart.GetDataValue(chart_fields.index(5), i)
                 record['volume'] = objChart.GetDataValue(chart_fields.index(8), i)
+                record['trading_value'] = objChart.GetDataValue(chart_fields.index(9), i)
+                
+                # ✅ 등락률 처리 로직
+                api_change_rate = objChart.GetDataValue(chart_fields.index(23), i)
+                if api_change_rate == 0.0 and record['trading_value'] != 0:
+                    record['change_rate'] = live_change_rate
+                else:
+                    record['change_rate'] = api_change_rate
+                
                 data_records.append(record)
             
             df = pd.DataFrame(data_records)
@@ -668,10 +686,10 @@ class CreonAPIClient:
         except Exception as e:
             logger.error(f"종목 [{code}] 차트 데이터 처리 중 오류 발생: {e}", exc_info=True)
             return pd.DataFrame()
-
+        
     def _get_price_data(self, stock_code, period, from_date_str, to_date_str, interval=1):
         if not self._check_creon_status():
-            return pd.DataFrame(columns=['open', 'high', 'low', 'close', 'volume'])
+            return pd.DataFrame(columns=['open', 'high', 'low', 'close', 'volume', 'trading_value', 'change_rate'])
 
         objChart = win32com.client.Dispatch('CpSysDib.StockChart')
         objChart.SetInputValue(0, stock_code)
@@ -679,13 +697,13 @@ class CreonAPIClient:
         objChart.SetInputValue(2, int(to_date_str))
         objChart.SetInputValue(3, int(from_date_str))
         objChart.SetInputValue(6, ord(period))
-        objChart.SetInputValue(9, ord('1')) # 0: 무수정, 1: 수정주가
+        objChart.SetInputValue(9, ord('1'))
         
+        requested_fields = [0, 2, 3, 4, 5, 8, 9, 23]
         if period == 'm':
             objChart.SetInputValue(7, interval)
-            requested_fields = [0, 1, 2, 3, 4, 5, 8]
-        else:
-            requested_fields = [0, 2, 3, 4, 5, 8]
+            requested_fields.insert(1, 1)
+        
         objChart.SetInputValue(5, requested_fields)
 
         data_list = []
@@ -693,37 +711,50 @@ class CreonAPIClient:
             status_code, msg = self._execute_block_request(objChart)
             if status_code != 0:
                 logger.error(f"데이터 요청 실패: {msg}")
-                return pd.DataFrame(columns=['open', 'high', 'low', 'close', 'volume'])
+                return pd.DataFrame(columns=['open', 'high', 'low', 'close', 'volume', 'trading_value', 'change_rate'])
 
             received_len = objChart.GetHeaderValue(3)
             if received_len == 0: break
 
+            # ✅ 헤더 값으로 현재가와 전일 종가를 직접 가져와 등락률 미리 계산
+            current_price = objChart.GetHeaderValue(7)
+            prev_close = objChart.GetHeaderValue(6)
+            live_change_rate = 0.0
+            if prev_close > 0:
+                live_change_rate = round(((current_price - prev_close) / prev_close) * 100, 2)
+
             for i in range(received_len):
                 row_data = {}
                 if period == 'm':
-                    date_val = objChart.GetDataValue(0, i)
-                    time_val = str(objChart.GetDataValue(1, i)).zfill(4)
+                    date_val = objChart.GetDataValue(requested_fields.index(0), i)
+                    time_val = str(objChart.GetDataValue(requested_fields.index(1), i)).zfill(4)
                     try:
                         row_data['datetime'] = datetime.strptime(f"{date_val}{time_val}", '%Y%m%d%H%M')
                     except ValueError: continue
-                    row_data['open'] = objChart.GetDataValue(2, i)
-                    row_data['high'] = objChart.GetDataValue(3, i)
-                    row_data['low'] = objChart.GetDataValue(4, i)
-                    row_data['close'] = objChart.GetDataValue(5, i)
-                    row_data['volume'] = objChart.GetDataValue(6, i)
                 else:
-                    row_data['date'] = datetime.strptime(str(objChart.GetDataValue(0, i)), '%Y%m%d').date()
-                    row_data['open'] = objChart.GetDataValue(1, i)
-                    row_data['high'] = objChart.GetDataValue(2, i)
-                    row_data['low'] = objChart.GetDataValue(3, i)
-                    row_data['close'] = objChart.GetDataValue(4, i)
-                    row_data['volume'] = objChart.GetDataValue(5, i)
+                    date_val = objChart.GetDataValue(requested_fields.index(0), i)
+                    row_data['date'] = datetime.strptime(str(date_val), '%Y%m%d').date()
+
+                row_data['open'] = objChart.GetDataValue(requested_fields.index(2), i)
+                row_data['high'] = objChart.GetDataValue(requested_fields.index(3), i)
+                row_data['low'] = objChart.GetDataValue(requested_fields.index(4), i)
+                row_data['close'] = objChart.GetDataValue(requested_fields.index(5), i)
+                row_data['volume'] = objChart.GetDataValue(requested_fields.index(8), i)
+                row_data['trading_value'] = objChart.GetDataValue(requested_fields.index(9), i)
+                
+                # ✅ 등락률 처리 로직
+                api_change_rate = objChart.GetDataValue(requested_fields.index(23), i)
+                if api_change_rate == 0.0 and row_data['trading_value'] != 0:
+                    row_data['change_rate'] = live_change_rate
+                else:
+                    row_data['change_rate'] = api_change_rate
+
                 data_list.append(row_data)
             
             if not objChart.Continue: break
         
         if not data_list:
-            return pd.DataFrame(columns=['open', 'high', 'low', 'close', 'volume'])
+            return pd.DataFrame(columns=['open', 'high', 'low', 'close', 'volume', 'trading_value', 'change_rate'])
 
         df = pd.DataFrame(data_list)
         idx_col = 'datetime' if period == 'm' else 'date'
@@ -731,11 +762,11 @@ class CreonAPIClient:
         df = df.sort_values(by=idx_col).set_index(idx_col)
         if period != 'm': df.index = df.index.normalize()
 
-        for col in ['open', 'high', 'low', 'close', 'volume']:
+        for col in ['open', 'high', 'low', 'close', 'volume', 'trading_value', 'change_rate']:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce').astype(float)
         return df
-
+    
     def get_daily_ohlcv(self, code, from_date, to_date):
         return self._get_price_data(code, 'D', from_date, to_date)
 

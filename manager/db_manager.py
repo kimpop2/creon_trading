@@ -35,6 +35,16 @@ class DBManager:
 
     def _connect(self):
         """데이터베이스에 연결합니다."""
+        # --- 디버깅 코드 추가 ---
+        print("="*50)
+        print("--- DB_MANAGER CONNECTION ATTEMPT ---")
+        print(f"HOST    : {self.host}")
+        print(f"PORT    : {self.port}")
+        print(f"USER    : {self.user}")
+        print(f"PASSWORD: {self.password}")
+        print(f"DATABASE: {self.db_name}")
+        print("="*50)
+        # --- 디버깅 코드 끝 ---
         try:
             self.conn = pymysql.connect(
                 host=self.host,
@@ -1462,7 +1472,7 @@ class DBManager:
                 stock_code, stock_name, quantity, sell_avail_qty, avg_price,
                 eval_profit_loss, eval_return_rate, entry_date
             ) VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s 
+                %s, %s, %s, %s, %s, %s, %s, %s
             )
             ON DUPLICATE KEY UPDATE
                 stock_name = VALUES(stock_name),
@@ -1478,7 +1488,7 @@ class DBManager:
             position_data.get('stock_code'),
             position_data.get('stock_name'),
             position_data.get('quantity'),
-            position_data.get('sell_avail_qty'),
+            position_data.get('sell_avail_qty', 0), # None 대신 0을 기본값으로 사용
             position_data.get('avg_price'),
             position_data.get('eval_profit_loss'),
             position_data.get('eval_return_rate'),
@@ -1490,6 +1500,7 @@ class DBManager:
             cursor.close()
             return True
         return False
+
 
     def delete_current_position(self, stock_code: str) -> bool:
         """
@@ -2079,3 +2090,260 @@ class DBManager:
         except Exception as e:
             logger.error(f"fetch_daily_factors 처리 중 예외 발생: {e}", exc_info=True)
             return pd.DataFrame() 
+        
+    # ----------------------------------------------------------------------------
+    # 전략 유니버스 필터링 관련 추가
+    # ----------------------------------------------------------------------------
+
+
+    def fetch_latest_factors_for_universe(self, universe_codes: List[str], current_date: date) -> pd.DataFrame:
+        """
+        주어진 유니버스 종목들에 대해, 특정 날짜 기준 가장 최신의 팩터 데이터를 한 번의 쿼리로 가져옵니다.
+        """
+        if not universe_codes:
+            return pd.DataFrame()
+
+        # 각 종목별로 current_date 이하의 가장 최신 날짜를 찾는 서브쿼리
+        subquery = f"""
+            SELECT stock_code, MAX(date) as max_date
+            FROM daily_factors
+            WHERE stock_code IN ({','.join(['%s']*len(universe_codes))})
+            AND date <= %s
+            GROUP BY stock_code
+        """
+        
+        # 위 서브쿼리 결과와 조인하여 실제 팩터 데이터를 가져오는 메인 쿼리
+        sql = f"""
+            SELECT f.*
+            FROM daily_factors f
+            INNER JOIN ({subquery}) latest
+            ON f.stock_code = latest.stock_code AND f.date = latest.max_date
+        """
+        
+        params = tuple(universe_codes) + (current_date,) # 파라미터를 올바르게 펼쳐서 전달
+
+        try:
+            cursor = self.execute_sql(sql, params)
+            if cursor:
+                result = cursor.fetchall()
+                df = pd.DataFrame(result)
+                if not df.empty:
+                    df['date'] = pd.to_datetime(df['date']).dt.normalize()
+                    #df.set_index('date', inplace=True) # ✨ [수정] 이 라인을 삭제 또는 주석 처리
+                    numeric_cols = [
+                        'foreigner_net_buy', 'institution_net_buy', 'program_net_buy',
+                        'trading_intensity', 'credit_ratio', 'short_volume', 'trading_value',
+                        'per', 'pbr', 'psr', 'dividend_yield', 'relative_strength',
+                        'beta_coefficient', 'days_since_52w_high', 'dist_from_ma20',
+                        'historical_volatility_20d', 'q_revenue_growth_rate', 'q_op_income_growth_rate'
+                    ]
+                    for col in numeric_cols:
+                        if col in df.columns:
+                            df[col] = pd.to_numeric(df[col], errors='coerce')
+                return df
+            return pd.DataFrame()
+        except Exception as e:
+            logger.error(f"fetch_daily_factors 처리 중 예외 발생: {e}", exc_info=True)
+            return pd.DataFrame() 
+ 
+    def fetch_average_trading_values(self, universe_codes: List[str], start_date: date, end_date: date) -> Dict[str, float]:
+        """
+        주어진 유니버스 종목들에 대해, 특정 기간의 일평균 거래대금을 한 번의 쿼리로 계산하여 반환합니다.
+        """
+        if not universe_codes:
+            return {}
+
+        placeholders = ','.join(['%s'] * len(universe_codes))
+        sql = f"""
+            SELECT stock_code, AVG(trading_value) as avg_value
+            FROM daily_price
+            WHERE stock_code IN ({placeholders})
+            AND date BETWEEN %s AND %s
+            GROUP BY stock_code
+        """
+        
+        params = tuple(universe_codes) + (start_date, end_date)
+        
+        try:
+            cursor = self.execute_sql(sql, params)
+            if cursor:
+                results = cursor.fetchall()
+                # 결과를 {'A005930': 1000000.0, ...} 형태의 딕셔너리로 변환
+                return {row['stock_code']: float(row['avg_value']) for row in results}
+            return {}
+        except Exception as e:
+            logger.error(f"일평균 거래대금 조회 중 오류 발생: {e}", exc_info=True)
+            return {}
+        
+    # ----------------------------------------------------------------------------
+    # HMM 모델 및 전략 프로파일 관리 (신규 추가)
+    # ----------------------------------------------------------------------------
+
+    def save_hmm_model(self,
+                       model_name: str,
+                       n_states: int,
+                       observation_vars: List[str],
+                       model_params: Dict[str, Any],
+                       training_start_date: str,
+                       training_end_date: str) -> Optional[int]:
+        """
+        학습된 HMM 모델의 파라미터와 메타데이터를 DB에 저장합니다.
+        :return: 성공 시 저장된 모델의 ID, 실패 시 None
+        """
+        conn = self.get_db_connection()
+        if not conn:
+            return None
+
+        try:
+            # numpy 배열 등이 있을 경우를 대비하여 tolist() 처리
+            model_params_json = json.dumps(model_params, default=lambda x: x.tolist() if hasattr(x, 'tolist') else x)
+            observation_vars_json = json.dumps(observation_vars)
+
+            sql = """
+                INSERT INTO hmm_models (model_name, n_states, observation_vars, model_params_json,
+                                        training_start_date, training_end_date)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            """
+            params = (model_name, n_states, observation_vars_json, model_params_json,
+                      training_start_date, training_end_date)
+            
+            cursor = self.execute_sql(sql, params)
+            if cursor:
+                model_id = cursor.lastrowid
+                logger.info(f"HMM 모델 '{model_name}' (ID: {model_id})을(를) DB에 저장했습니다.")
+                return model_id
+            return None
+        except Exception as e:
+            logger.error(f"HMM 모델 '{model_name}' 저장 실패: {e}", exc_info=True)
+            return None
+
+    def fetch_hmm_model_by_name(self, model_name: str) -> Optional[Dict[str, Any]]:
+        """
+        모델 이름으로 HMM 모델 정보를 DB에서 불러옵니다.
+        'load' 대신 'fetch' 접두사를 사용하여 명명 규칙을 통일합니다.
+        [수정됨] 컬럼명으로 데이터에 접근하고, 올바른 JSON 키를 사용합니다.
+        :return: 모델 정보 딕셔너리, 실패 또는 데이터 없음 시 None
+        """
+        conn = self.get_db_connection()
+        if not conn:
+            return None
+
+        sql = """
+            SELECT model_id, n_states, observation_vars, model_params_json,
+                   training_start_date, training_end_date
+            FROM hmm_models WHERE model_name = %s
+        """
+        try:
+            cursor = self.execute_sql(sql, (model_name,))
+            if cursor:
+                row = cursor.fetchone() # DictCursor는 결과를 딕셔너리로 반환합니다.
+                if row:
+                    # --- [핵심 수정] ---
+                    # row의 키는 DB 컬럼명과 동일합니다.
+                    # 올바른 키 'model_params_json'을 사용하여 JSON을 파싱하고,
+                    # 최종 반환할 딕셔너리의 키는 'model_params'로 지정합니다.
+                    model_info = {
+                        "model_id": row['model_id'],
+                        "model_name": model_name,
+                        "n_states": row['n_states'],
+                        "observation_vars": json.loads(row['observation_vars']),
+                        "model_params": json.loads(row['model_params_json']), # 'model_params_json' 키 사용
+                        "training_start_date": row['training_start_date'],
+                        "training_end_date": row['training_end_date']
+                    }
+                    # --------------------
+                    
+                    logging.info(f"HMM 모델 '{model_name}' (ID: {model_info['model_id']})을(를) DB에서 불러왔습니다.")
+                    return model_info
+            
+            logging.warning(f"HMM 모델 '{model_name}'을(를) DB에서 찾을 수 없습니다.")
+            return None
+        except Exception as e:
+            # KeyError 발생 시 이곳에서 로깅됩니다.
+            logging.error(f"HMM 모델 '{model_name}' 로드 실패: {e}", exc_info=True)
+            return None
+
+    def save_strategy_profiles(self, profiles_data_list: List[Dict[str, Any]]) -> bool:
+        """
+        여러 개의 전략 프로파일 데이터를 DB에 저장하거나 업데이트(Upsert)합니다.
+        'upsert' 대신 'save' 접두사를 사용하고, 리스트를 받아 한 번에 처리하도록 구조를 통일합니다.
+        """
+        conn = self.get_db_connection()
+        if not conn:
+            return False
+        
+        if not profiles_data_list:
+            logger.info("저장할 전략 프로파일 데이터가 없습니다.")
+            return True
+
+        sql = """
+            INSERT INTO strategy_profiles (strategy_name, model_id, regime_id, sharpe_ratio, mdd,
+                                           total_return, win_rate, num_trades, profiling_start_date, profiling_end_date)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                sharpe_ratio = VALUES(sharpe_ratio),
+                mdd = VALUES(mdd),
+                total_return = VALUES(total_return),
+                win_rate = VALUES(win_rate),
+                num_trades = VALUES(num_trades),
+                profiling_start_date = VALUES(profiling_start_date),
+                profiling_end_date = VALUES(profiling_end_date)
+        """
+        
+        # 딕셔너리 리스트를 튜플 리스트로 변환
+        data_tuples = [
+            (p['strategy_name'], p['model_id'], p['regime_id'], p.get('sharpe_ratio'), p.get('mdd'),
+             p.get('total_return'), p.get('win_rate'), p.get('num_trades'),
+             p['profiling_start_date'], p['profiling_end_date'])
+            for p in profiles_data_list
+        ]
+        
+        try:
+            cursor = self.execute_sql(sql, data_tuples)
+            if cursor:
+                logger.info(f"{len(data_tuples)}개의 전략 프로파일을 저장/업데이트했습니다.")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"전략 프로파일 저장/업데이트 실패: {e}", exc_info=True)
+            return False
+
+
+    def fetch_strategy_profiles_by_model(self, model_id: int) -> pd.DataFrame:
+        """
+        특정 HMM 모델 ID에 해당하는 모든 전략 프로파일을 DataFrame으로 불러옵니다.
+        'load' 대신 'fetch' 접두사를 사용하고, pd.DataFrame을 반환하도록 통일합니다.
+        """
+        conn = self.get_db_connection()
+        if not conn:
+            return pd.DataFrame()
+
+        sql = """
+            SELECT strategy_name, regime_id, sharpe_ratio, mdd,
+                   total_return, win_rate, num_trades
+            FROM strategy_profiles WHERE model_id = %s
+        """
+        try:
+            cursor = self.execute_sql(sql, (model_id,))
+            if cursor:
+                result = cursor.fetchall()
+                if not result:
+                    return pd.DataFrame()
+                
+                df = pd.DataFrame(result)
+                
+                # 숫자형 컬럼들을 float으로 명시적 변환 (기존 로직과 통일)
+                numeric_cols = ['sharpe_ratio', 'mdd', 'total_return', 'win_rate', 'num_trades']
+                for col in numeric_cols:
+                    if col in df.columns:
+                        df[col] = df[col].apply(lambda x: float(x) if isinstance(x, (Decimal, int, float, str)) and x is not None else x)
+                
+                logger.info(f"모델 ID {model_id}에 대한 {len(df)}개의 전략 프로파일을 DB에서 불러왔습니다.")
+                return df
+            
+            return pd.DataFrame()
+        except Exception as e:
+            logger.error(f"전략 프로파일 로드 실패(모델 ID: {model_id}): {e}", exc_info=True)
+            return pd.DataFrame()
+
+

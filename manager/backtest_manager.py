@@ -22,6 +22,7 @@ from manager.db_manager import DBManager
 from api.creon_api import CreonAPIClient # CreonAPI 클래스 이름 일치
 from util.strategies_util import calculate_sma, calculate_rsi, calculate_ema, calculate_macd
 from config.sector_stocks import sector_stocks
+from config.settings import COMMON_PARAMS
 
 class BacktestManager:
     """
@@ -227,50 +228,37 @@ class BacktestManager:
             return db_df
 
     def _fetch_and_store_daily_range(self, stock_code: str, start_date: date, end_date: date) -> pd.DataFrame:
-        """
-        API에서 데이터를 가져와 DB에 저장합니다. API 호출 실패 시 빈 DataFrame을 반환합니다.
-        """
+        """[신규] '일봉' 데이터만 가져와 DB에 저장하고 반환하는 전용 함수"""
         logger.debug(f"API로부터 {stock_code} 일봉 데이터 요청: {start_date} ~ {end_date}")
         
-        api_df_part = pd.DataFrame()
         try:
-            # API 호출
             api_df_part = self.api_client.get_daily_ohlcv(stock_code, start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d'))
+            
             if api_df_part.empty:
                 return pd.DataFrame()
-            
-            # DB 저장을 위한 데이터 변환
+
+            api_df_part['stock_code'] = stock_code
+
+            df_for_saving = api_df_part.reset_index()
             data_to_save_list = []
-            for index_val, row in api_df_part.iterrows():
+            for _, row in df_for_saving.iterrows():
                 record = {
-                    'stock_code': stock_code,
-                    'open': row['open'],
-                    'high': row['high'],
-                    'low': row['low'],
-                    'close': row['close'],
-                    'volume': row['volume'],
-                    'change_rate': row.get('change_rate', 0.0),
-                    'trading_value': row.get('trading_value', 0)
+                    'stock_code': stock_code, 'date': row['date'].date(),
+                    'open': row['open'], 'high': row['high'], 'low': row['low'],
+                    'close': row['close'], 'volume': row['volume'],
+                    'change_rate': row.get('change_rate', 0.0), 'trading_value': row.get('trading_value', 0)
                 }
-                
-                record['date'] = index_val.date()
-                
                 data_to_save_list.append(record)
             
-            # DB 저장 시도
-            try:
-                self.db_manager.save_daily_price(data_to_save_list)
-                
-                logger.debug(f"API로부터 {stock_code}의 일봉 데이터 {len(api_df_part)}개 DB 저장 완료")
-            except Exception as e:
-                logger.error(f"DB 저장 실패: {stock_code} - {str(e)}")
-                # DB 저장 실패해도 API 데이터는 반환
+            self.db_manager.save_daily_price(data_to_save_list)
+            logger.debug(f"API로부터 {stock_code}의 일봉 데이터 {len(api_df_part)}개 DB 저장 완료")
             
             return api_df_part
             
         except Exception as e:
-            logger.error(f"API 호출 실패: {stock_code} - {str(e)}")
+            logger.error(f"API 일봉 호출 또는 DB 저장 실패: {stock_code} - {e}", exc_info=True)
             return pd.DataFrame()
+            
 
 
     def _fetch_and_store_minute_range(self, stock_code: str, start_date: date, end_date: date) -> pd.DataFrame:
@@ -938,3 +926,61 @@ class BacktestManager:
         return filtered_df
     
     
+    
+    def fetch_average_trading_values(self, universe_codes: List[str], start_date: date, end_date: date) -> Dict[str, float]:
+        """[래퍼] DBManager의 fetch_average_trading_values 메서드를 호출합니다."""
+        return self.db_manager.fetch_average_trading_values(universe_codes, start_date, end_date)
+
+    def fetch_latest_factors_for_universe(self, universe_codes: List[str], current_date: date) -> pd.DataFrame:
+        """[래퍼] DBManager의 fetch_latest_factors_for_universe 메서드를 호출합니다."""
+        return self.db_manager.fetch_latest_factors_for_universe(universe_codes, current_date)
+
+    def fetch_stock_info(self, stock_codes: list = None) -> pd.DataFrame:
+        """[래퍼] DBManager의 fetch_stock_info 메서드를 호출합니다."""
+        return self.db_manager.fetch_stock_info(stock_codes)
+    
+    ############ 아래 메서드 trading_manager 로 이동동
+    # def get_market_data_for_hmm(self, current_date: date, days: int = 365) -> pd.DataFrame:
+    #     """
+    #     [신규] HMM 모델 학습에 필요한 시장 데이터를 조회합니다.
+    #     주로 시장 지수의 일일 수익률과 같은 거시 지표를 사용합니다.
+        
+    #     Args:
+    #         current_date (date): 데이터 조회의 기준이 되는 날짜.
+    #         days (int): 기준일로부터 과거 몇 일간의 데이터를 가져올지 결정.
+            
+    #     Returns:
+    #         pd.DataFrame: HMM 학습에 사용될 관찰 변수들이 담긴 데이터프레임.
+    #                       (예: 'daily_return' 컬럼 포함)
+    #     """
+    #     logger.info(f"HMM 학습용 시장 데이터 조회를 시작합니다. (기준일: {current_date}, 기간: {days}일)")
+        
+    #     market_index_code = COMMON_PARAMS.get('market_index_code', 'U001') # 설정에서 시장 코드 가져오기
+    #     end_date = current_date
+    #     start_date = end_date - timedelta(days=days)
+
+    #     # DB에서 시장 지수의 일봉 데이터를 가져옵니다.
+    #     # fetch_daily_price는 인덱스가 date인 DataFrame을 반환한다고 가정합니다.
+    #     market_df = self.db_manager.fetch_daily_price(
+    #         stock_code=market_index_code,
+    #         start_date=start_date,
+    #         end_date=end_date
+    #     )
+
+    #     if market_df.empty:
+    #         logger.error(f"HMM 학습용 시장 데이터({market_index_code})를 조회할 수 없습니다.")
+    #         return pd.DataFrame()
+
+    #     # HMM의 관찰 변수인 '일일 수익률'을 계산합니다.
+    #     market_df['daily_return'] = market_df['close'].pct_change()
+        
+    #     # (선택) 변동성 지수(VKOSPI) 등 다른 관찰 변수가 있다면 여기에 추가합니다.
+    #     # 예: market_df['volatility'] = ...
+        
+    #     # hmmlearn 라이브러리는 NaN 값이 없는 numpy 배열을 기대하므로,
+    #     # 계산 과정에서 발생한 NaN 값을 제거하고 필요한 컬럼만 선택합니다.
+    #     hmm_input_df = market_df[['daily_return']].dropna()
+        
+    #     logger.info(f"HMM 학습용 데이터 준비 완료. {len(hmm_input_df)}개의 데이터 포인트 생성.")
+        
+    #     return hmm_input_df

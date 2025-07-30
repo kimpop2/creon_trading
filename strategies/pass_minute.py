@@ -1,4 +1,4 @@
-# strategies/backtest_minute.py
+# strategies/pass_minute.py
 
 import pandas as pd
 from datetime import datetime

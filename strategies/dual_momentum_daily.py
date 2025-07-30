@@ -1,10 +1,9 @@
 # strategies/dual_momentum_daily.py
 
-import datetime
 import logging
 import pandas as pd
 import numpy as np 
-from datetime import datetime, time
+from datetime import datetime, date, time
 from typing import Dict, List, Tuple, Any
 
 from util.strategies_util import * # utils.py에 있는 모든 함수를 임포트한다고 가정 
@@ -16,7 +15,6 @@ class DualMomentumDaily(DailyStrategy): # DailyStrategy 상속
     def __init__(self, broker, data_store, strategy_params: Dict[str, Any]): 
         # DailyStrategy에서 broker, data_store 연결, signal 초기화 진행
         super().__init__(broker, data_store, strategy_params)
-        self.strategy_name = "DualMomentumDaily"
         
         # 파라미터 검증
         self._validate_parameters()
@@ -36,7 +34,16 @@ class DualMomentumDaily(DailyStrategy): # DailyStrategy 상속
                    f"리밸런싱요일={self.strategy_params['rebalance_weekday']}, "
                    f"선택종목수={self.strategy_params['num_top_stocks']}개")
 
-    def _calculate_strategy_signals(self, current_date: datetime.date, universe: list) -> Tuple[set, set, dict]:
+    def filter_universe(self, universe_codes: List[str], current_date: date) -> List[str]:
+        # [수정] 최소 거래대금 필터 추가
+        min_trading_value = self.strategy_params.get('min_trading_value', 1000000000)
+        lookback_start_date = current_date - pd.DateOffset(days=30)
+        avg_values = self.broker.manager.fetch_average_trading_values(
+            universe_codes, lookback_start_date, current_date
+        )
+        return [code for code, avg_value in avg_values.items() if avg_value >= min_trading_value] if avg_values else []
+    
+    def _calculate_strategy_signals(self, current_date: date, universe: list) -> Tuple[set, set, dict]:
         """
         [수정됨] 신호 속성을 통합된 딕셔너리(signal_attributes)로 반환합니다.
         """
@@ -55,32 +62,23 @@ class DualMomentumDaily(DailyStrategy): # DailyStrategy 상속
             # 하락장: 모든 위험자산 매도, 인버스 ETF 매수
             buy_candidates = {inverse_asset_code} if inverse_asset_code else set()
             sell_candidates = {code for code in current_positions if code != inverse_asset_code}
-            
-            # [신규] 신호 속성 정의
-            if inverse_asset_code:
-                signal_attributes[inverse_asset_code] = {'score': 999, 'execution_type': 'market'}
-            for code in sell_candidates:
-                signal_attributes[code] = {'execution_type': 'market'}
         else:
             # 상승장: 상대 모멘텀 로직 수행
             buy_candidates, _ = self._select_buy_candidates(momentum_scores, 0)
             sell_candidates = {code for code in current_positions if code not in buy_candidates}
             if inverse_asset_code and inverse_asset_code in current_positions:
                 sell_candidates.add(inverse_asset_code)
-                
-            # [신규] 신호 속성 정의
-            for code in buy_candidates:
-                hist_data = self._get_historical_data_up_to('daily', code, prev_trading_day)
-                if not hist_data.empty:
-                    target_price = hist_data['close'].iloc[-1]
-                    signal_attributes[code] = {
-                        'score': momentum_scores.get(code, 0),
-                        'target_price': target_price,
-                        'execution_type': 'pullback' # 전일 종가 이하는 'pullback' 전술
-                    }
-            for code in sell_candidates:
-                signal_attributes[code] = {'execution_type': 'market'}
 
+        # signal_attributes 채우기 (score 위주)        
+        for code in buy_candidates:
+            price_df = self._get_historical_data_up_to('daily', code, current_date, lookback_period=1)
+            if not price_df.empty:
+                # [수정] target_price 추가 (신호 발생일 종가)
+                signal_attributes[code] = {
+                    'score': momentum_scores.get(code, 999),
+                    'target_price': price_df.iloc[-1]['close']
+                }
+        
         return buy_candidates, sell_candidates, signal_attributes
     
     def _calculate_momentum_scores(self, current_daily_date):

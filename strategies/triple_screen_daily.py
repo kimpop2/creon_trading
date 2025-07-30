@@ -1,10 +1,11 @@
 # strategies/triple_screen_daily.py (Refactored)
 
-import logging
+import pandas as pd
 from datetime import date
 from typing import Dict, List, Tuple, Any
 from strategies.strategy import DailyStrategy
 from util.strategies_util import calculate_sma, calculate_rsi
+import logging
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +19,6 @@ class TripleScreenDaily(DailyStrategy):
     
     def __init__(self, broker, data_store, strategy_params: Dict[str, Any]):
         super().__init__(broker, data_store, strategy_params)
-        self.strategy_name = "TripleScreenDaily"
         self._validate_parameters()
         
     def _validate_parameters(self):
@@ -32,6 +32,15 @@ class TripleScreenDaily(DailyStrategy):
                 raise ValueError(f"필수 파라미터 누락: {param}")
         logger.info(f"삼중창 시스템 파라미터 검증 완료.")
 
+    def filter_universe(self, universe_codes: List[str], current_date: date) -> List[str]:
+        # [수정] 최소 거래대금 필터 추가
+        min_trading_value = self.strategy_params.get('min_trading_value', 1000000000)
+        lookback_start_date = current_date - pd.DateOffset(days=30)
+        avg_values = self.broker.manager.fetch_average_trading_values(
+            universe_codes, lookback_start_date, current_date
+        )
+        return [code for code, avg_value in avg_values.items() if avg_value >= min_trading_value] if avg_values else []
+    
     def _calculate_strategy_signals(self, current_date: date, universe: list) -> Tuple[set, set, dict]:
         """
         [수정됨] 신호 속성을 통합된 딕셔너리(signal_attributes)로 반환합니다.
@@ -77,8 +86,7 @@ class TripleScreenDaily(DailyStrategy):
             # [신규] 통합된 속성 딕셔너리에 정보 저장
             signal_attributes[stock_code] = {
                 'score': score,
-                'target_price': target_price,
-                'execution_type': 'breakout' # 전일 고가 돌파는 'breakout' 전술
+                'target_price': target_price
             }
         
         # 최종 매수 후보 선정 (점수 기반)
@@ -99,8 +107,7 @@ class TripleScreenDaily(DailyStrategy):
                 # [신규] 매도 신호에 대한 속성도 추가
                 signal_attributes[code] = {
                     'score': 0, # 매도 점수는 별도 관리 안하므로 0
-                    'target_price': None, # 즉시 매도이므로 목표가 없음
-                    'execution_type': 'market' # 추세 이탈은 'market' 전술로 즉시 매도
+                    'target_price': None # 즉시 매도이므로 목표가 없음
                 }
                 
         return buy_candidates, sell_candidates, signal_attributes

@@ -9,6 +9,7 @@ SET FOREIGN_KEY_CHECKS = 0;
 
 -- 2. 테이블 삭제
 -- 참조 관계가 없는 테이블들이므로 삭제 순서는 중요하지 않으나, 일반적으로 알파벳 순서 또는 논리적 순서를 따릅니다.
+DROP TABLE IF EXISTS daily_factors;
 DROP TABLE IF EXISTS market_calendar;
 DROP TABLE IF EXISTS minute_price;
 DROP TABLE IF EXISTS daily_price;

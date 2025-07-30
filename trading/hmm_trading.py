@@ -1,7 +1,7 @@
 # trading/trading.py (최종 수정본)
 import pandas as pd
 import logging
-from datetime import datetime, date, timedelta, time
+from datetime import datetime as dt, date, timedelta, time
 import time as pytime
 from typing import Dict, Any, List, Optional
 import sys
@@ -22,40 +22,84 @@ from manager.db_manager import DBManager
 from manager.trading_manager import TradingManager
 from strategies.strategy import DailyStrategy, MinuteStrategy
 from util.notifier import Notifier
-from config.settings import MIN_STOCK_CAPITAL
-from manager.capital_manager import CapitalManager
+from analyzer.hmm_model import RegimeAnalysisModel
+from analyzer.inference_service import RegimeInferenceService
+from analyzer.policy_map import PolicyMap
+from manager.portfolio_manager import PortfolioManager 
 from config.settings import (
-    MIN_STOCK_CAPITAL, PRINCIPAL_RATIO, STRATEGY_CONFIGS, COMMON_PARAMS,
+    MIN_STOCK_CAPITAL, PRINCIPAL_RATIO, STRATEGY_CONFIGS, 
+    COMMON_PARAMS, LIVE_HMM_MODEL_NAME, # <-- 추가
     MARKET_OPEN_TIME, MARKET_CLOSE_TIME
 )
-
 logger = logging.getLogger(__name__)
 
-class Trading:
+class HMMTrading:
     def __init__(self, api_client: CreonAPIClient, manager: TradingManager, notifier: Notifier, initial_cash: float):
         self.api_client = api_client
         self.notifier = notifier
 
         self.manager = manager
         self.broker = Brokerage(self.api_client, self.manager, self.notifier, initial_cash=initial_cash)
-        self.capital_manager = CapitalManager(self.broker, STRATEGY_CONFIGS)
+ 
+        # 1. 설정 파일에서 사용할 HMM 모델 이름 가져오기
+        # --- [수정됨] HMM 두뇌 모듈 초기화 ---
+        logger.info("HMM 기반 동적 자산배분 모듈을 초기화합니다.")
 
+        # 1. 설정 파일에서 사용할 HMM 모델 이름 가져오기
+        model_name_to_use = LIVE_HMM_MODEL_NAME
+        model_info = self.manager.db_manager.fetch_hmm_model_by_name(model_name_to_use)
+
+        # 2. 모델 로드 실패 시 안전하게 종료 (오류 처리 강화)
+        if not model_info:
+            error_msg = f"실거래에 사용할 HMM 모델 '{model_name_to_use}'을(를) DB에서 찾을 수 없습니다. 시스템을 시작할 수 없습니다."
+            logger.critical(error_msg)
+            raise ValueError(error_msg)
+
+        # 3. HMM 서비스 및 프로파일 로드
+        hmm_model = RegimeAnalysisModel.load_from_params(model_info['model_params'])
+        self.inference_service = RegimeInferenceService(hmm_model)
+        
+        self.policy_map = PolicyMap()
+        self.policy_map.load_rules("config/policy.json") # 정책 파일 경로는 필요시 설정 파일로 이동 가능
+        
+        profiles_df = self.manager.db_manager.fetch_strategy_profiles_by_model(model_info['model_id'])
+        self.strategy_profiles = self._format_profiles_for_lookup(profiles_df)
+
+        # 4. HMM 두뇌를 탑재한 단일 PortfolioManager 생성 (중복 제거)
+        self.portfolio_manager = PortfolioManager(
+            self.broker,
+            STRATEGY_CONFIGS,
+            self.inference_service,
+            self.policy_map
+        )
+        # --- 수정 끝 ---
         self.daily_strategies: List[DailyStrategy] = []
         self.minute_strategy: Optional[MinuteStrategy] = None
         
         self.data_store = {'daily': {}, 'minute': {}}
         
         self.is_running = True
-        self.market_open_time = datetime.strptime(MARKET_OPEN_TIME, '%H:%M:%S').time()
-        self.market_close_time = datetime.strptime(MARKET_CLOSE_TIME, '%H:%M:%S').time()
+        self.market_open_time = dt.strptime(MARKET_OPEN_TIME, '%H:%M:%S').time()
+        self.market_close_time = dt.strptime(MARKET_CLOSE_TIME, '%H:%M:%S').time()
         self.last_sync_time = 0 # 주기적 동기화를 위한 타이머
         self.last_daily_run_time = None
         self._last_update_log_time: Dict[str, float] = {}
         self._last_cumulative_volume: Dict[str, int] = {}
         
         self.api_client.set_conclusion_callback(self.broker.handle_order_conclusion)
-        
-        logger.info("Trading 시스템 초기화 완료.")
+
+        logger.info("HMMTrading 시스템 초기화 완료.")
+
+    def _format_profiles_for_lookup(self, profiles_df: pd.DataFrame) -> Dict:
+        """DataFrame 형태의 프로파일을 딕셔너리 형태로 변환하여 조회 속도를 높입니다."""
+        lookup_dict = {}
+        for _, row in profiles_df.iterrows():
+            strategy_name = row['strategy_name']
+            regime_id = row['regime_id']
+            if strategy_name not in lookup_dict:
+                lookup_dict[strategy_name] = {}
+            lookup_dict[strategy_name][regime_id] = row.to_dict()
+        return lookup_dict
 
     def set_strategies(self, daily_strategies: List[DailyStrategy], minute_strategy: MinuteStrategy, stop_loss_params: dict = None):
         self.daily_strategies = daily_strategies
@@ -73,7 +117,7 @@ class Trading:
         self._update_realtime_data(stock_code, current_price, volume)
 
     def prepare_for_system(self) -> bool:
-        trading_date = datetime.now().date()
+        trading_date = dt.now().date()
         logger.info(f"--- {trading_date} 거래 준비 시작 ---")
         self.notifier.send_message(f"--- {trading_date} 거래 준비 시작 ---")
 
@@ -164,7 +208,7 @@ class Trading:
         last_heartbeat_time = pytime.time()
         while self.is_running:
             try:
-                now = datetime.now()
+                now = dt.now()
                 current_time = now.time()
                 
                 if pytime.time() - last_heartbeat_time > 30:
@@ -174,6 +218,7 @@ class Trading:
                 if self.market_open_time <= current_time < self.market_close_time:
                     logger.info("="*50)
                     logger.info(f"[{now.strftime('%H:%M:%S')}] 장중 매매 루프 시작...")
+                    
                     if pytime.time() - self.last_sync_time > 600: # 600초 = 10분
                         logger.info("🔄 주기적인 계좌 상태 동기화를 수행합니다...")
                         self.broker.sync_account_status()
@@ -182,27 +227,40 @@ class Trading:
                     if self.last_daily_run_time is None or (now - self.last_daily_run_time) >= timedelta(minutes=5):
                         logger.info("1. 모든 일일 전략 재실행 및 자금 재배분...")
 
-                        # --- [START] Capital Management Logic ---
+                        # --- [START] Portfolio Management Logic ---
                         # Step 1: Calculate Account Equity. This requires current prices.
                         codes_for_equity = set(self.data_store['daily'].keys()) | set(self.broker.get_current_positions().keys())
                         current_prices = self.manager.api_client.get_current_prices_bulk(list(codes_for_equity))
-                        account_equity = self.capital_manager.get_account_equity(current_prices)
+                        account_equity = self.portfolio_manager.get_account_equity(current_prices)
 
-                        # Step 2: Calculate Total Principal
-                        total_principal = self.capital_manager.get_total_principal(account_equity, PRINCIPAL_RATIO)
+                        # --- [수정] 데이터 흐름 연결 ---
+                        # 1. HMM 추론에 필요한 시장 데이터 가져오기 (구현 필요)
+                        # 예: 최근 1년간의 KOSPI 수익률, VKOSPI 데이터프레임
+                        market_data = self.manager.get_market_data_for_hmm(now.date()) 
+
+                        # [수정] Step 2: HMM 두뇌가 탑재된 PortfolioManager에게 총 투자원금 계산 위임
+                        # market_data는 HMM 추론에 필요한 시장 데이터 (예: KOSPI 수익률, VKOSPI 등)
+                        # 2. '제1두뇌' 호출: 동적 총 투자원금 및 장세 확률 계산
+                        total_principal, regime_probabilities = self.portfolio_manager.get_total_principal(account_equity, market_data)
                         logger.info(f"자금 계산 완료: 총자산={account_equity:,.0f}원, 총 투자원금={total_principal:,.0f}원")
-                        # --- [END] Capital Management Logic ---
+
+                        # [수정] Step 3: 모든 전략의 자금을 한 번에 계산
+                        # strategy_profiles는 DB에서 미리 로드해 둔 전략 프로파일 데이터
+                        # 3. '제2두뇌' 호출: 전략별 동적 자본 배분
+                        strategy_capitals = self.portfolio_manager.get_strategy_capitals(total_principal, regime_probabilities, self.strategy_profiles)
+                        # --- [END] Portfolio Management Logic ---
                         
                         signals_from_all = []
+                        
+                        # 4. 각 전략에 동적 자본 할당하여 실행
                         for strategy in self.daily_strategies:
                             strategy_name = strategy.strategy_name
                             
-                            # Step 3: Use the correct method to get strategy-specific capital
-                            strategy_capital = self.capital_manager.get_strategy_capital(strategy_name, total_principal)
+                            # [수정] 계산된 자금을 딕셔너리에서 가져옴
+                            strategy_capital = strategy_capitals.get(strategy_name, 0)
+                            logger.info(f"-> 전략 '{strategy_name}' 실행 (동적 할당 자본: {strategy_capital:,.0f}원)")
                             
-                            logger.info(f"-> 전략 '{strategy_name}' 실행 (할당 자본: {strategy_capital:,.0f}원)")
-                            
-                            # Pass the correctly calculated capital to the strategy
+                            # 전략에 동적 자본 할당하여 실행
                             strategy.run_daily_logic(now.date(), strategy_capital)
                             signals_from_all.append(strategy.signals)
                         
@@ -268,7 +326,7 @@ class Trading:
         logger.info("자동매매 시스템 종료 요청 수신.")
 
     def cleanup(self) -> None:
-        logger.info("Trading 시스템 cleanup 시작.")
+        logger.info("HMMTrading 시스템 cleanup 시작.")
         if self.broker:
             self.broker.cleanup()
         if self.api_client:
@@ -280,12 +338,12 @@ class Trading:
     def _update_data_store_from_poll(self, stock_code: str, market_data: Dict[str, Any]):
         api_time_str = market_data.get('time')
         if api_time_str is None:
-            now = datetime.now()
+            now = dt.now()
         else:
             api_time = int(api_time_str)
             hour = api_time // 100
             minute = api_time % 100
-            now = datetime.now().replace(hour=hour, minute=minute)
+            now = dt.now().replace(hour=hour, minute=minute)
 
         current_minute = now.replace(second=0, microsecond=0)
         today = now.date()
@@ -463,14 +521,11 @@ class Trading:
 
 if __name__ == "__main__":
     from datetime import date, datetime
-    # 설정 파일 로드
     from config.settings import (
         TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
         INITIAL_CASH, STOP_LOSS_PARAMS, COMMON_PARAMS,
-        SMA_DAILY_PARAMS, DUAL_MOMENTUM_DAILY_PARAMS, TRIPLE_SCREEN_DAILY_PARAMS,
-        VOL_QUALITY_DAILY_PARAMS, RSI_REVERSION_DAILY_PARAMS, VOL_BREAKOUT_DAILY_PARAMS,
-        PAIRS_TRADING_DAILY_PARAMS, INVERSE_DAILY_PARAMS
-    ) 
+        SMA_DAILY_PARAMS, DUAL_MOMENTUM_DAILY_PARAMS, TRIPLE_SCREEN_DAILY_PARAMS
+    )   
     logging.basicConfig(level=logging.INFO,
                         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                         handlers=[logging.StreamHandler()])
@@ -483,7 +538,7 @@ if __name__ == "__main__":
         notifier = Notifier(telegram_token=TELEGRAM_BOT_TOKEN, telegram_chat_id=TELEGRAM_CHAT_ID)
         trading_manager = TradingManager(api_client, db_manager)
 
-        trading_system = Trading(
+        trading_system = HMMTrading(
             api_client=api_client,
             manager=trading_manager,
             notifier=notifier,
@@ -491,22 +546,22 @@ if __name__ == "__main__":
         )
         
         from strategies.sma_daily import SMADaily
-        sma_strategy = SMADaily(broker=trading_system.broker, data_store=trading_system.data_store, strategy_params=SMA_DAILY_PARAMS)
+        sma_daily = SMADaily(broker=trading_system.broker, data_store=trading_system.data_store, strategy_params=SMA_DAILY_PARAMS)
+
+        from strategies.triple_screen_daily import TripleScreenDaily
+        triple_screen_daily = TripleScreenDaily(broker=trading_system.broker, data_store=trading_system.data_store, strategy_params=TRIPLE_SCREEN_DAILY_PARAMS)
 
         from strategies.dual_momentum_daily import DualMomentumDaily
-        dm_strategy = DualMomentumDaily(broker=trading_system.broker, data_store=trading_system.data_store, strategy_params=DUAL_MOMENTUM_DAILY_PARAMS)
-        # 거래량 돌파 전략
-        from strategies.vol_breakout_daily import VolBreakoutDaily
-        vb_strategy = VolBreakoutDaily(broker=trading_system.broker, data_store=trading_system.data_store, strategy_params=VOL_BREAKOUT_DAILY_PARAMS)
-       
+        dual_momentum_daily = DualMomentumDaily(broker=trading_system.broker, data_store=trading_system.data_store, strategy_params=DUAL_MOMENTUM_DAILY_PARAMS)
+        
         from strategies.target_price_minute import TargetPriceMinute
         minute_strategy = TargetPriceMinute(broker=trading_system.broker, data_store=trading_system.data_store, strategy_params=COMMON_PARAMS)        
 
         trading_system.set_strategies(
-            daily_strategies=[sma_strategy, dm_strategy, vb_strategy],
+            daily_strategies=[sma_daily, triple_screen_daily],
             minute_strategy=minute_strategy
         )
-      
+        
         trading_system.set_broker_stop_loss_params(STOP_LOSS_PARAMS)
 
         if trading_system.prepare_for_system():

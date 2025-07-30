@@ -99,10 +99,17 @@ class DailyStrategy(BaseStrategy):
         self.broker = broker
         self.data_store = data_store
         self.strategy_params = strategy_params
-        self.strategy_name = self.__class__.__name__ # 클래스 이름을 전략 이름으로 사용
+        self.strategy_name = self.__class__.__name__
         
         self.signals = {}
         self._initialize_signals_for_all_stocks()
+
+    @abc.abstractmethod
+    def filter_universe(self, universe_codes: List[str], current_date: date) -> List[str]:
+        """
+        전체 유니버스 중 해당 전략의 로직을 적용할 대상 종목들만 선별합니다.
+        """
+        pass
 
     # 공통 로직을 담은 '템플릿 메서드'
     def run_daily_logic(self, current_date: date, strategy_capital: float):
@@ -112,17 +119,22 @@ class DailyStrategy(BaseStrategy):
         logging.info(f"{current_date} - --- {self.strategy_name} 일일 로직 실행 ---")
         self._reset_all_signals()
 
-        universe = list(self.data_store['daily'].keys())
-        if not universe:
+        # [수정] 1. 전체 유니버스를 가져옵니다.
+        full_universe = list(self.data_store['daily'].keys())
+        if not full_universe:
             logger.warning("거래할 유니버스 종목이 없습니다.")
             return
 
-        # 1. 각 전략의 고유 로직을 호출하여 매수/매도 후보를 받습니다.
+        # [수정] 2. 각 전략의 고유한 필터링 로직을 호출합니다.
+        filtered_universe = self.filter_universe(full_universe, current_date)
+        logging.info(f"[{self.strategy_name}] 유니버스 필터링 완료. 전체 {len(full_universe)}개 -> 대상 {len(filtered_universe)}개")
+
+        # [수정] 3. 필터링된 유니버스를 기반으로 매수/매도 후보를 계산합니다.
         buy_candidates, sell_candidates, signal_attributes = self._calculate_strategy_signals(
-            current_date, universe
+            current_date, filtered_universe
         )
 
-        # 2. 공통 신호 생성 로직을 호출합니다.
+        # 4. 공통 신호 생성 로직을 호출합니다.
         final_positions = self._generate_signals(
             current_date, buy_candidates, sell_candidates, signal_attributes, strategy_capital
         )
@@ -136,44 +148,15 @@ class DailyStrategy(BaseStrategy):
     
     # 각 전략이 반드시 구현해야 할 고유 로직 부분을 추상 메서드로 정의
     @abc.abstractmethod
-    def _calculate_strategy_signals(self, current_date: date, universe: list) -> Tuple[set, set, list, dict]:
+    def _calculate_strategy_signals(self, current_date: date, universe: list) -> Tuple[set, set, dict]:
         """
-        각 전략의 고유한 로직을 구현하여 다음을 반환해야 합니다:
+        [최종 확정] 각 전략의 고유한 로직을 구현하여 다음을 반환해야 합니다:
         - buy_candidates (set): 매수 후보 종목 코드 집합
         - sell_candidates (set): 매도 후보 종목 코드 집합
-        - sorted_buy_stocks (list): (종목코드, 점수) 튜플로 정렬된 리스트
-        - stock_target_prices (dict): {종목코드: 목표가} 딕셔너리
+        - signal_attributes (dict): {종목코드: {'score': 점수, ...}} 딕셔너리
         """
         pass
     
-    # def _calculate_target_quantity(self, stock_code, current_price, current_date, num_stocks=None):
-    #     if num_stocks is None:
-    #         num_stocks = self.strategy_params.get('num_top_stocks', 1)
-
-    #     # 1. 1주를 사는 데 필요한 총 비용 계산 (수수료 포함)
-    #     per_share_cost = current_price * (1 + self.broker.commission_rate)
-    #     if per_share_cost <= 0:
-    #         return 0
-
-    #     # 2. 이 종목에 투자할 수 있는 최대 금액 결정
-    #     capital_base = self.broker.initial_cash
-    #     per_stock_budget = capital_base / num_stocks if num_stocks > 0 else 0
-    #     available_cash = self.broker.get_current_cash_balance()
-    #     max_invest_amount = min(per_stock_budget, available_cash)
-
-    #     # 3. 매수 가능한 수량 계산 (최대 투자 가능 금액 / 1주당 비용)
-    #     # 만약 최대 투자 가능 금액이 1주 비용보다 작으면 quantity는 자동으로 0이 됨
-    #     quantity = int(max_invest_amount / per_share_cost)
-
-    #     # 4. 결과 로깅
-    #     if quantity > 0:
-    #         logging.info(f"✅ [{stock_code}] 매수 수량 계산 완료: {quantity}주")
-    #     else:
-    #         # INFO 레벨로 변경하여 항상 로그가 보이도록 하고, 원인을 명확히 표시
-    #         logging.info(f"❌ [{stock_code}] 매수 불가: 할당/가용액({max_invest_amount:,.0f}원) < 1주 비용({per_share_cost:,.0f}원)")
-        
-    #     return quantity
-
 
     def _initialize_signals_for_all_stocks(self): 
         all_stocks = set(self.data_store.get('daily', {}).keys()) | set(self.broker.get_current_positions().keys())

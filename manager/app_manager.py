@@ -125,7 +125,12 @@ class AppManager:
         return summary_df
 
     def get_daily_ohlcv_with_indicators(self, stock_code: str, start_date: date, end_date: date, daily_strategy_params: dict) -> pd.DataFrame:
-        lookback_buffer_days = max(daily_strategy_params.get('long_sma_period', 0), daily_strategy_params.get('lookback_period', 0)) + 30
+        lookback_buffer_days = 90
+        
+        long_period_param = daily_strategy_params.get('long_sma_period')
+        if isinstance(long_period_param, int) and long_period_param > 0:
+            lookback_buffer_days = max(lookback_buffer_days, long_period_param + 30)
+
         adjusted_start_date = start_date - timedelta(days=lookback_buffer_days)
         daily_df = self.db_manager.fetch_daily_price(stock_code, adjusted_start_date, end_date)
         
@@ -134,13 +139,24 @@ class AppManager:
         
         strategy_name = daily_strategy_params.get('strategy_name')
         if strategy_name == 'SMADaily':
-            daily_df[f'SMA_{daily_strategy_params.get("short_sma_period")}'] = calculate_sma(daily_df['close'], period=daily_strategy_params.get("short_sma_period"))
-            daily_df[f'SMA_{daily_strategy_params.get("long_sma_period")}'] = calculate_sma(daily_df['close'], period=daily_strategy_params.get("long_sma_period"))
+            short_period = daily_strategy_params.get("short_sma_period")
+            long_period = daily_strategy_params.get("long_sma_period")
+
+            if isinstance(short_period, int) and short_period > 0:
+                daily_df[f'SMA_{short_period}'] = calculate_sma(daily_df['close'], period=short_period)
+            
+            if isinstance(long_period, int) and long_period > 0:
+                daily_df[f'SMA_{long_period}'] = calculate_sma(daily_df['close'], period=long_period)
+
         elif strategy_name == 'TripleScreenDaily':
-            macd_df = calculate_macd(daily_df['close'], short_period=daily_strategy_params.get('ema_short_period', 12), long_period=daily_strategy_params.get('ema_long_period', 26), signal_period=daily_strategy_params.get('macd_signal_period', 9))
+            macd_df = calculate_macd(daily_df['close'], 
+                                    short_period=daily_strategy_params.get('ema_short_period', 12), 
+                                    long_period=daily_strategy_params.get('ema_long_period', 26), 
+                                    signal_period=daily_strategy_params.get('macd_signal_period', 9))
             daily_df = pd.concat([daily_df, macd_df], axis=1)
 
-        return daily_df[daily_df.index.normalize() >= pd.Timestamp(start_date).normalize()]
+        # --- ⬇️ 이 마지막 return 라인을 수정합니다. ---
+        return daily_df[daily_df.index >= pd.to_datetime(start_date)]
 
     def get_minute_ohlcv_with_indicators(self, stock_code: str, trade_date: date, minute_strategy_params: dict) -> pd.DataFrame:
         trading_days = sorted([d.date() for d in self.db_manager.get_all_trading_days(trade_date - timedelta(days=7), trade_date) if d.date() <= trade_date])
