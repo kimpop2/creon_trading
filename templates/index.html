@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>백테스트 결과 시각화</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-chart-financial"></script>
+</head>
+<body>
+    <div class="main-container">
+        <div class="left-panel">
+            <div class="panel" id="run-list-panel">
+                <h2>백테스트 실행 목록</h2>
+                <div class="table-container">
+                    <table id="run-list-table">
+                        <thead>
+                            <tr>
+                                <th>실행ID</th>
+                                <th>기간</th>
+                                <th>전략 (일/분)</th>
+                                <th>누적수익률</th>
+                                <th>연수익률</th>
+                                <th>MDD</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="panel" id="performance-chart-panel">
+                <h2 id="performance-chart-title">누적 수익률 (Run ID: N/A)</h2>
+                <canvas id="performanceChart"></canvas>
+            </div>
+            <div class="panel" id="performance-table-panel">
+                <h2 id="performance-table-title">일별 성능 (Run ID: N/A)</h2>
+                <div class="table-container">
+                    <table id="performance-table">
+                        <thead>
+                            <tr>
+                                <th>날짜</th>
+                                <th>일일수익률</th>
+                                <th>누적수익률</th>
+                                <th>낙폭(DD)</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div class="right-panel">
+            <div class="panel" id="traded-stocks-panel">
+                <h2 id="traded-stocks-title">매매 종목 목록 (Run ID: N/A)</h2>
+                <div class="table-container">
+                    <table id="traded-stocks-table">
+                         <thead>
+                            <tr>
+                                <th>종목명</th>
+                                <th>매매횟수</th>
+                                <th>총실현손익</th>
+                                <th>평균수익률</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="panel" id="daily-chart-panel">
+                <h2 id="daily-chart-title">종목 일봉 차트 (N/A)</h2>
+                <canvas id="dailyChart"></canvas>
+            </div>
+            <div class="panel" id="minute-chart-panel">
+                 <h2 id="minute-chart-title">선택 일자 분봉 차트 (N/A)</h2>
+                 <div id="minute-chart-container">
+                    <canvas id="minuteChartPrev"></canvas>
+                    <canvas id="minuteChartCurrent"></canvas>
+                 </div>
+            </div>
+        </div>
+    </div>
+    <div id="loading-overlay" class="hidden">
+        <div class="spinner"></div>
+        <p>데이터 로딩 중...</p>
+    </div>
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

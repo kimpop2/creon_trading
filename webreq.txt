@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+Jinja2
+pandas
+pymysql
+SQLAlchemy
+# Chart.js를 위한 보조 라이브러리 (날짜 처리)
+python-dateutil
