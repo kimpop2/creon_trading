@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, project_root)
 
-from api.creon_api import CreonAPIClient
+from api.creon_api import CreonAPIClient, OrderType, OrderStatus
 from trading.brokerage import Brokerage
 from manager.trading_manager import TradingManager
 from manager.db_manager import DBManager

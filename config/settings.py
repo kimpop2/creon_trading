@@ -57,9 +57,9 @@ PORTFOLIO_UPDATE_TIME = "16:00:00" # 장 마감 후 포트폴리오 업데이트
 FETCH_DAILY_PERIOD = 60 # 여유 일봉 데어터 기간(일)
 FETCH_MINUTE_PERIOD = 5 # 여유 분봉데이터 기간(일)
 # --- 투자금 기본 설정 ---
-INITIAL_CASH = 5000_000
+INITIAL_CASH = 3000_000
 PRINCIPAL_RATIO = 0.5
-MIN_STOCK_CAPITAL = 500_000 # 예시: 종목당 최소 5만원으로 매수
+MIN_STOCK_CAPITAL = 200_000 # 예시: 종목당 최소 5만원으로 매수
 # 각 전략에 대한 파라미터를 딕셔너리 형태로 정의합니다.
 # --- 공통 파라미터 정의 ---
 COMMON_PARAMS = {
@@ -149,10 +149,11 @@ RSI_MINUTE_PARAMS = {
 }
 
 INTELLIGENT_MINUTE_PARAMS = {
-    'risk_aversion': 0.1,           # (γ) 위험 회피도: 높을수록 재고 보유를 기피하고 스프레드를 넓힘 (보수적)
-    'order_flow_intensity': 1.0,    # (k) 주문 흐름 강도: 높을수록 시장이 활발하다고 판단하여 스프레드를 좁힘 (공격적)
-    'volatility_period': 20,        # (σ) 변동성 계산 기간 (분봉 기준)
-    'max_inventory': 100,           # 최대 보유 가능 재고 (단위: 주). 재고 페널티를 제한하는 역할
+    'risk_aversion': 0.5,
+    'order_flow_intensity': 1000,
+    'volatility_period': 20,
+    'max_chase_count': 5,
+    'chase_interval_seconds': 20  # <--- 이 라인을 추가하세요.
 }
 
 # --- [신규] 최적화용 고정/공통 파라미터 ---

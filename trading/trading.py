@@ -503,7 +503,7 @@ if __name__ == "__main__":
         minute_strategy = TargetPriceMinute(broker=trading_system.broker, data_store=trading_system.data_store, strategy_params=COMMON_PARAMS)        
 
         trading_system.set_strategies(
-            daily_strategies=[sma_strategy, dm_strategy, vb_strategy],
+            daily_strategies=[dm_strategy, vb_strategy],
             minute_strategy=minute_strategy
         )
       

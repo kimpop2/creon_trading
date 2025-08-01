@@ -35,16 +35,6 @@ class DBManager:
 
     def _connect(self):
         """데이터베이스에 연결합니다."""
-        # --- 디버깅 코드 추가 ---
-        print("="*50)
-        print("--- DB_MANAGER CONNECTION ATTEMPT ---")
-        print(f"HOST    : {self.host}")
-        print(f"PORT    : {self.port}")
-        print(f"USER    : {self.user}")
-        print(f"PASSWORD: {self.password}")
-        print(f"DATABASE: {self.db_name}")
-        print("="*50)
-        # --- 디버깅 코드 끝 ---
         try:
             self.conn = pymysql.connect(
                 host=self.host,

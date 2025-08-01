@@ -65,6 +65,7 @@ class Brokerage(AbstractBroker):
             
             # 주문 성공 시, _active_orders에 주문 정보 등록
             self._active_orders[order_id] = {
+                'order_id': order_id,  # _active_orders[order_id] 를 구분하지만, 내부에도 있어야 함
                 'stock_code': stock_code,
                 'stock_name': self.manager.get_stock_name(stock_code),
                 'order_type': order_type.lower(),
@@ -330,6 +331,7 @@ class Brokerage(AbstractBroker):
         for order_id in orders_to_add:
             order_info = api_orders_map[order_id]
             self._active_orders[order_id] = {
+                'order_id': order_id,  # _active_orders[order_id] 를 구분하지만, 내부에도 있어야 함
                 'stock_code': order_info.get('stock_code'),
                 'order_type': 'buy' if order_info.get('buy_sell') == '매수' else 'sell',
                 'order_status': 'submitted', # API 미체결은 '접수' 상태로 간주
@@ -387,7 +389,7 @@ class Brokerage(AbstractBroker):
             order_type=OrderType.MODIFY,
             quantity=new_quantity or 0,
             price=int(new_price) if new_price else 0,
-            org_order_id=order_id
+            origin_order_id=order_id
         )
         if result and result['status'] == 'success':
             amended_order_id = result['order_id']

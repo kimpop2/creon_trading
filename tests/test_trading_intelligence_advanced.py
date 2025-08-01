@@ -15,6 +15,8 @@ sys.path.insert(0, project_root)
 
 from api.creon_api import CreonAPIClient, OrderType, OrderStatus
 from trading.brokerage import Brokerage
+from manager.trading_manager import TradingManager
+from manager.db_manager import DBManager
 from strategies.intelligent_minute import IntelligentMinute # 개발할 전략
 from util.notifier import Notifier
 from config import settings
@@ -28,8 +30,11 @@ logger = logging.getLogger(__name__)
 
 # 테스트 대상 종목 5개
 TEST_STOCKS = {
-    'BUY_A': 'A090710', 'BUY_B': 'A008970', 'SELL_C': 'A032820',
-    'BUY_D': 'A025870', 'SELL_E': 'A067370'
+    'BUY_A': 'A033340',  # 좋은사람들 (약 1,800원대)
+    'BUY_B': 'A032820',  # 우리기술 (약 3,600원대)
+    'SELL_C': 'A041020', # 폴라리스오피스 (약 5,800원대)
+    'BUY_D': 'A117580',  # 대성에너지 (약 8,200원대)
+    'SELL_E': 'A090710', # 휴림로봇 (약 2555원대)
 }
 TEST_ORDER_QUANTITY = 1
 
@@ -39,9 +44,10 @@ class TestIntelligentAdvanced(unittest.TestCase):
     def setUpClass(cls):
         # --- Creon API, Brokerage, Strategy 초기화 ---
         cls.api = CreonAPIClient()
+        cls.db_manager = DBManager()
         cls.notifier = Notifier()
         # TradingManager 모의 객체 또는 실제 객체 전달
-        cls.manager = None # TradingManager 인스턴스가 필요하면 여기에 추가
+        cls.manager = TradingManager(cls.api, cls.db_manager) # TradingManager 인스턴스가 필요하면 여기에 추가
         cls.broker = Brokerage(cls.api, cls.manager, cls.notifier, settings.INITIAL_CASH)
         cls.strategy = IntelligentMinute(cls.broker, None, settings.INTELLIGENT_MINUTE_PARAMS)
         
@@ -52,8 +58,8 @@ class TestIntelligentAdvanced(unittest.TestCase):
     def tearDownClass(cls):
         """테스트 클래스 종료 시 한 번만 실행: 리소스 정리"""
         logger.info("--- 테스트 클래스 정리 시작 ---")
-        if cls.cls_api:
-            cls.cls_api.cleanup()
+        if cls.api:
+            cls.api.cleanup()
         pythoncom.CoUninitialize()
         logger.info("--- 테스트 클래스 정리 완료 ---")
 
@@ -78,34 +84,38 @@ class TestIntelligentAdvanced(unittest.TestCase):
         start_time = time.time()
         added_secondary_signals = False
         all_codes = list(TEST_STOCKS.values())
+        try:
+            while True:
+                pythoncom.PumpWaitingMessages()
 
-        while True:
-            pythoncom.PumpWaitingMessages()
+                # T=30초: 2차 신호 2개 주입 (시차 발생)
+                if not added_secondary_signals and (time.time() - start_time) > 30:
+                    logger.info("--- [고급] T=30s: 2차 신호(매수 1, 매도 1) 주입 ---")
+                    secondary_signals = {
+                        TEST_STOCKS['BUY_D']: {'signal_type': 'buy', 'target_quantity': TEST_ORDER_QUANTITY},
+                        TEST_STOCKS['SELL_E']: {'signal_type': 'sell', 'target_quantity': TEST_ORDER_QUANTITY},
+                    }
+                    self.strategy.update_signals(secondary_signals)
+                    added_secondary_signals = True
 
-            # T=30초: 2차 신호 2개 주입 (시차 발생)
-            if not added_secondary_signals and (time.time() - start_time) > 30:
-                logger.info("--- [고급] T=30s: 2차 신호(매수 1, 매도 1) 주입 ---")
-                secondary_signals = {
-                    TEST_STOCKS['BUY_D']: {'signal_type': 'buy', 'target_quantity': TEST_ORDER_QUANTITY},
-                    TEST_STOCKS['SELL_E']: {'signal_type': 'sell', 'target_quantity': TEST_ORDER_QUANTITY},
-                }
-                self.strategy.update_signals(secondary_signals)
-                added_secondary_signals = True
+                # 현재 진행 중인 모든 임무에 대해 로직 실행 (동시 처리)
+                active_codes = list(self.strategy.trade_missions.keys())
+                for code in active_codes:
+                    self.strategy.run_minute_logic(datetime.now(), code)
 
-            # 현재 진행 중인 모든 임무에 대해 로직 실행 (동시 처리)
-            active_codes = list(self.strategy.trade_missions.keys())
-            for code in active_codes:
-                self.strategy.run_minute_logic(datetime.now(), code)
-
-            # 모든 임무 완료 시 종료
-            if self._all_missions_completed(all_codes):
-                logger.info("--- [고급] 모든 거래 임무 완료 ---")
-                break
-            
-            if (time.time() - start_time) > 600: # 10분 타임아웃
-                self.fail("고급 시나리오 테스트 시간 초과")
-            
-            time.sleep(3)
+                # 모든 임무 완료 시 종료
+                if self._all_missions_completed(all_codes):
+                    logger.info("--- [고급] 모든 거래 임무 완료 ---")
+                    break
+                
+                if (time.time() - start_time) > 600: # 10분 타임아웃
+                    self.fail("고급 시나리오 테스트 시간 초과")
+                
+                time.sleep(3)
+        except Exception as e:
+            # ✅ 어떤 에러가 왜 발생하는지 정확히 출력해줍니다.
+            logger.error("테스트 루프 중 에러 발생!", exc_info=True)
+            self.fail(f"테스트 실패: {e}")
 
         # 4. 최종 결과 검증
         logger.info("--- [고급] 최종 결과 검증 ---")
