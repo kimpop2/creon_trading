@@ -11,18 +11,22 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-# 프로젝트 루트를 sys.path에 추가하여 backend 모듈 임포트
-# --- 프로젝트 루트 경로 추가 ---
+# --- 경로 설정 ---
+# 1. 현재 파일(webapp/main.py)이 있는 디렉토리의 절대 경로를 구합니다.
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# 2. 프로젝트 루트 경로를 계산하고 sys.path에 추가합니다.
+project_root = os.path.abspath(os.path.join(BASE_DIR, '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 # 기존 비즈니스 로직 매니저 임포트
 from manager.app_manager import AppManager
 
 # --- FastAPI 앱 설정 ---
 app = FastAPI()
-
-# 정적 파일(css, js) 및 템플릿(html) 경로 설정
-app.mount("/static", StaticFiles(directory="static"), name="static")
-templates = Jinja2Templates(directory="templates")
+# 3. ⬇️ BASE_DIR를 사용하여 static과 templates 폴더의 절대 경로를 지정합니다.
+app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
+templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
 # AppManager 인스턴스를 전역으로 생성하여 재사용
 try:
