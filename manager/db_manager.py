@@ -2175,37 +2175,40 @@ class DBManager:
                        observation_vars: List[str],
                        model_params: Dict[str, Any],
                        training_start_date: str,
-                       training_end_date: str) -> Optional[int]:
+                       training_end_date: str) -> bool: # 반환 타입을 bool로 변경
         """
-        학습된 HMM 모델의 파라미터와 메타데이터를 DB에 저장합니다.
-        :return: 성공 시 저장된 모델의 ID, 실패 시 None
+        [수정됨] HMM 모델을 저장하되, 이미 이름이 존재하면 파라미터를 업데이트합니다. (UPSERT)
         """
         conn = self.get_db_connection()
-        if not conn:
-            return None
+        if not conn: return False
 
         try:
-            # numpy 배열 등이 있을 경우를 대비하여 tolist() 처리
             model_params_json = json.dumps(model_params, default=lambda x: x.tolist() if hasattr(x, 'tolist') else x)
             observation_vars_json = json.dumps(observation_vars)
 
             sql = """
                 INSERT INTO hmm_models (model_name, n_states, observation_vars, model_params_json,
-                                        training_start_date, training_end_date)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                                        training_start_date, training_end_date, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                ON DUPLICATE KEY UPDATE
+                    n_states = VALUES(n_states),
+                    observation_vars = VALUES(observation_vars),
+                    model_params_json = VALUES(model_params_json),
+                    training_start_date = VALUES(training_start_date),
+                    training_end_date = VALUES(training_end_date),
+                    created_at = CURRENT_TIMESTAMP
             """
             params = (model_name, n_states, observation_vars_json, model_params_json,
                       training_start_date, training_end_date)
             
             cursor = self.execute_sql(sql, params)
             if cursor:
-                model_id = cursor.lastrowid
-                logger.info(f"HMM 모델 '{model_name}' (ID: {model_id})을(를) DB에 저장했습니다.")
-                return model_id
-            return None
+                logger.info(f"HMM 모델 '{model_name}'을(를) DB에 성공적으로 저장/업데이트했습니다.")
+                return True
+            return False
         except Exception as e:
-            logger.error(f"HMM 모델 '{model_name}' 저장 실패: {e}", exc_info=True)
-            return None
+            logger.error(f"HMM 모델 '{model_name}' 저장/업데이트 실패: {e}", exc_info=True)
+            return False
 
     def fetch_hmm_model_by_name(self, model_name: str) -> Optional[Dict[str, Any]]:
         """
@@ -2252,6 +2255,64 @@ class DBManager:
             # KeyError 발생 시 이곳에서 로깅됩니다.
             logging.error(f"HMM 모델 '{model_name}' 로드 실패: {e}", exc_info=True)
             return None
+
+    def save_daily_regimes(self, regime_data_list: List[Dict[str, Any]]) -> bool:
+        """
+        일별 국면 데이터를 DB에 저장합니다. (UPSERT 방식)
+        기존 save_xx 메서드들의 형식을 따릅니다.
+        """
+        if not regime_data_list:
+            logger.info("저장할 daily_regimes 데이터가 없습니다.")
+            return True
+
+        sql = """
+            INSERT INTO daily_regimes (date, model_id, regime_id)
+            VALUES (%s, %s, %s)
+            ON DUPLICATE KEY UPDATE regime_id = VALUES(regime_id)
+        """
+        
+        # 딕셔너리 리스트를 튜플 리스트로 변환 (기존 방식과 동일)
+        data_tuples = [
+            (item['date'], item['model_id'], item['regime_id'])
+            for item in regime_data_list
+        ]
+        
+        try:
+            # executemany를 지원하는 execute_sql 메서드 호출
+            cursor = self.execute_sql(sql, data_tuples)
+            if cursor:
+                logger.info(f"{len(data_tuples)}개의 일별 국면 데이터를 저장/업데이트했습니다.")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"일별 국면 데이터 저장/업데이트 실패: {e}", exc_info=True)
+            return False
+
+
+    def fetch_daily_regimes(self, model_id: int) -> pd.DataFrame:
+        """
+        특정 모델 ID에 대한 모든 일별 국면 데이터를 조회합니다.
+        기존 fetch_xx 메서드들의 형식을 따릅니다.
+        """
+        conn = self.get_db_connection()
+        if not conn:
+            return pd.DataFrame()
+
+        sql = "SELECT date, model_id, regime_id FROM daily_regimes WHERE model_id = %s ORDER BY date ASC"
+        
+        try:
+            cursor = self.execute_sql(sql, (model_id,))
+            if cursor:
+                result = cursor.fetchall()
+                df = pd.DataFrame(result)
+                if not df.empty:
+                    df['date'] = pd.to_datetime(df['date']).dt.date
+                return df
+            return pd.DataFrame()
+        except Exception as e:
+            logger.error(f"일별 국면 데이터 조회 실패 (모델 ID: {model_id}): {e}", exc_info=True)
+            return pd.DataFrame()
+        
 
     def save_strategy_profiles(self, profiles_data_list: List[Dict[str, Any]]) -> bool:
         """
@@ -2337,3 +2398,42 @@ class DBManager:
             return pd.DataFrame()
 
 
+    def fetch_strategy_profiles_by_model_and_regime(self, model_id: int, regime_id: int) -> pd.DataFrame:
+        """
+        특정 HMM 모델 ID와 국면 ID에 해당하는 모든 전략 프로파일을 DataFrame으로 불러옵니다.
+        """
+        conn = self.get_db_connection()
+        if not conn:
+            return pd.DataFrame()
+
+        sql = """
+            SELECT strategy_name, regime_id, sharpe_ratio, mdd,
+                   total_return, win_rate, num_trades
+            FROM strategy_profiles 
+            WHERE model_id = %s AND regime_id = %s
+        """
+        params = (model_id, regime_id)
+        
+        try:
+            cursor = self.execute_sql(sql, params)
+            if cursor:
+                result = cursor.fetchall()
+                if not result:
+                    return pd.DataFrame()
+                
+                df = pd.DataFrame(result)
+                
+                # 숫자형 컬럼들을 float으로 명시적 변환
+                numeric_cols = ['sharpe_ratio', 'mdd', 'total_return', 'win_rate', 'num_trades']
+                for col in numeric_cols:
+                    if col in df.columns:
+                        # DB에서 Decimal 타입으로 반환될 수 있으므로 float으로 변환
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+                
+                logger.info(f"모델 ID {model_id}, 국면 {regime_id}에 대한 {len(df)}개의 전략 프로파일을 DB에서 불러왔습니다.")
+                return df
+            
+            return pd.DataFrame()
+        except Exception as e:
+            logger.error(f"전략 프로파일 로드 실패(모델 ID: {model_id}, 국면: {regime_id}): {e}", exc_info=True)
+            return pd.DataFrame()

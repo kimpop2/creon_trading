@@ -9,6 +9,7 @@ SET FOREIGN_KEY_CHECKS = 0;
 -- 자식 테이블을 먼저 삭제하고 부모 테이블을 나중에 삭제하는 것이 좋지만,
 -- FOREIGN_KEY_CHECKS=0 이므로 순서는 덜 중요합니다.
 DROP TABLE IF EXISTS strategy_profiles;
+DROP TABLE IF EXISTS daily_regimes;
 DROP TABLE IF EXISTS hmm_models;
 DROP TABLE IF EXISTS daily_factors;
 DROP TABLE IF EXISTS backtest_performance;

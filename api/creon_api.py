@@ -773,7 +773,7 @@ class CreonAPIClient:
     def get_minute_ohlcv(self, code, from_date, to_date, interval=1):
         return self._get_price_data(code, 'm', from_date, to_date, interval)
         
-    def get_all_trading_days_from_api(self, from_date: date, to_date: date, stock_code: str = 'A005930') -> list[date]:
+    def get_all_trading_days_from_api(self, from_date: date, to_date: date, stock_code: str = 'A005930') -> List[date]:
         from_date_str = from_date.strftime('%Y%m%d')
         to_date_str = to_date.strftime('%Y%m%d')
         ohlcv_df = self._get_price_data(stock_code, 'D', from_date_str, to_date_str)

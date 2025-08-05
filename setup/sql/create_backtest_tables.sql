@@ -61,7 +61,6 @@ CREATE TABLE IF NOT EXISTS backtest_performance (
 CREATE INDEX idx_backtest_performance_run_id ON backtest_performance (run_id);
 CREATE INDEX idx_backtest_performance_date ON backtest_performance (date);
 
-
 -- HMM 모델 정보를 저장하는 테이블 
 CREATE TABLE IF NOT EXISTS hmm_models (
     model_id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '모델의 고유 식별자',
@@ -75,6 +74,17 @@ CREATE TABLE IF NOT EXISTS hmm_models (
 ) COMMENT='HMM(은닉 마코프 모델)의 파라미터 및 메타데이터 저장 테이블';
 CREATE INDEX IF NOT EXISTS idx_hmm_models_model_name ON hmm_models (model_name);
 
+-- 일별 국면 데이터를 저장하는 테이블 (HMM 모델의 예측 결과)
+CREATE TABLE IF NOT EXISTS daily_regimes (
+    regime_entry_id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '항목 고유 ID',
+    date DATE NOT NULL COMMENT '해당 날짜',
+    model_id BIGINT NOT NULL COMMENT '판단에 사용된 HMM 모델의 ID (hmm_models 테이블 참조)',
+    regime_id INT NOT NULL COMMENT '해당 날짜의 국면(regime) ID (예: 0, 1, 2, 3)',
+    CONSTRAINT fk_regimes_model FOREIGN KEY (model_id) REFERENCES hmm_models (model_id) ON DELETE CASCADE,
+    UNIQUE KEY uk_regime_date_model (date, model_id)
+) COMMENT='HMM 모델이 예측한 일별 시장 국면(Regime) 데이터';
+CREATE INDEX IF NOT EXISTS idx_daily_regimes_model_date ON daily_regimes (model_id, date);
+
 -- 전략의 장세별 성과 프로파일을 저장하는 테이블
 CREATE TABLE IF NOT EXISTS strategy_profiles (
     profile_id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '프로파일의 고유 식별자',
@@ -86,13 +96,13 @@ CREATE TABLE IF NOT EXISTS strategy_profiles (
     total_return DOUBLE COMMENT '해당 장세에서의 누적 수익률',
     win_rate DOUBLE COMMENT '해당 장세에서의 승률',
     num_trades INT COMMENT '해당 장세에서의 총 거래 횟수',
+    params_json JSON COMMENT '해당 장세에서 최적화된 전략 파라미터',
     profiling_start_date DATE NOT NULL COMMENT '프로파일링에 사용된 데이터의 시작일',
     profiling_end_date DATE NOT NULL COMMENT '프로파일링에 사용된 데이터의 종료일',
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '프로파일 업데이트 시각',
     CONSTRAINT fk_profiles_model FOREIGN KEY (model_id) REFERENCES hmm_models (model_id),
     UNIQUE KEY uk_strategy_model_regime (strategy_name, model_id, regime_id)
 ) COMMENT='전략의 장세별 성과 프로파일 저장 테이블';
-
 CREATE INDEX IF NOT EXISTS idx_strategy_profiles_strategy_model ON strategy_profiles (strategy_name, model_id);
 
 

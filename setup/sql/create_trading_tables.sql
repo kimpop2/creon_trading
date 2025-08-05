@@ -46,7 +46,6 @@ CREATE TABLE IF NOT EXISTS daily_portfolio (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '기록 생성 시각',
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '최종 업데이트 시각'
 ) COMMENT='자동매매 일별 포트폴리오 스냅샷';
-
 -- daily_portfolio 인덱스
 CREATE INDEX idx_daily_portfolio_record_date ON daily_portfolio (record_date);
 
@@ -63,7 +62,6 @@ CREATE TABLE IF NOT EXISTS current_positions (
     entry_date DATE COMMENT '최초 매수 일자',
     last_update TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '마지막 업데이트 시각'
 ) COMMENT='현재 보유 종목 현황';
-
 -- current_positions 인덱스
 CREATE INDEX idx_current_positions_stock_name ON current_positions (stock_name);
 
@@ -84,7 +82,6 @@ CREATE TABLE IF NOT EXISTS daily_signals (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '최종 업데이트 시각',
     UNIQUE KEY uk_daily_signal_date_stock_code_type (signal_date, stock_code, signal_type) -- 특정 날짜, 종목, 신호 타입별 유니크
 ) COMMENT='일일 매매 신호';
-
 -- daily_signals 인덱스
 CREATE INDEX idx_daily_signals_date ON daily_signals (signal_date);
 CREATE INDEX idx_daily_signals_stock_code ON daily_signals (stock_code);

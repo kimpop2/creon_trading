@@ -225,4 +225,4 @@ HMM_OPTIMIZATION_PARAMS = {
 }
 # --- [신규 추가] 실거래용 HMM 모델 설정 ---
 # 옵티마이저로 찾은 최적 모델의 이름으로 변경하여 사용합니다.
-LIVE_HMM_MODEL_NAME = "Test_HMM_v1" 
+LIVE_HMM_MODEL_NAME = "Production_HMM_v1" 

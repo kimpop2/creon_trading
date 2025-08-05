@@ -2,6 +2,8 @@
 
 import logging
 import pandas as pd
+import numpy as np
+from pykrx import stock
 from datetime import datetime, date, timedelta
 import time
 import sys
@@ -938,49 +940,147 @@ class BacktestManager:
     def fetch_stock_info(self, stock_codes: list = None) -> pd.DataFrame:
         """[래퍼] DBManager의 fetch_stock_info 메서드를 호출합니다."""
         return self.db_manager.fetch_stock_info(stock_codes)
+
+
+
+
+# manager/backtest_manager.py
+# manager/backtest_manager.py
+
+    def get_market_data_for_hmm(self, current_date: date = date.today(), days: int = 730) -> pd.DataFrame:
+        """
+        [최종 완성본] HMM 모델 학습을 위해 가격, 변동성, 거래량, 심리를
+        종합적으로 반영한 Feature Set을 생성합니다.
+        """
+        logger.info(f"HMM 학습용 종합 Feature 데이터 생성 시작 (기준일: {current_date}, 기간: {days}일)")
+        end_date = current_date - timedelta(days=1)
+        # 모든 롤링 계산(최장 60일)을 위해 충분한 과거 데이터 확보
+        start_date = end_date - timedelta(days=days + 100)
+        
+        start_str = start_date.strftime('%Y%m%d')
+        end_str = end_date.strftime('%Y%m%d')
+
+        # --- 1. 원본 데이터 수집 (KOSPI OHLCV) ---
+        df = stock.get_index_ohlcv(start_str, end_str, "1001")
+        if df.empty:
+            logger.warning("HMM 학습용 KOSPI 데이터를 조회할 수 없습니다.")
+            return pd.DataFrame()
+
+        # --- 2. Feature 계산 ---
+        # Feature C: 20일 변동성 범위
+        window_20d = 20
+        df['C_vol_range'] = df['고가'].rolling(window=window_20d).max() - df['저가'].rolling(window=window_20d).min()
+
+        # Feature A & B: 반등/하락 가속도
+        min_pos = df['저가'].rolling(window=window_20d).apply(np.argmin, raw=True)
+        max_pos = df['고가'].rolling(window=window_20d).apply(np.argmax, raw=True)
+        days_since_low = (window_20d - 1) - min_pos + 1
+        days_since_high = (window_20d - 1) - max_pos + 1
+        df['A_rebound_accel'] = (df['종가'] - df['저가'].rolling(window=window_20d).min()) / days_since_low
+        df['B_fall_accel'] = (df['종가'] - df['고가'].rolling(window=window_20d).max()) / days_since_high
+
+        # Feature D: 단기 거래대금 집중도
+        df['D_volume_surge'] = df['거래대금'].rolling(window=5).mean() / df['거래대금'].rolling(window=20).mean()
+
+        # Feature E: 중기 추세 (20일/60일 이격도)
+        sma20 = df['종가'].rolling(window=20).mean()
+        sma60 = df['종가'].rolling(window=60).mean()
+        df['E_ma_divergence'] = (sma20 - sma60) / sma60 * 100
+
+        # Feature H: 하락 변동성 (VIX 대용)
+        daily_returns = df['종가'].pct_change()
+        negative_returns = daily_returns[daily_returns < 0]
+        df['H_downside_volatility'] = negative_returns.rolling(window=20).std().fillna(0)
+        
+        # Feature I: 시장 패닉 지수 (변동성 * 거래대금)
+        vol_short = daily_returns.rolling(window=20).std()
+        vol_long = daily_returns.rolling(window=60).std()
+        value_short = df['거래대금'].rolling(window=20).mean()
+        value_long = df['거래대금'].rolling(window=60).mean()
+        df['I_panic_index'] = (vol_short / vol_long) * (value_short / value_long)
+        
+        # Feature J: 상승 가속 지수 (상승 강도 * 거래대금)
+        roc_10d = df['종가'].pct_change(periods=10)
+        df['J_rally_accel_index'] = roc_10d * df['D_volume_surge']
+        
+        # --- 3. 최종 데이터 정리 ---
+        final_features = df[[
+            'A_rebound_accel', 'B_fall_accel', 'C_vol_range', 
+            'D_volume_surge', 'E_ma_divergence',
+            'H_downside_volatility', 'I_panic_index', 'J_rally_accel_index'
+        ]].copy()
+        
+        # 무한대 값(inf)과 결측치(NaN) 처리
+        final_features.replace([np.inf, -np.inf], np.nan, inplace=True)
+        final_features.dropna(inplace=True)
+        
+        logger.info(f"HMM 학습용 데이터 생성 완료. {len(final_features)}일치, {len(final_features.columns)}개 Features")
+        return final_features
     
-    ############ 아래 메서드 trading_manager 로 이동동
-    # def get_market_data_for_hmm(self, current_date: date, days: int = 365) -> pd.DataFrame:
+    # def get_market_data_for_hmm(self, feature_set: str = 'A+B+C', current_date: date = date.today(), days: int = 730) -> pd.DataFrame:
     #     """
-    #     [신규] HMM 모델 학습에 필요한 시장 데이터를 조회합니다.
-    #     주로 시장 지수의 일일 수익률과 같은 거시 지표를 사용합니다.
+    #     [최종 확정안] HMM 모델 학습용 Feature 그룹을 생성합니다.
+    #     pykrx 조회 시 긴 기간은 600일 단위로 분할하여 안정적으로 조회합니다.
+    #     """
+    #     logger.info(f"HMM 학습용 데이터 생성 시작 (Feature Set: {feature_set})")
         
-    #     Args:
-    #         current_date (date): 데이터 조회의 기준이 되는 날짜.
-    #         days (int): 기준일로부터 과거 몇 일간의 데이터를 가져올지 결정.
+    #     # --- 1. 기간 설정 및 분할 로직 준비 ---
+    #     end_date = current_date - timedelta(days=1)
+    #     start_date = end_date - timedelta(days=days + 10) # 계산 버퍼
+    #     chunk_days = 600
+        
+    #     # --- 2. pykrx 데이터 분할 조회 ---
+    #     all_ohlcv_dfs = {}
+    #     all_short_dfs = []
+        
+    #     current_chunk_start = start_date
+    #     while current_chunk_start <= end_date:
+    #         current_chunk_end = min(current_chunk_start + timedelta(days=chunk_days - 1), end_date)
+    #         start_str = current_chunk_start.strftime('%Y%m%d')
+    #         end_str = current_chunk_end.strftime('%Y%m%d')
             
-    #     Returns:
-    #         pd.DataFrame: HMM 학습에 사용될 관찰 변수들이 담긴 데이터프레임.
-    #                       (예: 'daily_return' 컬럼 포함)
-    #     """
-    #     logger.info(f"HMM 학습용 시장 데이터 조회를 시작합니다. (기준일: {current_date}, 기간: {days}일)")
-        
-    #     market_index_code = COMMON_PARAMS.get('market_index_code', 'U001') # 설정에서 시장 코드 가져오기
-    #     end_date = current_date
-    #     start_date = end_date - timedelta(days=days)
+    #         # 지수 OHLCV 조회
+    #         tickers = {'1001': 'KOSPI', '1002': 'KOSPI_Large', '1004': 'KOSPI_Small',
+    #                    '1035': 'KOSPI_50', '1244': 'KOSPI_200_ex', '1021': 'Financial', '1020': 'Telecom'}
+    #         for ticker, name in tickers.items():
+    #             if name not in all_ohlcv_dfs: all_ohlcv_dfs[name] = []
+    #             all_ohlcv_dfs[name].append(stock.get_index_ohlcv(start_str, end_str, ticker))
 
-    #     # DB에서 시장 지수의 일봉 데이터를 가져옵니다.
-    #     # fetch_daily_price는 인덱스가 date인 DataFrame을 반환한다고 가정합니다.
-    #     market_df = self.db_manager.fetch_daily_price(
-    #         stock_code=market_index_code,
-    #         start_date=start_date,
-    #         end_date=end_date
-    #     )
+    #         # 공매도 데이터 조회
+    #         if 'C' in feature_set:
+    #             try:
+    #                 all_short_dfs.append(stock.get_shorting_investor_value_by_date(start_str, end_str, "KOSPI"))
+    #             except Exception as e:
+    #                 logger.warning(f"공매도 데이터 조회 중 오류 발생 (기간: {start_str}~{end_str}): {e}")
 
-    #     if market_df.empty:
-    #         logger.error(f"HMM 학습용 시장 데이터({market_index_code})를 조회할 수 없습니다.")
-    #         return pd.DataFrame()
+    #         current_chunk_start = current_chunk_end + timedelta(days=1)
 
-    #     # HMM의 관찰 변수인 '일일 수익률'을 계산합니다.
-    #     market_df['daily_return'] = market_df['close'].pct_change()
+    #     # 분할 조회된 데이터 합치기
+    #     ohlcv_dfs = {name: pd.concat(df_list) for name, df_list in all_ohlcv_dfs.items()}
+    #     short_value_df = pd.concat(all_short_dfs) if all_short_dfs else pd.DataFrame()
+
+    #     # --- 3. Feature 엔지니어링 (기존 로직과 동일) ---
+    #     returns_df = pd.DataFrame()
+    #     for name, df in ohlcv_dfs.items():
+    #         returns_df[f'{name}_return'] = df['종가'].pct_change()
+
+    #     final_features = pd.DataFrame(index=returns_df.index)
+
+    #     if 'A' in feature_set:
+    #         final_features['market_return'] = returns_df['KOSPI_return']
+    #         final_features['market_volatility'] = (ohlcv_dfs['KOSPI']['고가'] - ohlcv_dfs['KOSPI']['저가']) / ohlcv_dfs['KOSPI']['시가']
+    #     if 'B' in feature_set:
+    #         final_features['size_factor'] = returns_df['KOSPI_Small_return'] / returns_df['KOSPI_Large_return']
+    #         final_features['concentration_factor'] = returns_df['KOSPI_50_return'] - returns_df['KOSPI_200_ex_return']
+    #         final_features['sector_factor'] = returns_df['Financial_return'] / returns_df['Telecom_return']
+    #     if 'C' in feature_set:
+    #         if not short_value_df.empty and '합계' in short_value_df.columns:
+    #             short_aligned = short_value_df['합계'].reindex(final_features.index, method='ffill')
+    #             final_features['short_intensity'] = short_aligned.pct_change()
+
+    #     # NaN 값 처리
+    #     final_features.replace([np.inf, -np.inf], np.nan, inplace=True)
+    #     final_features.dropna(inplace=True)
         
-    #     # (선택) 변동성 지수(VKOSPI) 등 다른 관찰 변수가 있다면 여기에 추가합니다.
-    #     # 예: market_df['volatility'] = ...
-        
-    #     # hmmlearn 라이브러리는 NaN 값이 없는 numpy 배열을 기대하므로,
-    #     # 계산 과정에서 발생한 NaN 값을 제거하고 필요한 컬럼만 선택합니다.
-    #     hmm_input_df = market_df[['daily_return']].dropna()
-        
-    #     logger.info(f"HMM 학습용 데이터 준비 완료. {len(hmm_input_df)}개의 데이터 포인트 생성.")
-        
-    #     return hmm_input_df
+    #     logger.info(f"HMM 학습용 데이터 생성 완료. {len(final_features)}일치, {len(final_features.columns)}개 Features")
+    #     return final_features
