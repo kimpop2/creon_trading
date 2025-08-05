@@ -1,0 +1,99 @@
+{% extends "layout/base.html" %}
+
+{% block title %}과금 관리{% endblock %}
+
+{% block head_css %}
+<style>
+    .filter-container {
+        display: flex;
+        gap: 15px;
+        align-items: center;
+        margin-bottom: 20px;
+    }
+    .kpi-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 20px;
+        margin-bottom: 20px;
+    }
+    .kpi-card {
+        background-color: #fff;
+        padding: 20px;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        text-align: center;
+    }
+    .kpi-card .value { font-size: 1.8em; font-weight: bold; }
+    .kpi-card .label { font-size: 0.9em; color: #777; margin-top: 5px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<h2>💰 과금 관리</h2>
+
+<div class="panel">
+    <h3>조회 조건</h3>
+    <div class="filter-container">
+        <label for="billing_month">정산월 선택:</label>
+        <input type="month" id="billing_month" name="billing_month" value="2025-08">
+        <label for="user_id">사용자 ID:</label>
+        <input type="text" id="user_id" name="user_id" placeholder="전체">
+        <button class="btn-primary" style="padding: 8px 15px;">조회</button>
+    </div>
+</div>
+
+<div class="kpi-grid" style="margin-top: 20px;">
+    <div class="kpi-card">
+        <div class="value">₩ 15,780,000</div>
+        <div class="label">총 정산 대상 수익</div>
+    </div>
+    <div class="kpi-card">
+        <div class="value text-green">₩ 1,578,000</div>
+        <div class="label">총 발생 수수료</div>
+    </div>
+    <div class="kpi-card">
+        <div class="value">148 건</div>
+        <div class="label">결제 완료</div>
+    </div>
+    <div class="kpi-card">
+        <div class="value text-red">4 건</div>
+        <div class="label">미납</div>
+    </div>
+</div>
+
+<div class="panel">
+    <h3>2025년 8월 과금 내역</h3>
+    <div class="table-container">
+        <table>
+            <thead>
+                <tr>
+                    <th>사용자 ID</th>
+                    <th class="align-right">기간 내 수익</th>
+                    <th class="align-right">수수료율</th>
+                    <th class="align-right">청구 수수료</th>
+                    <th style="text-align: center;">결제 상태</th>
+                    <th style="text-align: center;">관리</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>user01</td>
+                    <td class="align-right">₩ 1,250,000</td>
+                    <td class="align-right">10%</td>
+                    <td class="align-right">₩ 125,000</td>
+                    <td style="text-align: center;"><span class="status-badge completed">결제 완료</span></td>
+                    <td style="text-align: center;"><button class="btn-small">상세</button></td>
+                </tr>
+                <tr>
+                    <td>user03</td>
+                    <td class="align-right">₩ 880,000</td>
+                    <td class="align-right">10%</td>
+                    <td class="align-right">₩ 88,000</td>
+                    <td style="text-align: center;"><span class="status-badge waiting">미납</span></td>
+                    <td style="text-align: center;"><button class="btn-small">상세</button></td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,28 @@
+{% extends "layout/base.html" %}
+
+{% block title %}로그인{% endblock %}
+
+{% block content %}
+<div class="auth-container">
+    <div class="auth-form panel">
+        <h2>🔒 로그인</h2>
+        <p>서비스를 이용하시려면 로그인하세요.</p>
+        <form action="/api/auth/login" method="post">
+            <div class="form-group">
+                <label for="username">아이디</label>
+                <input type="text" id="username" name="username" required>
+            </div>
+            <div class="form-group">
+                <label for="password">비밀번호</label>
+                <input type="password" id="password" name="password" required>
+            </div>
+            <button type="submit" class="btn-primary full-width">로그인</button>
+        </form>
+        <div class="auth-links">
+            <a href="/auth/signup">회원가입</a>
+            <span>|</span>
+            <a href="/auth/forgot-password">비밀번호 찾기</a>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,98 @@
+{% extends "layout/base.html" %}
+
+{% block title %}1:1 문의{% endblock %}
+
+{% block head_css %}
+<style>
+    .inquiry-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 20px;
+    }
+    .status-badge {
+        padding: 4px 10px;
+        border-radius: 12px;
+        font-size: 0.8em;
+        font-weight: bold;
+        color: white;
+    }
+    .status-badge.waiting {
+        background-color: #f39c12; /* Orange */
+    }
+    .status-badge.completed {
+        background-color: #27ae60; /* Green */
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="inquiry-header">
+    <h2>💬 1:1 문의</h2>
+    <button class="btn-primary" style="padding: 10px 20px;">+ 새 문의 작성</button>
+</div>
+
+<div class="panel">
+    <h3>문의 내역</h3>
+    <div class="table-container">
+        <table>
+            <thead>
+                <tr>
+                    <th style="width: 10%;">번호</th>
+                    <th style="width: 15%;">문의 유형</th>
+                    <th style="width: 45%;">제목</th>
+                    <th style="width: 15%;">작성일</th>
+                    <th style="width: 15%; text-align: center;">답변 상태</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>5</td>
+                    <td>결제</td>
+                    <td><a href="#">8월 수수료 청구 내역 관련 문의</a></td>
+                    <td>2025-08-01</td>
+                    <td style="text-align: center;">
+                        <span class="status-badge waiting">답변 대기중</span>
+                    </td>
+                </tr>
+                 <tr>
+                    <td>4</td>
+                    <td>시스템 오류</td>
+                    <td><a href="#">특정 종목 백테스팅 시 오류가 발생합니다.</a></td>
+                    <td>2025-07-29</td>
+                    <td style="text-align: center;">
+                        <span class="status-badge completed">답변 완료</span>
+                    </td>
+                </tr>
+                <tr>
+                    <td>3</td>
+                    <td>전략</td>
+                    <td><a href="#">RSI 전략의 최적 파라미터 관련 질문</a></td>
+                    <td>2025-07-26</td>
+                    <td style="text-align: center;">
+                        <span class="status-badge completed">답변 완료</span>
+                    </td>
+                </tr>
+                <tr>
+                    <td>2</td>
+                    <td>계정</td>
+                    <td><a href="#">텔레그램 연동이 되지 않습니다.</a></td>
+                    <td>2025-07-25</td>
+                    <td style="text-align: center;">
+                        <span class="status-badge completed">답변 완료</span>
+                    </td>
+                </tr>
+                 <tr>
+                    <td>1</td>
+                    <td>기타</td>
+                    <td><a href="#">신규 기능 제안</a></td>
+                    <td>2025-07-22</td>
+                    <td style="text-align: center;">
+                        <span class="status-badge completed">답변 완료</span>
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

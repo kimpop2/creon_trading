@@ -1,0 +1,114 @@
+{% extends "layout/base.html" %}
+
+{% block title %}시스템 모니터링{% endblock %}
+
+{% block head_css %}
+<style>
+    .status-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        gap: 20px;
+        margin-bottom: 20px;
+    }
+    .status-card {
+        background-color: #fff;
+        padding: 20px;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    }
+    .status-card h4 {
+        margin-top: 0;
+        margin-bottom: 15px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+    .log-viewer {
+        background-color: #1e1e1e;
+        color: #d4d4d4;
+        padding: 15px;
+        border-radius: 5px;
+        height: 300px;
+        overflow-y: scroll;
+        font-family: 'Courier New', Courier, monospace;
+        font-size: 0.85em;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<h2>🖥️ 시스템 모니터링</h2>
+
+<div class="status-grid">
+    <div class="status-card">
+        <h4><span>메인 서버</span><span class="status-active">● 정상</span></h4>
+        <p>Uptime: 15일 4시간 2분</p>
+    </div>
+    <div class="status-card">
+        <h4><span>데이터베이스</span><span class="status-active">● 정상</span></h4>
+        <p>Connections: 32 / 100</p>
+    </div>
+    <div class="status-card">
+        <h4><span>증권사 API</span><span class="status-active">● 정상</span></h4>
+        <p>Latency: 25ms</p>
+    </div>
+     <div class="status-card">
+        <h4><span>사용자 PC 연결</span><span class="status-suspended">● 일부 오프라인</span></h4>
+        <p>Online: 150 / 152</p>
+    </div>
+</div>
+
+<div class="panel">
+    <h3>사용자 미니PC 상태</h3>
+    <div class="table-container">
+        <table>
+            <thead>
+                <tr>
+                    <th>사용자 ID</th>
+                    <th>상태</th>
+                    <th>CPU</th>
+                    <th>Memory</th>
+                    <th>마지막 접속</th>
+                    <th>전략 버전</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>user01</td>
+                    <td><span class="status-active">온라인</span></td>
+                    <td>15%</td>
+                    <td>25%</td>
+                    <td>2025-08-02 09:45:30</td>
+                    <td>v1.3.0</td>
+                </tr>
+                <tr>
+                    <td>user02</td>
+                    <td><span class="status-active">온라인</span></td>
+                    <td>12%</td>
+                    <td>28%</td>
+                    <td>2025-08-02 09:45:32</td>
+                    <td>v1.3.0</td>
+                </tr>
+                <tr>
+                    <td>user03</td>
+                    <td><span class="status-suspended">오프라인</span></td>
+                    <td>-</td>
+                    <td>-</td>
+                    <td>2025-08-01 18:30:10</td>
+                    <td>v1.2.1</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="panel">
+    <h3>실시간 시스템 로그</h3>
+    <pre class="log-viewer">
+[2025-08-02 09:45:32] INFO: User 'user01' trade executed: SELL AAPL
+[2025-08-02 09:45:30] INFO: User 'user02' trade executed: BUY GOOG
+[2025-08-02 09:45:25] WARNING: Connection latency to user07's PC is high (150ms)
+[2025-08-02 09:45:20] INFO: System health check: OK
+    </pre>
+</div>
+{% endblock %}

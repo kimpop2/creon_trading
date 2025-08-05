@@ -3,93 +3,371 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>백테스트 결과 시각화</title>
-    <link rel="stylesheet" href="/static/css/style.css">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-chart-financial"></script>
+    <title>Phoenix Trading - 데이터 기반 자동매매 솔루션</title>
+    
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&family=Poppins:wght@600;700&display=swap" rel="stylesheet">
+
+    <style>
+        /* Trendy & Fashionable 스타일 */
+        :root {
+            --primary-color: #007bff; /* 밝고 신뢰감 있는 파란색 */
+            --secondary-color: #28a745; /* 긍정적인 초록색 */
+            --dark-blue: #0d1b2a; /* 깊이 있는 남색 */
+            --text-dark: #333333;
+            --text-light: #f8f9fa;
+            --bg-light: #f8f9fa;
+        }
+
+        body {
+            margin: 0;
+            font-family: 'Noto Sans KR', sans-serif;
+            background-color: white;
+            color: var(--text-dark);
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+
+        /* --- 헤더 --- */
+        .header {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px 5%;
+            box-sizing: border-box;
+            z-index: 1000;
+            transition: background-color 0.3s ease, box-shadow 0.3s ease;
+        }
+        .header.scrolled {
+            background-color: white;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .header .logo {
+            font-family: 'Poppins', sans-serif;
+            font-size: 1.5em;
+            font-weight: 700;
+            color: var(--dark-blue);
+            text-decoration: none;
+        }
+        .header.scrolled .logo { color: var(--dark-blue); }
+        .header:not(.scrolled) .logo { color: white; }
+
+        .header .nav-links a {
+            font-family: 'Noto Sans KR', sans-serif;
+            font-weight: 500;
+            color: var(--dark-blue);
+            text-decoration: none;
+            margin: 0 20px;
+            transition: color 0.3s ease;
+        }
+        .header.scrolled .nav-links a { color: var(--dark-blue); }
+        .header:not(.scrolled) .nav-links a { color: var(--text-light); }
+        .header .nav-links a:hover { color: var(--primary-color); }
+
+        .header .auth-buttons a {
+            text-decoration: none;
+            padding: 10px 22px;
+            border-radius: 50px;
+            margin-left: 10px;
+            font-weight: 700;
+            transition: all 0.3s ease;
+        }
+        .auth-buttons a.login {
+            background-color: transparent;
+            color: var(--primary-color);
+            border: 2px solid var(--primary-color);
+        }
+        .auth-buttons a.login:hover {
+            background-color: var(--primary-color);
+            color: white;
+        }
+        .auth-buttons a.signup {
+            background-color: var(--primary-color);
+            color: white;
+            border: 2px solid var(--primary-color);
+        }
+        .auth-buttons a.signup:hover {
+            background-color: #0056b3;
+            border-color: #0056b3;
+        }
+
+        /* --- 히어로 섹션 (배너) --- */
+        .hero-section {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            height: 50vh;
+            color: white;
+            /* ⬇️ 로컬 이미지 경로로 수정 */
+            background: linear-gradient(rgba(13, 27, 42, 0.7), rgba(13, 27, 42, 0.7)), url('/static/images/hero-banner.png') no-repeat center center;
+            background-size: cover;
+        }
+        .hero-content h1 {
+            font-family: 'Poppins', sans-serif;
+            font-size: 3.5em;
+            font-weight: 700;
+            margin-bottom: 20px;
+            text-shadow: 2px 2px 8px rgba(0,0,0,0.5);
+        }
+        .hero-content p {
+            font-size: 1.2em;
+            max-width: 600px;
+            margin: 0 auto 30px auto;
+            line-height: 1.6;
+        }
+        .hero-content .cta-button {
+            font-family: 'Noto Sans KR', sans-serif;
+            background-color: var(--primary-color);
+            color: white;
+            padding: 15px 40px;
+            border-radius: 50px;
+            text-decoration: none;
+            font-size: 1.1em;
+            font-weight: 700;
+            transition: all 0.3s ease;
+        }
+        .hero-content .cta-button:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 4px 15px rgba(0, 123, 255, 0.4);
+        }
+
+        /* --- 공통 섹션 스타일 --- */
+        .content-section {
+            padding: 30px 5%;
+            max-width: 1200px;
+            margin: 0 auto;
+            text-align: center;
+        }
+        .section-title {
+            font-family: 'Poppins', sans-serif;
+            font-size: 2.5em;
+            font-weight: 600;
+            margin-bottom: 20px;
+        }
+        .section-subtitle {
+            font-size: 1.1em;
+            color: #6c757d;
+            max-width: 700px;
+            margin: 0 auto 50px auto;
+            line-height: 1.7;
+        }
+        
+        /* --- 주요 기능 섹션 --- */
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 30px;
+            text-align: left;
+        }
+        .feature-card {
+            background-color: white;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.07);
+            transition: all 0.3s ease;
+        }
+        .feature-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 15px 35px rgba(0,0,0,0.1);
+        }
+        .feature-card h3 {
+            font-family: 'Noto Sans KR', sans-serif;
+            font-size: 1.4em;
+            font-weight: 700;
+            color: var(--primary-color);
+            margin-bottom: 15px;
+        }
+
+        /* --- 사용자 이야기 섹션 (추가) --- */
+        .reviews-section {
+             background-color: var(--bg-light);
+        }
+        .review-card {
+            background-color: white;
+            border: 1px solid #e9ecef;
+            padding: 30px;
+            border-radius: 12px;
+            text-align: left;
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+        }
+        .review-card .performance {
+            font-size: 1.2em;
+            font-weight: 700;
+            color: var(--secondary-color);
+            margin-bottom: 15px;
+        }
+        .review-card .quote {
+            font-style: italic;
+            color: #495057;
+            margin-bottom: 20px;
+            flex-grow: 1; /* 카드의 높이를 일정하게 유지 */
+        }
+        .review-card .author {
+            font-weight: 500;
+            text-align: right;
+            color: #6c757d;
+        }
+
+        /* --- 푸터 스타일 (추가) --- */
+        .site-footer {
+            background-color: #e9ecef;
+            color: #6c757d;
+            padding: 40px 5%;
+            font-size: 0.85em;
+            border-top: 1px solid #dee2e6;
+        }
+        .footer-content {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            flex-wrap: wrap; /* 모바일 화면에서 줄바꿈 지원 */
+        }
+        .footer-info {
+            max-width: 70%;
+        }
+        .footer-info p {
+            margin: 0;
+            line-height: 1.8;
+        }
+        .footer-links {
+            margin-top: 15px;
+        }
+        .footer-links a {
+            color: #495057;
+            text-decoration: none;
+            margin-right: 20px;
+        }
+        .footer-links a:hover {
+            text-decoration: underline;
+        }
+        .footer-logo {
+            text-align: right;
+        }
+        .footer-logo p {
+            margin: 0;
+            font-family: 'Poppins', sans-serif;
+            font-size: 1.2em;
+            font-weight: 600;
+            color: #495057;
+        }
+        .footer-logo span {
+            font-size: 0.9em;
+        }
+    </style>
 </head>
 <body>
-    <div class="main-container">
-        <div class="left-panel">
-            <div class="panel" id="run-list-panel">
-                <h2>백테스트 실행 목록</h2>
-                <div class="table-container">
-                    <table id="run-list-table">
-                        <thead>
-                            <tr>
-                                <th>실행ID</th>
-                                <th>기간</th>
-                                <th>전략 (일/분)</th>
-                                <th>누적수익률</th>
-                                <th>연수익률</th>
-                                <th>MDD</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            </tbody>
-                    </table>
-                </div>
-            </div>
-            <div class="panel" id="performance-chart-panel">
-                <h2 id="performance-chart-title">누적 수익률 (Run ID: N/A)</h2>
-                <canvas id="performanceChart"></canvas>
-            </div>
-            <div class="panel" id="performance-table-panel">
-                <h2 id="performance-table-title">일별 성능 (Run ID: N/A)</h2>
-                <div class="table-container">
-                    <table id="performance-table">
-                        <thead>
-                            <tr>
-                                <th>날짜</th>
-                                <th>일일수익률</th>
-                                <th>누적수익률</th>
-                                <th>낙폭(DD)</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
 
-        <div class="right-panel">
-            <div class="panel" id="traded-stocks-panel">
-                <h2 id="traded-stocks-title">매매 종목 목록 (Run ID: N/A)</h2>
-                <div class="table-container">
-                    <table id="traded-stocks-table">
-                         <thead>
-                            <tr>
-                                <th>종목명</th>
-                                <th>매매횟수</th>
-                                <th>총실현손익</th>
-                                <th>평균수익률</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            </tbody>
-                    </table>
+    <header class="header">
+        <a href="/" class="logo">Phoenix Trading</a>
+        <nav class="nav-links">
+            <a href="/backtesting/results">백테스팅</a>
+            <a href="/trading/analysis">성과분석</a>
+            <a href="/support/faq">고객지원</a>
+        </nav>
+        <div class="auth-buttons">
+            <a href="/auth/login" class="login">로그인</a>
+            <a href="/auth/signup" class="signup">회원가입</a>
+        </div>
+    </header>
+
+    <main>
+        <section class="hero-section">
+            <div class="hero-content">
+                <h1>Systematic, Automated Trading</h1>
+                <p>감정과 스트레스는 덜어내고, 데이터와 원칙으로 당신의 투자를 완성하세요.</p>
+                <a href="/auth/signup" class="cta-button">무료로 시작하기</a>
+            </div>
+        </section>
+
+        <section class="content-section">
+            <h2 class="section-title">Why Phoenix Trading?</h2>
+            <p class="section-subtitle">
+                우리는 복잡한 금융 시장을 위한 가장 직관적이고 강력한 자동매매 도구를 제공합니다.
+                당신의 소중한 시간과 자산을 지키는 것, 그것이 우리의 최우선 목표입니다.
+            </p>
+            <div class="features-grid">
+                <div class="feature-card">
+                    <h3>⏳ 강력한 백테스팅</h3>
+                    <p>과거 데이터를 기반으로 전략을 검증하고 최적화하여 미래의 불확실성에 대비하세요.</p>
+                </div>
+                <div class="feature-card">
+                    <h3>🤖 완전 자동매매</h3>
+                    <p>당신이 잠든 사이에도, 시스템은 단 한 번의 수익 기회도 놓치지 않고 원칙에 따라 매매합니다.</p>
+                </div>
+                <div class="feature-card">
+                    <h3>📊 다각적 성과분석</h3>
+                    <p>단순 수익률을 넘어, 승률, MDD 등 객관적인 지표로 당신의 투자 전략을 냉철하게 분석하세요.</p>
                 </div>
             </div>
-            <div class="panel" id="daily-chart-panel">
-                <h2 id="daily-chart-title">종목 일봉 차트 (N/A)</h2>
-                <canvas id="dailyChart"></canvas>
+        </section>
+        
+        <section class="content-section reviews-section">
+            <h2 class="section-title">실제 사용자들의 이야기</h2>
+            <p class="section-subtitle">
+                Phoenix Trading과 함께 성공적인 투자 경험을 만들어가는 분들의 목소리입니다.
+            </p>
+            <div class="features-grid">
+                 <div class="review-card">
+                    <div class="performance">3개월 누적 수익률: +18.5%</div>
+                    <p class="quote">"더 이상 차트를 보며 스트레스 받지 않아요. 저녁이 있는 삶을 되찾았습니다."</p>
+                    <div class="author">- 직장인 투자자, 김OO님</div>
+                </div>
+                <div class="review-card">
+                    <div class="performance">6개월 누적 수익률: +25.2%</div>
+                    <p class="quote">"감정적인 매매 습관을 고치고 싶었는데, 원칙대로만 거래하니 계좌가 달라졌습니다."</p>
+                    <div class="author">- 전업 투자자, 이OO님</div>
+                </div>
+                <div class="review-card">
+                    <div class="performance">1개월 누적 수익률: +9.8%</div>
+                    <p class="quote">"코딩을 몰라도 나만의 전략을 만들고 테스트할 수 있다는 점이 가장 마음에 듭니다."</p>
+                    <div class="author">- 대학생, 박OO님</div>
+                </div>
             </div>
-            <div class="panel" id="minute-chart-panel">
-                 <h2 id="minute-chart-title">선택 일자 분봉 차트 (N/A)</h2>
-                 <div id="minute-chart-container">
-                    <canvas id="minuteChartPrev"></canvas>
-                    <canvas id="minuteChartCurrent"></canvas>
-                 </div>
+        </section>
+
+    </main>
+    <footer class="site-footer">
+        <div class="footer-content">
+            <div class="footer-info">
+                <p>
+                    <strong>Phoenix Trading</strong> | 대표자: 김대표 | 사업자등록번호: 123-45-67890 <br>
+                    통신판매업신고: 제2025-부산OO-1234호 | 개인정보보호책임자: 박보호 <br>
+                    주소: 부산광역시 해운대구 OO로 123, 45층 (피닉스타워) <br>
+                    고객지원: 1588-1234 | 이메일: support@phoenix-trading.dev
+                </p>
+                <div class="footer-links">
+                    <a href="#">이용약관</a>
+                    <a href="#"><strong>개인정보처리방침</strong></a>
+                </div>
+            </div>
+            <div class="footer-logo">
+                <p><strong>Phoenix Trading</strong></p>
+                <span>© Phoenix Trading Inc. All Rights Reserved.</span>
             </div>
         </div>
-    </div>
-    <div id="loading-overlay" class="hidden">
-        <div class="spinner"></div>
-        <p>데이터 로딩 중...</p>
-    </div>
-    <script src="/static/js/app.js"></script>
+    </footer>
+    <script>
+        // 스크롤 시 헤더 배경 변경 스크립트
+        document.addEventListener('DOMContentLoaded', () => {
+            const header = document.querySelector('.header');
+            window.addEventListener('scroll', () => {
+                if (window.scrollY > 50) {
+                    header.classList.add('scrolled');
+                } else {
+                    header.classList.remove('scrolled');
+                }
+            });
+        });
+    </script>
 </body>
 </html>

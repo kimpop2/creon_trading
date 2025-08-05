@@ -1,0 +1,130 @@
+{% extends "layout/base.html" %}
+
+{% block title %}FAQ (자주 묻는 질문){% endblock %}
+
+{% block head_css %}
+<style>
+    .faq-container {
+        max-width: 900px;
+    }
+    .faq-category {
+        margin-bottom: 30px;
+    }
+    .faq-category h3 {
+        margin-bottom: 15px;
+        padding-bottom: 10px;
+        border-bottom: 2px solid var(--primary-color);
+        color: var(--primary-color);
+    }
+    .faq-item {
+        border-bottom: 1px solid #eee;
+    }
+    .faq-question {
+        width: 100%;
+        background: none;
+        border: none;
+        text-align: left;
+        padding: 18px 20px;
+        font-size: 1.05em;
+        font-weight: bold;
+        cursor: pointer;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+    .faq-question:hover {
+        background-color: #f8f9fa;
+    }
+    .faq-answer {
+        max-height: 0;
+        overflow: hidden;
+        transition: max-height 0.3s ease-out;
+        background-color: #f8f9fa;
+    }
+    .faq-answer p {
+        padding: 20px;
+        margin: 0;
+        line-height: 1.6;
+    }
+    .faq-question .icon::before {
+        content: '+';
+        font-size: 1.5em;
+        color: #777;
+    }
+    .faq-question.active .icon::before {
+        content: '−';
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<h2>💬 FAQ (자주 묻는 질문)</h2>
+
+<div class="panel faq-container">
+    <div class="faq-category">
+        <h3>계정 / 결제</h3>
+        <div class="faq-item">
+            <button class="faq-question">
+                <span>수수료는 어떻게 계산되나요?</span>
+                <span class="icon"></span>
+            </button>
+            <div class="faq-answer">
+                <p>수수료는 매월 말일을 기준으로, 해당 월에 발생한 실현 수익의 N%로 계산됩니다. 손실이 발생한 달에는 수수료가 부과되지 않으며, 손실 금액은 다음 달 수익에서 복구(High-water mark)된 후 수수료가 계산됩니다.</p>
+            </div>
+        </div>
+        <div class="faq-item">
+            <button class="faq-question">
+                <span>회원 탈퇴는 어떻게 하나요?</span>
+                <span class="icon"></span>
+            </button>
+            <div class="faq-answer">
+                <p>회원 탈퇴는 '설정 > 계정 정보 수정' 페이지 하단에 있는 '회원 탈퇴' 버튼을 통해 진행할 수 있습니다. 탈퇴 시 모든 개인정보와 매매 내역은 관련 법규에 따라 처리됩니다.</p>
+            </div>
+        </div>
+    </div>
+
+    <div class="faq-category">
+        <h3>매매 / 전략</h3>
+        <div class="faq-item">
+            <button class="faq-question">
+                <span>유니버스(Universe)는 무엇인가요?</span>
+                <span class="icon"></span>
+            </button>
+            <div class="faq-answer">
+                <p>유니버스는 자동매매 시스템이 매매 대상을 탐색하는 종목의 그룹입니다. '설정 > 나의 유니버스 관리'에서 KOSPI 200과 같은 기본 유니버스를 사용하거나, 사용자가 직접 원하는 종목으로 구성된 맞춤 유니버스를 생성하여 전략에 적용할 수 있습니다.</p>
+            </div>
+        </div>
+        <div class="faq-item">
+            <button class="faq-question">
+                <span>자동매매를 잠시 중지하고 싶습니다.</span>
+                <span class="icon"></span>
+            </button>
+            <div class="faq-answer">
+                <p>대시보드 페이지의 '시스템 상태' 위젯에 있는 '자동매매 시작/중지' 버튼을 사용하여 언제든지 자동매매를 중지하거나 다시 시작할 수 있습니다. 시스템이 중지된 동안에는 새로운 종목을 매수하지 않지만, 기존에 보유한 종목의 매도 신호는 설정에 따라 처리될 수 있습니다.</p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    const questions = document.querySelectorAll('.faq-question');
+
+    questions.forEach(question => {
+        question.addEventListener('click', () => {
+            const answer = question.nextElementSibling;
+            
+            question.classList.toggle('active');
+
+            if (answer.style.maxHeight) {
+                answer.style.maxHeight = null;
+            } else {
+                answer.style.maxHeight = answer.scrollHeight + "px";
+            } 
+        });
+    });
+});
+</script>
+{% endblock %}

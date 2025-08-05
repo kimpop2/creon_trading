@@ -1,0 +1,39 @@
+{% extends "layout/base.html" %}
+
+{% block title %}결제 내역 조회{% endblock %}
+
+{% block content %}
+<h2>💳 결제 내역 조회</h2>
+<div class="panel">
+    <h3>상세 결제 내역</h3>
+    <div class="table-container">
+        <table>
+            <thead>
+                <tr>
+                    <th>결제일</th>
+                    <th>항목</th>
+                    <th class="align-right">결제 금액</th>
+                    <th>결제 수단</th>
+                    <th class="align-center">상태</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>2025-08-05</td>
+                    <td>2025년 7월 이용 수수료</td>
+                    <td class="align-right">₩ 125,000</td>
+                    <td>신한카드 (1234)</td>
+                    <td class="align-center"><span class="status-badge completed">성공</span></td>
+                </tr>
+                <tr>
+                    <td>2025-07-05</td>
+                    <td>2025년 6월 이용 수수료</td>
+                    <td class="align-right">₩ 0</td>
+                    <td>-</td>
+                    <td class="align-center">해당 없음</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

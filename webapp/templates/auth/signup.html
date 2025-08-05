@@ -1,0 +1,40 @@
+{% extends "layout/base.html" %}
+{% block title %}회원가입{% endblock %}
+{% block content %}
+<div class="auth-container">
+    <div class="auth-form panel">
+        <h2>🚀 회원가입</h2>
+        <form action="/api/auth/signup" method="post">
+            <div class="form-group">
+                <label for="username">아이디</label>
+                <input type="text" id="username" name="username" required>
+            </div>
+            <div class="form-group">
+                <label for="email">이메일</label>
+                <input type="email" id="email" name="email" required>
+            </div>
+            <div class="form-group">
+                <label for="password">비밀번호</label>
+                <input type="password" id="password" name="password" required>
+            </div>
+            <div class="form-group">
+                <label for="password_confirm">비밀번호 확인</label>
+                <input type="password" id="password_confirm" name="password_confirm" required>
+            </div>
+            <div class="form-group">
+                <label for="terms">서비스 이용약관</label>
+                <textarea id="terms" name="terms" rows="8" readonly>
+제1조 (목적) 이 약관은 ... (약관 내용) ...
+제2조 (정의) ... (약관 내용) ...
+투자의 모든 책임은 사용자 본인에게 있으며, 과거의 수익률이 미래를 보장하지 않습니다.
+                </textarea>
+            </div>
+            <div class="form-group-checkbox">
+                <input type="checkbox" id="agree" name="agree" required>
+                <label for="agree">서비스 이용약관에 동의합니다.</label>
+            </div>
+            <button type="submit" class="btn-primary full-width">가입하기</button>
+        </form>
+    </div>
+</div>
+{% endblock %}

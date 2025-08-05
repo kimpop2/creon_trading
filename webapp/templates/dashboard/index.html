@@ -1,0 +1,126 @@
+{% extends "layout/base.html" %}
+
+{% block title %}대시보드{% endblock %}
+
+{% block head_css %}
+<style>
+    .dashboard-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+        gap: 20px;
+    }
+    .dashboard-card {
+        background-color: #fff;
+        padding: 20px;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .dashboard-card h3 {
+        margin-top: 0;
+        border-bottom: 1px solid #eee;
+        padding-bottom: 10px;
+        font-size: 1.1em;
+    }
+    .metric {
+        font-size: 2em;
+        font-weight: bold;
+        color: #333;
+    }
+    .metric-label {
+        font-size: 0.9em;
+        color: #777;
+    }
+    .status-indicator {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 10px;
+    }
+    .status-indicator .status-light {
+        width: 15px;
+        height: 15px;
+        border-radius: 50%;
+    }
+    .status-light.on {
+        background-color: #2ecc71; /* Green */
+    }
+    .status-light.off {
+        background-color: #e74c3c; /* Red */
+    }
+    .recent-trades-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.9em;
+    }
+    .recent-trades-table td {
+        padding: 8px 0;
+        border-bottom: 1px solid #f0f0f0;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<h2>🏠 대시보드</h2>
+<div class="dashboard-grid">
+    <div class="dashboard-card">
+        <h3>💰 자산 현황</h3>
+        <p class="metric-label">총 평가 자산</p>
+        <p class="metric">₩ 12,540,000</p>
+        <p class="metric-label" style="margin-top: 15px;">금일 추정 손익</p>
+        <p class="metric text-green">+ ₩ 125,000 (+1.01%)</p>
+    </div>
+
+    <div class="dashboard-card">
+        <h3>🖥️ 시스템 상태</h3>
+        <div class="status-indicator">
+            <span>자동매매 엔진</span>
+            <div class="status-light on"></div>
+        </div>
+        <div class="status-indicator">
+            <span>미니PC 연결</span>
+            <div class="status-light on"></div>
+        </div>
+         <div class="status-indicator">
+            <span>증권사 API</span>
+            <div class="status-light on"></div>
+        </div>
+    </div>
+
+    <div class="dashboard-card">
+        <h3>📈 최근 매매 내역</h3>
+        <table class="recent-trades-table">
+            <tbody>
+                <tr>
+                    <td>삼성전자</td>
+                    <td class="text-red">매도</td>
+                    <td class="align-right">91,000원</td>
+                </tr>
+                <tr>
+                    <td>카카오</td>
+                    <td class="text-green">매수</td>
+                    <td class="align-right">45,500원</td>
+                </tr>
+                 <tr>
+                    <td>하이브</td>
+                    <td class="text-red">매도</td>
+                    <td class="align-right">201,000원</td>
+                </tr>
+                 <tr>
+                    <td>NAVER</td>
+                    <td class="text-green">매수</td>
+                    <td class="align-right">180,500원</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <div class="dashboard-card">
+        <h3>📢 공지사항</h3>
+        <ul>
+            <li><a href="#">v1.2.0 업데이트 안내 (2025-08-01)</a></li>
+            <li><a href="#">서버 점검 안내 (2025-07-28)</a></li>
+            <li><a href="#">신규 전략 '밸런스' 추가 안내</a></li>
+        </ul>
+    </div>
+</div>
+{% endblock %}

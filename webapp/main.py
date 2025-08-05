@@ -69,10 +69,103 @@ class TradedStockSummary(BaseModel):
     total_realized_profit_loss: Optional[float] = None
     avg_return_per_trade: Optional[float] = None
 
+# =================================================================
+# 💻 페이지 렌더링 라우트
+# =================================================================
 @app.get("/", response_class=HTMLResponse)
-async def read_root(request: Request):
-    """메인 HTML 페이지를 렌더링합니다."""
+async def route_root(request: Request):
+    # 이제 루트 경로는 화려한 홈페이지(index.html)를 보여줍니다.
     return templates.TemplateResponse("index.html", {"request": request})
+
+@app.get("/dashboard", response_class=HTMLResponse)
+async def route_dashboard(request: Request):
+    return templates.TemplateResponse("dashboard/index.html", {"request": request})
+
+# --- 인증 ---
+@app.get("/auth/login", response_class=HTMLResponse)
+async def route_login(request: Request):
+    return templates.TemplateResponse("auth/login.html", {"request": request})
+
+@app.get("/auth/signup", response_class=HTMLResponse)
+async def route_signup(request: Request):
+    return templates.TemplateResponse("auth/signup.html", {"request": request})
+
+@app.get("/auth/forgot-password", response_class=HTMLResponse)
+async def route_forgot_password(request: Request):
+    return templates.TemplateResponse("auth/forgot_password.html", {"request": request})
+
+# --- 매매 현황 ---
+@app.get("/trading/monitoring", response_class=HTMLResponse)
+async def route_trading_monitoring(request: Request):
+    return templates.TemplateResponse("trading/monitoring.html", {"request": request})
+
+@app.get("/trading/analysis", response_class=HTMLResponse)
+async def route_trading_analysis(request: Request):
+    return templates.TemplateResponse("trading/analysis.html", {"request": request})
+
+# --- 백테스팅 ---
+@app.get("/backtesting/run", response_class=HTMLResponse)
+async def route_backtest_run(request: Request):
+    return templates.TemplateResponse("backtesting/run.html", {"request": request})
+
+@app.get("/backtesting/results", response_class=HTMLResponse)
+async def route_backtest_results(request: Request):
+    return templates.TemplateResponse("backtesting/results.html", {"request": request})
+
+# --- 설정 ---
+@app.get("/settings/universe", response_class=HTMLResponse)
+async def route_settings_universe(request: Request):
+    return templates.TemplateResponse("settings/universe.html", {"request": request})
+
+@app.get("/settings/notifications", response_class=HTMLResponse)
+async def route_settings_notifications(request: Request):
+    return templates.TemplateResponse("settings/notifications.html", {"request": request})
+
+@app.get("/settings/edit-profile", response_class=HTMLResponse)
+async def route_settings_edit_profile(request: Request):
+    return templates.TemplateResponse("settings/edit_profile.html", {"request": request})
+# --- 결제 ---
+@app.get("/billing/usage", response_class=HTMLResponse)
+async def route_billing_usage(request: Request):
+    return templates.TemplateResponse("billing/usage.html", {"request": request})
+
+@app.get("/billing/methods", response_class=HTMLResponse)
+async def route_billing_methods(request: Request):
+    return templates.TemplateResponse("billing/methods.html", {"request": request})
+
+@app.get("/billing/history", response_class=HTMLResponse)
+async def route_billing_history(request: Request):
+    return templates.TemplateResponse("billing/history.html", {"request": request})
+
+# --- 고객지원 ---
+@app.get("/support/announcements", response_class=HTMLResponse)
+async def route_support_announcements(request: Request):
+    return templates.TemplateResponse("support/announcements.html", {"request": request})
+
+@app.get("/support/faq", response_class=HTMLResponse)
+async def route_support_faq(request: Request):
+    return templates.TemplateResponse("support/faq.html", {"request": request})
+
+@app.get("/support/inquiry", response_class=HTMLResponse)
+async def route_support_inquiry(request: Request):
+    return templates.TemplateResponse("support/inquiry.html", {"request": request})
+
+# --- 관리자 ---
+@app.get("/admin/user-management", response_class=HTMLResponse)
+async def route_admin_user_management(request: Request):
+    return templates.TemplateResponse("admin/user_management.html", {"request": request})
+
+# 
+@app.get("/admin/billing-management", response_class=HTMLResponse)
+async def route_admin_billing_management(request: Request):
+    return templates.TemplateResponse("admin/billing_management.html", {"request": request})
+
+@app.get("/admin/system-monitoring", response_class=HTMLResponse)
+async def route_admin_system_monitoring(request: Request):
+    return templates.TemplateResponse("admin/system_monitoring.html", {"request": request})
+# =================================================================
+# 📈 API 데이터 라우트 (기존 코드 유지)
+# =================================================================
 
 @app.get("/api/runs", response_model=List[BacktestRun])
 async def get_backtest_runs():
@@ -83,8 +176,7 @@ async def get_backtest_runs():
     runs_df = app_manager.get_backtest_runs()
     if runs_df.empty:
         return []
-
-    # ⬇️ 아래 코드 블록을 추가합니다.
+    
     # numpy의 무한대(inf, -inf)와 NaN 값을 None으로 변환합니다.
     runs_df = runs_df.replace([np.inf, -np.inf], None)
 
@@ -133,7 +225,6 @@ async def get_daily_chart_data(run_id: int, stock_code: str):
     # --- 데이터 정제 코드 추가 ---
     ohlcv_df = ohlcv_df.replace([np.inf, -np.inf], None).where(pd.notna(ohlcv_df), None)
     trades_df = trades_df.replace([np.inf, -np.inf], None).where(pd.notna(trades_df), None)
-
     
     ohlcv_df.reset_index(inplace=True)
     

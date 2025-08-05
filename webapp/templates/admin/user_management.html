@@ -1,0 +1,42 @@
+{% extends "layout/base.html" %}
+{% block title %}사용자 관리{% endblock %}
+{% block content %}
+<div class="panel">
+    <h2>👥 사용자 관리</h2>
+    <div class="table-container">
+        <table id="user-list-table">
+            <thead>
+                <tr>
+                    <th>사용자 ID</th>
+                    <th>이메일</th>
+                    <th>가입일</th>
+                    <th>상태</th>
+                    <th>관리</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>user01</td>
+                    <td>user01@email.com</td>
+                    <td>2025-08-01</td>
+                    <td><span class="status-active">활성</span></td>
+                    <td>
+                        <button class="btn-small">수정</button>
+                        <button class="btn-small btn-warning">정지</button>
+                    </td>
+                </tr>
+                <tr>
+                    <td>user02</td>
+                    <td>user02@email.com</td>
+                    <td>2025-07-25</td>
+                    <td><span class="status-suspended">정지</span></td>
+                    <td>
+                        <button class="btn-small">수정</button>
+                        <button class="btn-small btn-primary">활성화</button>
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

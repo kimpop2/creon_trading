@@ -1,0 +1,52 @@
+{% extends "layout/base.html" %}
+
+{% block title %}결제 수단 관리{% endblock %}
+
+{% block head_css %}
+<style>
+    .payment-card {
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        padding: 20px;
+        margin-bottom: 15px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+    .payment-card.primary {
+        border-color: var(--primary-color);
+        border-width: 2px;
+    }
+    .card-info { font-size: 1.1em; }
+    .card-info .card-type { font-weight: bold; }
+</style>
+{% endblock %}
+
+{% block content %}
+<h2>💳 결제 수단 관리</h2>
+
+<div class="panel">
+    <h3>등록된 결제 수단</h3>
+    <div class="payment-card primary">
+        <div class="card-info">
+            <span class="card-type">신한카드</span>
+            <span>****-****-****-1234</span>
+        </div>
+        <div>
+            <span class="badge completed">기본</span>
+            <button class="btn-small btn-warning">삭제</button>
+        </div>
+    </div>
+    <div class="payment-card">
+        <div class="card-info">
+            <span class="card-type">카카오뱅크</span>
+            <span>****-****-****-5678</span>
+        </div>
+        <div>
+            <button class="btn-small btn-primary">기본으로 설정</button>
+            <button class="btn-small btn-warning">삭제</button>
+        </div>
+    </div>
+    <button class="btn-primary" style="margin-top: 20px;">+ 새 카드/계좌 추가</button>
+</div>
+{% endblock %}

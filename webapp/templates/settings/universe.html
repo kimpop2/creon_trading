@@ -1,0 +1,123 @@
+{% extends "layout/base.html" %}
+
+{% block title %}나의 유니버스 관리{% endblock %}
+
+{% block head_css %}
+<style>
+    .universe-container {
+        display: flex;
+        gap: 20px;
+        align-items: flex-start;
+    }
+    .universe-list-panel {
+        flex: 1;
+    }
+    .universe-details-panel {
+        flex: 2;
+    }
+    .universe-list {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+    }
+    .universe-list li a {
+        display: block;
+        padding: 12px 15px;
+        text-decoration: none;
+        color: #333;
+        border-radius: 5px;
+        margin-bottom: 5px;
+    }
+    .universe-list li a:hover {
+        background-color: #f0f0f0;
+    }
+    .universe-list li a.active {
+        background-color: var(--primary-color);
+        color: white;
+        font-weight: bold;
+    }
+    .add-stock-form {
+        display: flex;
+        gap: 10px;
+        margin-bottom: 20px;
+    }
+    .add-stock-form input {
+        flex-grow: 1;
+    }
+    .panel-footer {
+        display: flex;
+        justify-content: flex-end;
+        gap: 10px;
+        margin-top: 20px;
+        padding-top: 20px;
+        border-top: 1px solid #eee;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<h2>⚙️ 나의 유니버스 관리</h2>
+
+<div class="universe-container">
+
+    <div class="panel universe-list-panel">
+        <h3>유니버스 목록</h3>
+        <button class="btn-primary full-width" style="margin-bottom: 15px;">+ 새 유니버스 생성</button>
+        <ul class="universe-list">
+            <li><a href="#" class="active">나의 성장주</a></li>
+            <li><a href="#">KOSPI 200</a></li>
+            <li><a href="#">가치주 그룹</a></li>
+            <li><a href="#">반도체 관련주</a></li>
+        </ul>
+    </div>
+
+    <div class="panel universe-details-panel">
+        <h3>'나의 성장주' 상세 관리</h3>
+        
+        <div class="add-stock-form">
+            <input type="text" placeholder="종목명 또는 종목코드 입력">
+            <button class="btn-primary" style="white-space: nowrap;">종목 추가</button>
+        </div>
+
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>종목명</th>
+                        <th>종목코드</th>
+                        <th class="align-right">관리</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>삼성전자</td>
+                        <td>005930</td>
+                        <td class="align-right">
+                            <button class="btn-small btn-warning">삭제</button>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>SK하이닉스</td>
+                        <td>000660</td>
+                        <td class="align-right">
+                            <button class="btn-small btn-warning">삭제</button>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>NAVER</td>
+                        <td>035420</td>
+                        <td class="align-right">
+                            <button class="btn-small btn-warning">삭제</button>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="panel-footer">
+            <button class="btn-small btn-warning">이 유니버스 삭제</button>
+            <button class="btn-primary">변경사항 저장</button>
+        </div>
+    </div>
+</div>
+{% endblock %}

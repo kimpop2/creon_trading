@@ -1,0 +1,104 @@
+{% extends "layout/base.html" %}
+
+{% block title %}백테스트 실행{% endblock %}
+
+{% block head_css %}
+<style>
+    .run-form-container {
+        max-width: 800px;
+    }
+    .form-section {
+        margin-bottom: 25px;
+        border-bottom: 1px solid #eee;
+        padding-bottom: 25px;
+    }
+    .form-section h3 {
+        margin-bottom: 20px;
+        font-size: 1.1em;
+        color: #333;
+    }
+    .form-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        gap: 20px;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<h2>⏳ 백테스트 실행</h2>
+
+<div class="panel run-form-container">
+    <form action="/api/backtest/run" method="post">
+        <div class="form-section">
+            <h3>기본 설정</h3>
+            <div class="form-grid">
+                <div class="form-group">
+                    <label for="start_date">시작일</label>
+                    <input type="date" id="start_date" name="start_date" value="2024-01-01" required>
+                </div>
+                <div class="form-group">
+                    <label for="end_date">종료일</label>
+                    <input type="date" id="end_date" name="end_date" value="2024-12-31" required>
+                </div>
+                <div class="form-group">
+                    <label for="initial_capital">초기 자본금</label>
+                    <input type="number" id="initial_capital" name="initial_capital" value="10000000" step="100000" required>
+                </div>
+                <div class="form-group">
+                    <label for="universe">종목 유니버스 선택</label>
+                    <select id="universe" name="universe" required>
+                        <option value="kospi200">KOSPI 200</option>
+                        <option value="my_growth_stocks">나의 성장주</option>
+                        <option value="value_stocks">가치주 그룹</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <div class="form-section">
+            <h3>일봉 전략 설정</h3>
+            <div class="form-grid">
+                <div class="form-group">
+                    <label for="daily_strategy">전략 선택</label>
+                    <select id="daily_strategy" name="daily_strategy">
+                        <option value="golden_cross">골든크로스</option>
+                        <option value="rsi_bollinger">RSI + 볼린저밴드</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="param_ma_short">단기 이동평균</label>
+                    <input type="number" id="param_ma_short" name="param_ma_short" value="20">
+                </div>
+                 <div class="form-group">
+                    <label for="param_ma_long">장기 이동평균</label>
+                    <input type="number" id="param_ma_long" name="param_ma_long" value="60">
+                </div>
+            </div>
+        </div>
+
+        <div class="form-section">
+            <h3>분봉 전략 설정 (매수/매도 타이밍)</h3>
+            <div class="form-grid">
+                <div class="form-group">
+                    <label for="minute_strategy">전략 선택</label>
+                    <select id="minute_strategy" name="minute_strategy">
+                        <option value="vwap_breakthrough">VWAP 돌파</option>
+                        <option value="mfi_timing">MFI 타이밍</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="param_takeprofit">익절(%)</label>
+                    <input type="number" id="param_takeprofit" name="param_takeprofit" value="5.0" step="0.1">
+                </div>
+                 <div class="form-group">
+                    <label for="param_stoploss">손절(%)</label>
+                    <input type="number" id="param_stoploss" name="param_stoploss" value="2.0" step="0.1">
+                </div>
+            </div>
+        </div>
+        
+        <button type="submit" class="btn-primary full-width" style="margin-top: 10px; padding: 15px;">백테스트 실행</button>
+    </form>
+</div>
+{% endblock %}

@@ -1,0 +1,108 @@
+{% extends "layout/base.html" %}
+
+{% block title %}실시간 모니터링{% endblock %}
+
+{% block content %}
+<h2>📈 실시간 모니터링</h2>
+
+<div class="panel" style="margin-bottom: 20px;">
+    <h3>보유 종목 현황</h3>
+    <div class="table-container">
+        <table>
+            <thead>
+                <tr>
+                    <th>종목명</th>
+                    <th class="align-right">보유수량</th>
+                    <th class="align-right">평균단가</th>
+                    <th class="align-right">현재가</th>
+                    <th class="align-right">평가금액</th>
+                    <th class="align-right">평가손익</th>
+                    <th class="align-right">수익률(%)</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>삼성전자</td>
+                    <td class="align-right">100</td>
+                    <td class="align-right">89,500</td>
+                    <td class="align-right">91,000</td>
+                    <td class="align-right">9,100,000</td>
+                    <td class="align-right text-green">+150,000</td>
+                    <td class="align-right text-green">+1.68%</td>
+                </tr>
+                <tr>
+                    <td>NAVER</td>
+                    <td class="align-right">50</td>
+                    <td class="align-right">182,000</td>
+                    <td class="align-right">180,500</td>
+                    <td class="align-right">9,025,000</td>
+                    <td class="align-right text-red">-75,000</td>
+                    <td class="align-right text-red">-0.82%</td>
+                </tr>
+                <tr>
+                    <td>카카오</td>
+                    <td class="align-right">200</td>
+                    <td class="align-right">45,100</td>
+                    <td class="align-right">45,500</td>
+                    <td class="align-right">9,100,000</td>
+                    <td class="align-right text-green">+80,000</td>
+                    <td class="align-right text-green">+0.89%</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="panel">
+    <h3>실시간 주문 현황</h3>
+    <div class="table-container">
+        <table>
+            <thead>
+                <tr>
+                    <th>주문시간</th>
+                    <th>종목명</th>
+                    <th>구분</th>
+                    <th class="align-right">주문수량</th>
+                    <th class="align-right">주문가격</th>
+                    <th>상태</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>09:15:02</td>
+                    <td>하이브</td>
+                    <td class="text-red">매도</td>
+                    <td class="align-right">50</td>
+                    <td class="align-right">201,000</td>
+                    <td>체결</td>
+                </tr>
+                <tr>
+                    <td>09:10:30</td>
+                    <td>카카오</td>
+                    <td class="text-green">매수</td>
+                    <td class="align-right">100</td>
+                    <td class="align-right">45,500</td>
+                    <td>체결</td>
+                </tr>
+                 <tr>
+                    <td>09:05:11</td>
+                    <td>NAVER</td>
+                    <td class="text-green">매수</td>
+                    <td class="align-right">50</td>
+                    <td class="align-right">180,500</td>
+                    <td>체결</td>
+                </tr>
+                 <tr>
+                    <td>09:01:05</td>
+                    <td>삼성전자</td>
+                    <td class="text-red">매도</td>
+                    <td class="align-right">50</td>
+                    <td class="align-right">91,000</td>
+                    <td>체결</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+{% endblock %}
