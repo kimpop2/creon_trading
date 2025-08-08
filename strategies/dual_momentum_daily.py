@@ -22,7 +22,7 @@ class DualMomentumDaily(DailyStrategy): # DailyStrategy 상속
     def _validate_parameters(self):
         """전략 파라미터 검증"""
         required_params = [
-            'momentum_period', 'rebalance_weekday', 'safe_asset_code'
+            'momentum_period', 'rebalance_weekday', 'safe_asset_code', 'num_top_stocks'
         ]
         
         for param in required_params:
@@ -35,6 +35,7 @@ class DualMomentumDaily(DailyStrategy): # DailyStrategy 상속
                    f"선택종목수={self.strategy_params['num_top_stocks']}개")
 
     def filter_universe(self, universe_codes: List[str], current_date: date) -> List[str]:
+        return universe_codes
         # [수정] 최소 거래대금 필터 추가
         min_trading_value = self.strategy_params.get('min_trading_value', 1000000000)
         lookback_start_date = current_date - pd.DateOffset(days=30)
@@ -49,12 +50,12 @@ class DualMomentumDaily(DailyStrategy): # DailyStrategy 상속
         """
         signal_attributes = {} # [신규] 통합 속성 딕셔너리
         
-        prev_trading_day = self.broker.manager.get_previous_trading_day(current_date)
-        if prev_trading_day is None:
-            return set(), set(), {}
+        # prev_trading_day = self.broker.manager.get_previous_trading_day(current_date)
+        # if prev_trading_day is None:
+        #     return set(), set(), {}
         
-        momentum_scores = self._calculate_momentum_scores(prev_trading_day)
-        safe_asset_momentum = self._calculate_safe_asset_momentum(prev_trading_day)
+        momentum_scores = self._calculate_momentum_scores(current_date)
+        safe_asset_momentum = self._calculate_safe_asset_momentum(current_date)
         current_positions = set(self.broker.get_current_positions().keys())
         inverse_asset_code = self.strategy_params.get('inverse_asset_code')
         

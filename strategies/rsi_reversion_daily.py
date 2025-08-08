@@ -28,8 +28,9 @@ class RsiReversionDaily(DailyStrategy):
         """
         최소 거래대금 조건을 만족하는 종목만 선별합니다.
         """
+        return universe_codes
+    
         min_trading_value = self.strategy_params['min_trading_value']
-        
         # 20일간의 평균 거래대금을 계산하기 위한 조회 시작일
         lookback_start_date = current_date - pd.DateOffset(days=30) # 주말 포함 여유있게
 

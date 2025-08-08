@@ -16,7 +16,7 @@ from manager.db_manager import DBManager
 from analyzer.hmm_model import RegimeAnalysisModel # 이제 이 import가 정상적으로 작동합니다.
 from analyzer.inference_service import RegimeInferenceService # 신규 클래스 임포트
 from analyzer.policy_map import PolicyMap
-from analyzer.profiler import StrategyProfiler
+from analyzer.strategy_profiler import StrategyProfiler
 
 class TestDBManagerAnalysis(unittest.TestCase):
     """

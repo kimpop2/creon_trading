@@ -1,6 +1,6 @@
 # trading/broker.py
 
-import datetime
+from datetime import datetime
 import logging
 from typing import Dict, Any, Optional
 from trading.abstract_broker import AbstractBroker
@@ -68,7 +68,7 @@ class Broker(AbstractBroker):
                         'quantity': quantity, 
                         'sell_avail_qty': quantity, # 매수 직후이므로 보유수량과 동일
                         'avg_price': price, 
-                        'entry_date': order_time.date(), 
+                        'entry_date': order_time, 
                         'highest_price': price
                     }
 
@@ -179,12 +179,12 @@ class Broker(AbstractBroker):
             logging.info(f"[익절] {stock_code}")
             return self.execute_order(stock_code, 'sell', current_price, pos_info['quantity'], current_dt)
         # 보유기간 기반 손절
-        holding_days = (current_dt.date() - pos_info['entry_date']).days
-        if holding_days <= 3 and profit_pct <= self.stop_loss_params.get('early_stop_loss', -float('inf')):
+        holding_days = (current_dt.date() - pos_info['entry_date'].date()).days
+        if 1 <= holding_days <= 3 and profit_pct <= self.stop_loss_params.get('early_stop_loss', -float('inf')):
              logging.info(f"[조기손절] {stock_code}")
              return self.execute_order(stock_code, 'sell', current_price, pos_info['quantity'], current_dt)
         # 일반 손절
-        if profit_pct <= self.stop_loss_params.get('stop_loss_ratio', -float('inf')):
+        if 1 <= holding_days and profit_pct <= self.stop_loss_params.get('stop_loss_ratio', -float('inf')):
             logging.info(f"[손절] {stock_code}")
             return self.execute_order(stock_code, 'sell', current_price, pos_info['quantity'], current_dt)
         # 트레일링 스탑
@@ -236,3 +236,56 @@ class Broker(AbstractBroker):
     def cleanup(self) -> None:
         logging.info("백테스트 브로커 리소스 정리 완료.")
         pass
+
+
+    # PassMinute 를 위한 메서드
+    def get_stop_loss_price(self, stock_code: str) -> Optional[float]:
+        """단순 손절매 가격을 계산하여 반환합니다."""
+        if not self.stop_loss_params:
+            return None
+        
+        position = self.positions.get(stock_code)
+        stop_loss_ratio = self.stop_loss_params.get('stop_loss_ratio')
+
+        if position and stop_loss_ratio:
+            avg_price = position['avg_price']
+            # 손절 비율은 음수이므로 (예: -5.0) 그대로 더해줍니다.
+            stop_loss_price = avg_price * (1 + stop_loss_ratio / 100.0)
+            return stop_loss_price
+        return None
+
+    def get_take_profit_price(self, stock_code: str) -> Optional[float]:
+        """단순 익절 가격을 계산하여 반환합니다."""
+        if not self.stop_loss_params:
+            return None
+
+        position = self.positions.get(stock_code)
+        take_profit_ratio = self.stop_loss_params.get('take_profit_ratio')
+
+        if position and take_profit_ratio:
+            avg_price = position['avg_price']
+            take_profit_price = avg_price * (1 + take_profit_ratio / 100.0)
+            return take_profit_price
+        return None
+
+    def get_trailing_stop_price(self, stock_code: str, current_high_price: float) -> Optional[float]:
+        """
+        트레일링 스탑 가격을 계산하여 반환합니다.
+        (참고) 이 메서드를 호출하기 전에 포지션의 최고가(highest_price)가 업데이트되어야 합니다.
+        """
+        if not self.stop_loss_params:
+            return None
+            
+        position = self.positions.get(stock_code)
+        trailing_stop_ratio = self.stop_loss_params.get('trailing_stop_ratio')
+
+        if position and trailing_stop_ratio:
+            # 1. 포지션의 현재 최고가를 당일 고가와 비교하여 업데이트
+            # check_and_execute_stop_loss 에서 이미 처리하고 있다면 이 라인은 생략 가능
+            position['highest_price'] = max(position.get('highest_price', 0), current_high_price)
+            
+            # 2. 업데이트된 최고가 기준으로 트레일링 스탑 가격 계산
+            highest_price = position['highest_price']
+            trailing_stop_price = highest_price * (1 + trailing_stop_ratio / 100.0)
+            return trailing_stop_price
+        return None

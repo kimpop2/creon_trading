@@ -15,7 +15,7 @@ from manager.backtest_manager import BacktestManager
 from analyzer.strategy_profiler import StrategyProfiler
 from analyzer.inference_service import RegimeInferenceService
 from analyzer.hmm_model import RegimeAnalysisModel
-from setup import train_and_save_hmm
+from analyzer import train_and_save_hmm
 
 class TestHmmWorkflow(unittest.TestCase):
 

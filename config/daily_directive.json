@@ -1,4 +1,20 @@
 {
-    "total_principal_ratio": 0.0,
-    "portfolio": []
+    "total_principal_ratio": 0.1,
+    "portfolio": [
+        {
+            "name": "DualMomentumDaily",
+            "weight": 1.0,
+            "params": {
+                "min_trading_value": 1000000000,
+                "max_deviation_ratio": 2.0,
+                "min_holding_days": 5,
+                "num_top_stocks": 7,
+                "market_index_code": "U001",
+                "safe_asset_code": "A122630",
+                "inverse_etf_code": "A114800",
+                "momentum_period": 3,
+                "rebalance_weekday": 0
+            }
+        }
+    ]
 }

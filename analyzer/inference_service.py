@@ -32,6 +32,12 @@ class RegimeInferenceService:
             Optional[np.ndarray]: 각 장세에 속할 확률 벡터 (예: [0.1, 0.2, 0.6, 0.1])
         """
         try:
+            # --- ▼ [핵심 수정] 빈 데이터프레임에 대한 방어 코드 추가 ▼ ---
+            if latest_data.empty:
+                logger.warning("HMM 추론을 위한 입력 데이터가 비어있습니다. 추론을 건너뜁니다.")
+                return None
+            # --- ▲ [핵심 수정] 종료 ▲ ---
+
             # predict_proba는 모든 시점에 대한 확률을 반환하므로 마지막 시점의 값만 사용합니다.
             all_probs = self.hmm_model.predict_proba(latest_data)
             return all_probs[-1]

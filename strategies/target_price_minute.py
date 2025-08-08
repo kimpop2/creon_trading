@@ -34,7 +34,7 @@ class TargetPriceMinute(MinuteStrategy):
         signal_info = self.signals[stock_code]
         order_signal = signal_info.get('signal_type')
         target_price = signal_info.get('target_price')
-
+        
         # --- 리밸런싱 매도 로직 (목표가 없음) ---
         if order_signal == 'sell' and not target_price:
             current_position_size = self.broker.get_position_size(stock_code)

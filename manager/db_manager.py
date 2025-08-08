@@ -3,6 +3,7 @@
 import pymysql
 import logging
 import pandas as pd
+import numpy as np # [추가] Numpy 타입 확인을 위해 임포트
 from datetime import datetime, date, timedelta, time
 import os
 import sys
@@ -770,25 +771,7 @@ class DBManager:
         return self.execute_sql_file('drop_backtest_tables')
 
 
-    def fetch_backtest_performance(self, run_id: int):
-        conn = self.get_db_connection()
-        if not conn: return pd.DataFrame()
 
-        query = "SELECT * FROM backtest_performance WHERE run_id = %s ORDER BY date ASC"
-        try:
-            result = self.execute_sql(query, (run_id,), fetch=True)
-            if result:
-                df = pd.DataFrame(result)
-                # 숫자형 컬럼들을 명시적으로 float로 변환
-                numeric_cols = ['end_capital', 'daily_return', 'cumulative_return', 'drawdown']
-                for col in numeric_cols:
-                    if col in df.columns:
-                        df[col] = pd.to_numeric(df[col], errors='coerce')
-                return df
-            return pd.DataFrame()
-        except Exception as e:
-            logger.error(f"일별 성과 정보 조회 오류 (run_id: {run_id}): {e}", exc_info=True)
-            return pd.DataFrame()
 
     def fetch_backtest_trade(self, run_id: int):
         conn = self.get_db_connection()
@@ -809,7 +792,20 @@ class DBManager:
         except Exception as e:
             logger.error(f"거래 로그 정보 조회 오류 (run_id: {run_id}): {e}", exc_info=True)
             return pd.DataFrame()
-            
+    
+    def convert_numpy_types(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, dict):
+            return {k: self.convert_numpy_types(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [self.convert_numpy_types(i) for i in obj]
+        return obj            
+    
     # --- backtest_run 테이블 관련 메서드 ---
     def save_backtest_run(self, run_info: dict):
         """
@@ -841,7 +837,9 @@ class DBManager:
         """
         
         run_id_param = run_info.get('run_id') if run_info.get('run_id') is not None else None
-        
+        # [수정] json.dumps 호출 전에 변환 함수 적용
+        params_daily = self.convert_numpy_types(run_info.get('params_json_daily'))
+        params_minute = self.convert_numpy_types(run_info.get('params_json_minute'))        
         params = (
             run_id_param, 
             run_info.get('start_date'),
@@ -854,8 +852,8 @@ class DBManager:
             run_info.get('strategy_daily'),
             run_info.get('strategy_minute'),
             # --- 변경 부분: dict를 JSON 문자열로 직렬화 ---
-            json.dumps(run_info.get('params_json_daily')) if run_info.get('params_json_daily') is not None else None, 
-            json.dumps(run_info.get('params_json_minute')) if run_info.get('params_json_minute') is not None else None 
+            json.dumps(params_daily) if params_daily is not None else None, 
+            json.dumps(params_minute) if params_minute is not None else None 
             # -----------------------------------------------
         )
         
@@ -1066,13 +1064,10 @@ class DBManager:
             logger.error(f"백테스트 성능 지표 저장/업데이트 오류: {e}", exc_info=True)
             return False
 
-    def fetch_backtest_performance(self, run_id: int, start_date: date = None, end_date: date = None):
+    def fetch_backtest_performance(self, run_id: int = None, start_date: date = None, end_date: date = None):
         """
-        DB에서 백테스트 일별/기간별 성능 지표를 조회합니다.
-        :param run_id: 조회할 백테스트 실행 ID (필수)
-        :param start_date: 성능 기록 시작 날짜 (선택)
-        :param end_date: 성능 기록 종료 날짜 (선택)
-        :return: Pandas DataFrame
+        [수정됨] DB에서 백테스트 일별 성능 지표를 조회합니다.
+        run_id와 기간 필터 모두 선택적으로 사용할 수 있습니다.
         """
         conn = self.get_db_connection()
         if not conn: return pd.DataFrame()
@@ -1081,27 +1076,47 @@ class DBManager:
         SELECT performance_id, run_id, date, end_capital, daily_return, daily_profit_loss, 
                cumulative_return, drawdown
         FROM backtest_performance
-        WHERE run_id = %s
         """
-        params = [run_id]
+        
+        # --- ▼ [핵심 수정] 동적 쿼리 생성 로직으로 변경 ---
+        conditions = []
+        params = []
+        if run_id is not None:
+            conditions.append("run_id = %s")
+            params.append(run_id)
         if start_date:
-            sql += " AND date >= %s"
+            conditions.append("date >= %s")
             params.append(start_date)
         if end_date:
-            sql += " AND date <= %s"
+            conditions.append("date <= %s")
             params.append(end_date)
+
+        if conditions:
+            sql += " WHERE " + " AND ".join(conditions)
+        
         sql += " ORDER BY date ASC"
+        # --- ▲ [핵심 수정] ---
 
         try:
-            cursor = self.execute_sql(sql, tuple(params))
+            # [수정] params가 비어있을 수 있으므로 tuple(params) 사용
+            cursor = self.execute_sql(sql, tuple(params) if params else None)
             if cursor:
                 result = cursor.fetchall()
-                return pd.DataFrame(result)
+                df = pd.DataFrame(result)
+                
+                # 숫자 타입 변환 (필요시 추가)
+                if not df.empty:
+                    numeric_cols = ['end_capital', 'daily_return', 'daily_profit_loss', 'cumulative_return', 'drawdown']
+                    for col in numeric_cols:
+                        if col in df.columns:
+                            df[col] = pd.to_numeric(df[col], errors='coerce')
+                return df
             else:
                 return pd.DataFrame()
         except Exception as e:
-            logger.error(f"백테스트 성능 지표 조회 오류 (run_id: {run_id}): {e}", exc_info=True)
+            logger.error(f"백테스트 성능 지표 조회 오류: {e}", exc_info=True)
             return pd.DataFrame()
+
     # ----------------------------------------------------------------------------
     # 유니버스 관리 테이블
     # ----------------------------------------------------------------------------
@@ -2359,63 +2374,36 @@ class DBManager:
             logger.error(f"전략 프로파일 저장/업데이트 실패: {e}", exc_info=True)
             return False
 
-
     def fetch_strategy_profiles_by_model(self, model_id: int) -> pd.DataFrame:
         """
-        특정 HMM 모델 ID에 해당하는 모든 전략 프로파일을 DataFrame으로 불러옵니다.
-        'load' 대신 'fetch' 접두사를 사용하고, pd.DataFrame을 반환하도록 통일합니다.
+        [수정됨] 특정 HMM 모델 ID에 해당하는 '가장 최신의' 모든 전략 프로파일을
+        DataFrame으로 불러옵니다.
         """
         conn = self.get_db_connection()
         if not conn:
             return pd.DataFrame()
 
+        # [핵심 수정] ROW_NUMBER()를 사용하여 각 전략/국면별 최신 데이터만 선택
         sql = """
-            SELECT strategy_name, regime_id, sharpe_ratio, mdd,
-                   total_return, win_rate, num_trades
-            FROM strategy_profiles WHERE model_id = %s
+            WITH RankedProfiles AS (
+                SELECT
+                    *,
+                    ROW_NUMBER() OVER(
+                        PARTITION BY strategy_name, model_id, regime_id 
+                        ORDER BY updated_at DESC
+                    ) as rn
+                FROM strategy_profiles
+                WHERE model_id = %s
+            )
+            SELECT
+                   strategy_name, regime_id, sharpe_ratio, mdd,
+                   total_return, win_rate, num_trades, params_json
+            FROM RankedProfiles 
+            WHERE rn = 1
         """
-        try:
-            cursor = self.execute_sql(sql, (model_id,))
-            if cursor:
-                result = cursor.fetchall()
-                if not result:
-                    return pd.DataFrame()
-                
-                df = pd.DataFrame(result)
-                
-                # 숫자형 컬럼들을 float으로 명시적 변환 (기존 로직과 통일)
-                numeric_cols = ['sharpe_ratio', 'mdd', 'total_return', 'win_rate', 'num_trades']
-                for col in numeric_cols:
-                    if col in df.columns:
-                        df[col] = df[col].apply(lambda x: float(x) if isinstance(x, (Decimal, int, float, str)) and x is not None else x)
-                
-                logger.info(f"모델 ID {model_id}에 대한 {len(df)}개의 전략 프로파일을 DB에서 불러왔습니다.")
-                return df
-            
-            return pd.DataFrame()
-        except Exception as e:
-            logger.error(f"전략 프로파일 로드 실패(모델 ID: {model_id}): {e}", exc_info=True)
-            return pd.DataFrame()
-
-
-    def fetch_strategy_profiles_by_model_and_regime(self, model_id: int, regime_id: int) -> pd.DataFrame:
-        """
-        특정 HMM 모델 ID와 국면 ID에 해당하는 모든 전략 프로파일을 DataFrame으로 불러옵니다.
-        """
-        conn = self.get_db_connection()
-        if not conn:
-            return pd.DataFrame()
-
-        sql = """
-            SELECT strategy_name, regime_id, sharpe_ratio, mdd,
-                   total_return, win_rate, num_trades
-            FROM strategy_profiles 
-            WHERE model_id = %s AND regime_id = %s
-        """
-        params = (model_id, regime_id)
         
         try:
-            cursor = self.execute_sql(sql, params)
+            cursor = self.execute_sql(sql, (model_id,))
             if cursor:
                 result = cursor.fetchall()
                 if not result:
@@ -2426,11 +2414,60 @@ class DBManager:
                 # 숫자형 컬럼들을 float으로 명시적 변환
                 numeric_cols = ['sharpe_ratio', 'mdd', 'total_return', 'win_rate', 'num_trades']
                 for col in numeric_cols:
-                    if col in df.columns:
-                        # DB에서 Decimal 타입으로 반환될 수 있으므로 float으로 변환
-                        df[col] = pd.to_numeric(df[col], errors='coerce')
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
                 
-                logger.info(f"모델 ID {model_id}, 국면 {regime_id}에 대한 {len(df)}개의 전략 프로파일을 DB에서 불러왔습니다.")
+                logger.info(f"모델 ID {model_id}에 대한 {len(df)}개의 '최신' 전략 프로파일을 DB에서 불러왔습니다.")
+                return df
+            
+            return pd.DataFrame()
+        except Exception as e:
+            logger.error(f"전략 프로파일 로드 실패(모델 ID: {model_id}): {e}", exc_info=True)
+            return pd.DataFrame()
+
+
+    def fetch_strategy_profiles_by_model_and_regime(self, model_id: int, regime_id: int) -> pd.DataFrame:
+        """
+        [수정됨] 특정 HMM 모델 ID와 국면 ID에 해당하는 '가장 최신의' 전략 프로파일을
+        DataFrame으로 불러옵니다. 중복된 경우 updated_at이 가장 최신인 1개만 선택합니다.
+        """
+        conn = self.get_db_connection()
+        if not conn:
+            return pd.DataFrame()
+
+        # [핵심 수정] ROW_NUMBER() 윈도우 함수를 사용한 SQL 쿼리
+        sql = """
+            WITH RankedProfiles AS (
+                SELECT
+                    *,
+                    ROW_NUMBER() OVER(
+                        PARTITION BY strategy_name, model_id, regime_id 
+                        ORDER BY updated_at DESC
+                    ) as rn
+                FROM strategy_profiles
+                WHERE model_id = %s AND regime_id = %s
+            )
+            SELECT 
+                   strategy_name, regime_id, sharpe_ratio, mdd,
+                   total_return, win_rate, num_trades, params_json
+            FROM RankedProfiles 
+            WHERE rn = 1
+        """
+        params = (model_id, regime_id)
+        
+        try:
+            cursor = self.execute_sql(sql, params)
+            if cursor:
+                result = cursor.fetchall()
+                if not result: return pd.DataFrame()
+                
+                df = pd.DataFrame(result)
+                
+                # 숫자형 컬럼들을 float으로 명시적 변환
+                numeric_cols = ['sharpe_ratio', 'mdd', 'total_return', 'win_rate', 'num_trades']
+                for col in numeric_cols:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                
+                logger.info(f"모델 ID {model_id}, 국면 {regime_id}에 대한 {len(df)}개의 '최신' 전략 프로파일을 DB에서 불러왔습니다.")
                 return df
             
             return pd.DataFrame()

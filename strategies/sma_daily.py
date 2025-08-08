@@ -26,6 +26,8 @@ class SMADaily(DailyStrategy):
         logger.info("SMA 전략 파라미터 검증 완료.")
 
     def filter_universe(self, universe_codes: List[str], current_date: date) -> List[str]:
+        return universe_codes
+    
         """최소 거래대금 조건을 만족하는 종목만 선별합니다."""
         min_trading_value = self.strategy_params['min_trading_value']
         lookback_start_date = current_date - pd.DateOffset(days=30)
@@ -76,5 +78,8 @@ class SMADaily(DailyStrategy):
             elif short_sma.iloc[-1] < long_sma.iloc[-1] and short_sma.iloc[-2] >= long_sma.iloc[-2]:
                 if code in current_positions:
                     sell_candidates.add(code)
-
+                    signal_attributes[code] = {
+                        'score': 100,
+                        'target_price': 0
+                    }
         return buy_candidates, sell_candidates, signal_attributes

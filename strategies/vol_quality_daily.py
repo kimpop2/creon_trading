@@ -29,6 +29,9 @@ class VolQualityDaily(DailyStrategy):
         """
         전략의 핵심 로직. 유니버스에서 저변동성/고퀄리티 종목만 선별합니다.
         """
+        return universe_codes
+    
+    
         try:
             # 1. 파라미터 가져오기
             vol_quantile = self.strategy_params.get('vol_quantile', 0.2) # 변동성 하위 20%

@@ -37,7 +37,7 @@ def execute_full_optimization_workflow():
     
     # 3. [1단계] 개별 전략 최적화 실행 (전략 리스트는 설정 파일 등에서 관리)
     logger.info("--- [1단계] 개별 전략 최적화를 시작합니다. ---")
-    strategies_to_optimize = ['SMADaily', 'TripleScreenDaily'] # 최적화할 전략 목록
+    strategies_to_optimize = ['BreakoutDaily'] # 최적화할 전략 목록
     best_strategy_params = {}
 
     for strategy_name in strategies_to_optimize:

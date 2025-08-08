@@ -57,9 +57,9 @@ PORTFOLIO_UPDATE_TIME = "16:00:00" # 장 마감 후 포트폴리오 업데이트
 FETCH_DAILY_PERIOD = 60 # 여유 일봉 데어터 기간(일)
 FETCH_MINUTE_PERIOD = 5 # 여유 분봉데이터 기간(일)
 # --- 투자금 기본 설정 ---
-INITIAL_CASH = 3000_000
+INITIAL_CASH = 5_000_000
 PRINCIPAL_RATIO = 0.5
-MIN_STOCK_CAPITAL = 200_000 # 예시: 종목당 최소 5만원으로 매수
+MIN_STOCK_CAPITAL = 300_000 # 예시: 종목당 최소 5만원으로 매수
 # 각 전략에 대한 파라미터를 딕셔너리 형태로 정의합니다.
 # --- 공통 파라미터 정의 ---
 COMMON_PARAMS = {
@@ -87,9 +87,17 @@ STOP_LOSS_PARAMS = {
 SMA_DAILY_PARAMS = {
     **COMMON_PARAMS,
     'short_sma_period': 5,
-    'long_sma_period': 10,
-#    'num_top_stocks': 3,            # 매매 대상 상위 종목 수
+    'long_sma_period': 17,
+    'num_top_stocks': 2,            # 매매 대상 상위 종목 수
 }
+# Dual Momentum 일봉 전략 파라미터
+DUAL_MOMENTUM_DAILY_PARAMS = {
+    **COMMON_PARAMS,
+    'momentum_period': 3,          # 모멘텀 계산 기간
+    'rebalance_weekday': 0,         # 리밸런싱 요일 (0=월요일)
+    'num_top_stocks': 7,            # 매매 대상 상위 종목 수
+}
+
 # Triple Screen 일봉 전략 파라미터
 TRIPLE_SCREEN_DAILY_PARAMS = {
     **COMMON_PARAMS,
@@ -98,13 +106,12 @@ TRIPLE_SCREEN_DAILY_PARAMS = {
     'momentum_rsi_oversold': 30,    # 2단계: 매수 기회를 포착할 RSI 과매도 기준
     'momentum_rsi_overbought': 70,  # (참고용) RSI 과매수 기준
     'min_trend_strength': 0.02,     # 1단계: 최소 추세 강도 (현재가/이평선 괴리율, 2%)
-#    'num_top_stocks': 3,            # 최종적으로 몇 개의 종목에 투자할 것인지 결정
+    'num_top_stocks': 5,            # 최종적으로 몇 개의 종목에 투자할 것인지 결정
 }
-# Dual Momentum 일봉 전략 파라미터
-DUAL_MOMENTUM_DAILY_PARAMS = {
+BREAKOUT_DAILY_PARAMS = {
     **COMMON_PARAMS,
-    'momentum_period': 14,          # 모멘텀 계산 기간
-    'rebalance_weekday': 0,         # 리밸런싱 요일 (0=월요일)
+    'box_period': 60,
+    'volume_multiplier': 3,
 }
 VOL_QUALITY_DAILY_PARAMS = {
     **COMMON_PARAMS,
@@ -165,13 +172,36 @@ COMMON_OPTIMIZATION_PARAMS = {
 
 # --- [수정] SMA 전략 최적화 파라미터 범위 ('type' 제거) ---
 SMA_OPTIMIZATION_PARAMS = {
-    'short_sma_period': {'min': 2, 'max': 20, 'step': 1},
-    'long_sma_period': {'min': 30, 'max': 80, 'step': 5},
-    'volume_ma_period': {'min': 5, 'max': 20, 'step': 1},
+    'short_sma_period': {'min': 2, 'max': 7, 'step': 1},
+    'long_sma_period': {'min': 10, 'max': 30, 'step': 5},
+#    'volume_ma_period': {'min': 5, 'max': 20, 'step': 1},
+    'num_top_stocks': {'min': 2, 'max': 8, 'step': 1}
+}
+BREAKOUT_OPTIMIZATION_PARAMS = {
+    'box_period': {'min': 20, 'max': 120, 'step': 20},
+    'volume_multiplier': {'min': 2, 'max': 5, 'step': 1},
+#    'volume_ma_period': {'min': 5, 'max': 20, 'step': 1},
+    'num_top_stocks': {'min': 2, 'max': 8, 'step': 1}
+}
+DUAL_OPTIMIZATION_PARAMS = {
+    'momentum_period': {'min': 2, 'max': 20, 'step': 2}, # 모멘텀 계산 기간
+    'rebalance_weekday': 0,                              # 리밸런싱 요일 (0=월요일)
     'num_top_stocks': {'min': 2, 'max': 8, 'step': 1}
 }
 
-# --- [수정] HMM 최적화 파라미터 범위 ('type' 제거) ---
+# [신규] 전략별 포트폴리오 설정 (자금 관리용)
+PORTFOLIO_FOR_HMM_OPTIMIZATION = [
+    # {'name': 'SMADaily', 'weight': 0.22, 'params': SMA_DAILY_PARAMS},
+    # {'name': 'DualMomentumDaily', 'weight': 0.13, 'params': DUAL_MOMENTUM_DAILY_PARAMS},
+    {'name': 'BreakoutDaily', 'weight': 1, 'params': BREAKOUT_DAILY_PARAMS},
+    # {'name': 'VolBreakoutDaily', 'weight': 0.65, 'params': VOL_BREAKOUT_DAILY_PARAMS},
+    # {'name': 'TripleScreenDaily', 'weight': 0.01, 'params': TRIPLE_SCREEN_DAILY_PARAMS},
+    # {'name': 'VolQualityDaily', 'weight': 0.01, 'params': VOL_QUALITY_DAILY_PARAMS},
+    # {'name': 'RsiReversionDaily', 'weight': 0.01, 'params': RSI_REVERSION_DAILY_PARAMS},
+    # {'name': 'PairsTradingDaily', 'weight': 0.01, 'params': PAIRS_TRADING_DAILY_PARAMS},
+    # {'name': 'InverseDaily', 'weight': 0.01, 'params': INVERSE_DAILY_PARAMS},
+]
+
 HMM_OPTIMIZATION_PARAMS = {
     'hmm_n_states': {'min': 3, 'max': 5, 'step': 1},
     'policy_crisis_ratio': {'min': 0.1, 'max': 0.3, 'step': 0.1},
@@ -179,50 +209,38 @@ HMM_OPTIMIZATION_PARAMS = {
     'rebalance_performance_metric': {'values': ['sharpe_ratio', 'total_return']}
 }
 
-
-# [신규] 전략별 포트폴리오 설정 (자금 관리용)
-STRATEGY_CONFIGS = [
-    {'name': 'SMADaily', 'weight': 0.22, 'params': SMA_DAILY_PARAMS},
-    {'name': 'DualMomentumDaily', 'weight': 0.13, 'params': DUAL_MOMENTUM_DAILY_PARAMS},
-    {'name': 'VolBreakoutDaily', 'weight': 0.65, 'params': VOL_BREAKOUT_DAILY_PARAMS},
-    {'name': 'TripleScreenDaily', 'weight': 0.01, 'params': TRIPLE_SCREEN_DAILY_PARAMS},
-    {'name': 'VolQualityDaily', 'weight': 0.01, 'params': VOL_QUALITY_DAILY_PARAMS},
-    {'name': 'RsiReversionDaily', 'weight': 0.01, 'params': RSI_REVERSION_DAILY_PARAMS},
-    {'name': 'PairsTradingDaily', 'weight': 0.01, 'params': PAIRS_TRADING_DAILY_PARAMS},
-    {'name': 'InverseDaily', 'weight': 0.01, 'params': INVERSE_DAILY_PARAMS},
-]
-
-HMM_OPTIMIZATION_PARAMS = {
-    # 1. HMM 모델 자체의 파라미터
-    'hmm_n_states': {
-        'type': 'int',
-        'min': 3,
-        'max': 5,
-        'step': 1
-    },
-    # (필요시 다른 HMM 파라미터 추가 가능)
-
-    # 2. 정책 테이블(거시적 자산배분)의 규칙 파라미터
-    'policy_crisis_ratio': {
-        'type': 'float',
-        'min': 0.1,
-        'max': 0.3,
-        'step': 0.1
-    },
-    'policy_bear_ratio': {
-        'type': 'float',
-        'min': 0.3,
-        'max': 0.6,
-        'step': 0.1
-    },
-    # (다른 장세에 대한 투자 비중도 추가 가능)
-
-    # 3. 미시적 자산배분(제2두뇌) 관련 파라미터
-    'rebalance_performance_metric': {
-        'type': 'categorical',
-        'values': ['sharpe_ratio', 'total_return', 'win_rate'] # 어떤 지표를 기준으로 기대성과를 계산할지
-    }
-}
 # --- [신규 추가] 실거래용 HMM 모델 설정 ---
 # 옵티마이저로 찾은 최적 모델의 이름으로 변경하여 사용합니다.
 LIVE_HMM_MODEL_NAME = "Production_HMM_v1" 
+
+# HMM_OPTIMIZATION_PARAMS = {
+#     # 1. HMM 모델 자체의 파라미터
+#     'hmm_n_states': {
+#         'type': 'int',
+#         'min': 3,
+#         'max': 5,
+#         'step': 1
+#     },
+#     # (필요시 다른 HMM 파라미터 추가 가능)
+
+#     # 2. 정책 테이블(거시적 자산배분)의 규칙 파라미터
+#     'policy_crisis_ratio': {
+#         'type': 'float',
+#         'min': 0.1,
+#         'max': 0.3,
+#         'step': 0.1
+#     },
+#     'policy_bear_ratio': {
+#         'type': 'float',
+#         'min': 0.3,
+#         'max': 0.6,
+#         'step': 0.1
+#     },
+#     # (다른 장세에 대한 투자 비중도 추가 가능)
+
+#     # 3. 미시적 자산배분(제2두뇌) 관련 파라미터
+#     'rebalance_performance_metric': {
+#         'type': 'categorical',
+#         'values': ['sharpe_ratio', 'total_return', 'win_rate'] # 어떤 지표를 기준으로 기대성과를 계산할지
+#     }
+# }

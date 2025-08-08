@@ -31,6 +31,7 @@ class PairsTradingDaily(DailyStrategy):
         이 전략의 유니버스는 파라미터로 지정된 'pairs_list'에 한정됩니다.
         리스트에 포함된 모든 종목을 필터링 대상으로 반환합니다.
         """
+        return universe_codes
         pairs = self.strategy_params.get('pairs_list', [])
         # 중첩 리스트를 단일 리스트로 펼치고 중복 제거
         filtered_codes = list(set([code for pair in pairs for code in pair]))

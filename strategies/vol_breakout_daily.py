@@ -30,6 +30,8 @@ class VolBreakoutDaily(DailyStrategy):
         최소 거래대금 조건을 만족하는 종목만 선별합니다.
         (RsiReversionDaily와 동일한 최적화 로직 적용)
         """
+        return universe_codes
+    
         min_trading_value = self.strategy_params['min_trading_value']
         lookback_start_date = current_date - pd.DateOffset(days=30)
 

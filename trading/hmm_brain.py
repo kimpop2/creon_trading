@@ -17,7 +17,7 @@ from manager.backtest_manager import BacktestManager
 from analyzer.hmm_model import RegimeAnalysisModel
 from analyzer.inference_service import RegimeInferenceService
 from analyzer.policy_map import PolicyMap
-from config.settings import LIVE_HMM_MODEL_NAME, STRATEGY_CONFIGS
+from config.settings import LIVE_HMM_MODEL_NAME, PORTFOLIO_FOR_HMM_OPTIMIZATION
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("HMMBrain")
@@ -84,7 +84,7 @@ class HMMBrain:
         
         portfolio = []
         for _, row in positive_sharpe_profiles.iterrows():
-            default_params = next((item['params'] for item in STRATEGY_CONFIGS if item['name'] == row['strategy_name']), {})
+            default_params = next((item['params'] for item in PORTFOLIO_FOR_HMM_OPTIMIZATION if item['name'] == row['strategy_name']), {})
             
             # --- ▼ [핵심 수정] params_json이 None일 경우에 대한 처리 ---
             params_json_str = row.get('params_json')
@@ -92,7 +92,7 @@ class HMMBrain:
             # --- ▲ [핵심 수정] ---
             
             portfolio.append({
-                "strategy_name": row['strategy_name'],
+                "name": row['strategy_name'],
                 "weight": row['weight'],
                 "params": strategy_params
             })

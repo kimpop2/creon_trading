@@ -33,6 +33,8 @@ class TripleScreenDaily(DailyStrategy):
         logger.info(f"삼중창 시스템 파라미터 검증 완료.")
 
     def filter_universe(self, universe_codes: List[str], current_date: date) -> List[str]:
+        return universe_codes
+    
         # [수정] 최소 거래대금 필터 추가
         min_trading_value = self.strategy_params.get('min_trading_value', 1000000000)
         lookback_start_date = current_date - pd.DateOffset(days=30)

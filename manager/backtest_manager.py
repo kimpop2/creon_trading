@@ -39,7 +39,9 @@ class BacktestManager:
         self.db_manager = db_manager
         self.stock_info_map: Dict[str, str] = {} # 종목 코드:종목명 매핑을 위한 캐시
         self._load_stock_info_map()
-
+        
+        self.hmm_data_cache = {}    # HMM 학습 데이터를 저장할 캐시 초기화
+        self.pykrx_master_df = None # pykrx 원본 데이터를 저장할 마스터 데이터프레임
         logger.info(f"BacktestManager 초기화 완료: {len(self.stock_info_map)} 종목, CreonAPIClient 및 DBManager 연결")
  
 
@@ -942,145 +944,122 @@ class BacktestManager:
         return self.db_manager.fetch_stock_info(stock_codes)
 
 
-
-
-# manager/backtest_manager.py
-# manager/backtest_manager.py
-
-    def get_market_data_for_hmm(self, current_date: date = date.today(), days: int = 730) -> pd.DataFrame:
+    def get_market_data_for_hmm(self, start_date: date = None, end_date: date = None, days: int = 730) -> pd.DataFrame:
         """
-        [최종 완성본] HMM 모델 학습을 위해 가격, 변동성, 거래량, 심리를
-        종합적으로 반영한 Feature Set을 생성합니다.
+        [최종 최적화] 미리 로드된 pykrx 마스터 데이터프레임에서 필요한 데이터를 슬라이싱하여 HMM Feature Set을 생성합니다.
         """
-        logger.info(f"HMM 학습용 종합 Feature 데이터 생성 시작 (기준일: {current_date}, 기간: {days}일)")
-        end_date = current_date - timedelta(days=1)
-        # 모든 롤링 계산(최장 60일)을 위해 충분한 과거 데이터 확보
-        start_date = end_date - timedelta(days=days + 100)
+        # [핵심] 마스터 데이터가 로드되었는지 확인하는 방어 코드
+        if self.pykrx_master_df is None:
+            raise RuntimeError("pykrx 마스터 데이터가 로드되지 않았습니다. prepare_pykrx_data_for_period()를 먼저 호출해야 합니다.")
+
+        logger.debug("HMM 학습용 데이터를 마스터 데이터프레임에서 슬라이싱합니다.")
+
+        # 날짜 처리 로직 (기존과 동일)
+        final_end_date = end_date if end_date else date.today() - timedelta(days=1)
+        if start_date:
+            final_start_date = start_date
+        else:
+            final_start_date = final_end_date - timedelta(days=days)
         
-        start_str = start_date.strftime('%Y%m%d')
-        end_str = end_date.strftime('%Y%m%d')
-
-        # --- 1. 원본 데이터 수집 (KOSPI OHLCV) ---
-        df = stock.get_index_ohlcv(start_str, end_str, "1001")
+        query_start_date = final_start_date - timedelta(days=100)
+        
+        # [핵심] pykrx 호출 대신, 마스터 데이터프레임에서 데이터 슬라이싱
+        df = self.pykrx_master_df.loc[query_start_date:final_end_date].copy()
+        
         if df.empty:
-            logger.warning("HMM 학습용 KOSPI 데이터를 조회할 수 없습니다.")
+            logger.warning(f"HMM 학습용 KOSPI 데이터를 마스터 DF에서 슬라이싱할 수 없습니다. ({query_start_date} ~ {final_end_date})")
             return pd.DataFrame()
-
-        # --- 2. Feature 계산 ---
-        # Feature C: 20일 변동성 범위
+        
+        # --- 3. Feature 계산 (기존 로직과 동일) ---
+        # (df_investor 관련 로직은 마스터 DF에 이미 병합되어 있으므로 불필요)
         window_20d = 20
         df['C_vol_range'] = df['고가'].rolling(window=window_20d).max() - df['저가'].rolling(window=window_20d).min()
-
-        # Feature A & B: 반등/하락 가속도
         min_pos = df['저가'].rolling(window=window_20d).apply(np.argmin, raw=True)
         max_pos = df['고가'].rolling(window=window_20d).apply(np.argmax, raw=True)
         days_since_low = (window_20d - 1) - min_pos + 1
         days_since_high = (window_20d - 1) - max_pos + 1
         df['A_rebound_accel'] = (df['종가'] - df['저가'].rolling(window=window_20d).min()) / days_since_low
         df['B_fall_accel'] = (df['종가'] - df['고가'].rolling(window=window_20d).max()) / days_since_high
-
-        # Feature D: 단기 거래대금 집중도
         df['D_volume_surge'] = df['거래대금'].rolling(window=5).mean() / df['거래대금'].rolling(window=20).mean()
-
-        # Feature E: 중기 추세 (20일/60일 이격도)
         sma20 = df['종가'].rolling(window=20).mean()
         sma60 = df['종가'].rolling(window=60).mean()
         df['E_ma_divergence'] = (sma20 - sma60) / sma60 * 100
 
-        # Feature H: 하락 변동성 (VIX 대용)
+        total_value_20d_mean = df['거래대금'].rolling(window=20).mean()
+        df['F_major_flow_strength'] = df['major_flow'].rolling(window=20).mean() / total_value_20d_mean
+
         daily_returns = df['종가'].pct_change()
         negative_returns = daily_returns[daily_returns < 0]
         df['H_downside_volatility'] = negative_returns.rolling(window=20).std().fillna(0)
-        
-        # Feature I: 시장 패닉 지수 (변동성 * 거래대금)
         vol_short = daily_returns.rolling(window=20).std()
         vol_long = daily_returns.rolling(window=60).std()
         value_short = df['거래대금'].rolling(window=20).mean()
         value_long = df['거래대금'].rolling(window=60).mean()
         df['I_panic_index'] = (vol_short / vol_long) * (value_short / value_long)
-        
-        # Feature J: 상승 가속 지수 (상승 강도 * 거래대금)
         roc_10d = df['종가'].pct_change(periods=10)
         df['J_rally_accel_index'] = roc_10d * df['D_volume_surge']
         
-        # --- 3. 최종 데이터 정리 ---
-        final_features = df[[
+        # --- 4. 최종 데이터 정리 (기존 로직과 동일) ---
+        final_features_df = df[[
             'A_rebound_accel', 'B_fall_accel', 'C_vol_range', 
             'D_volume_surge', 'E_ma_divergence',
+            'F_major_flow_strength',
             'H_downside_volatility', 'I_panic_index', 'J_rally_accel_index'
         ]].copy()
         
-        # 무한대 값(inf)과 결측치(NaN) 처리
-        final_features.replace([np.inf, -np.inf], np.nan, inplace=True)
-        final_features.dropna(inplace=True)
+        final_features_df = final_features_df.loc[final_start_date:final_end_date]
+        final_features_df.replace([np.inf, -np.inf], np.nan, inplace=True)
+        final_features_df.dropna(inplace=True)
         
-        logger.info(f"HMM 학습용 데이터 생성 완료. {len(final_features)}일치, {len(final_features.columns)}개 Features")
-        return final_features
+        logger.debug(f"HMM 학습용 데이터 생성 완료. {len(final_features_df)}일치, {len(final_features_df.columns)}개 Features")
+        return final_features_df
+
     
-    # def get_market_data_for_hmm(self, feature_set: str = 'A+B+C', current_date: date = date.today(), days: int = 730) -> pd.DataFrame:
-    #     """
-    #     [최종 확정안] HMM 모델 학습용 Feature 그룹을 생성합니다.
-    #     pykrx 조회 시 긴 기간은 600일 단위로 분할하여 안정적으로 조회합니다.
-    #     """
-    #     logger.info(f"HMM 학습용 데이터 생성 시작 (Feature Set: {feature_set})")
+    def prepare_pykrx_data_for_period(self, start_date: date, end_date: date):
+        """
+        [최종 최적화] 전체 분석 기간에 필요한 pykrx 데이터를 단 한번만 로드하고,
+        개선된 수급 강도 지표를 포함하여 마스터 데이터프레임에 저장합니다.
+        """
+        if self.pykrx_master_df is not None:
+            logger.info("pykrx 마스터 데이터가 이미 로드되어 있습니다.")
+            return
+
+        logger.info(f"pykrx 마스터 데이터 로딩 시작 (기간: {start_date} ~ {end_date})...")
         
-    #     # --- 1. 기간 설정 및 분할 로직 준비 ---
-    #     end_date = current_date - timedelta(days=1)
-    #     start_date = end_date - timedelta(days=days + 10) # 계산 버퍼
-    #     chunk_days = 600
+        # HMM 피처 계산에 필요한 과거 데이터까지 포함하여 조회 기간 설정
+        fetch_start_date = start_date - timedelta(days=830) # 12개월(365) + a
         
-    #     # --- 2. pykrx 데이터 분할 조회 ---
-    #     all_ohlcv_dfs = {}
-    #     all_short_dfs = []
+        start_str = fetch_start_date.strftime('%Y%m%d')
+        end_str = end_date.strftime('%Y%m%d')
+
+        # 1. 데이터 조회 (OHLCV 및 수급)
+        df_ohlcv = stock.get_index_ohlcv(start_str, end_str, "1001")
+        if df_ohlcv.empty:
+            raise ValueError("pykrx 마스터 KOSPI 데이터 조회에 실패했습니다.")
         
-    #     current_chunk_start = start_date
-    #     while current_chunk_start <= end_date:
-    #         current_chunk_end = min(current_chunk_start + timedelta(days=chunk_days - 1), end_date)
-    #         start_str = current_chunk_start.strftime('%Y%m%d')
-    #         end_str = current_chunk_end.strftime('%Y%m%d')
+        df_investor = stock.get_market_trading_value_by_date(start_str, end_str, "KOSPI")
+        
+        # --- ▼ [핵심 수정] 개선된 수급 강도 계산 로직 적용 ▼ ---
+        # 2. OHLCV 데이터에 수급 데이터를 join
+        if not df_investor.empty:
+            inst_series = df_investor.get('기관합계', 0)
+            frg_series = df_investor.get('외국인합계', 0)
             
-    #         # 지수 OHLCV 조회
-    #         tickers = {'1001': 'KOSPI', '1002': 'KOSPI_Large', '1004': 'KOSPI_Small',
-    #                    '1035': 'KOSPI_50', '1244': 'KOSPI_200_ex', '1021': 'Financial', '1020': 'Telecom'}
-    #         for ticker, name in tickers.items():
-    #             if name not in all_ohlcv_dfs: all_ohlcv_dfs[name] = []
-    #             all_ohlcv_dfs[name].append(stock.get_index_ohlcv(start_str, end_str, ticker))
+            abs_inst = inst_series.abs()
+            abs_frg = frg_series.abs()
+            
+            combined_abs = pd.concat([abs_inst.rename('inst'), abs_frg.rename('frg')], axis=1)
+            major_flow_strength = combined_abs.max(axis=1)
+            
+            df_merged = df_ohlcv.join(major_flow_strength.rename('major_flow'))
+        else:
+            df_merged = df_ohlcv
+            df_merged['major_flow'] = 0
 
-    #         # 공매도 데이터 조회
-    #         if 'C' in feature_set:
-    #             try:
-    #                 all_short_dfs.append(stock.get_shorting_investor_value_by_date(start_str, end_str, "KOSPI"))
-    #             except Exception as e:
-    #                 logger.warning(f"공매도 데이터 조회 중 오류 발생 (기간: {start_str}~{end_str}): {e}")
-
-    #         current_chunk_start = current_chunk_end + timedelta(days=1)
-
-    #     # 분할 조회된 데이터 합치기
-    #     ohlcv_dfs = {name: pd.concat(df_list) for name, df_list in all_ohlcv_dfs.items()}
-    #     short_value_df = pd.concat(all_short_dfs) if all_short_dfs else pd.DataFrame()
-
-    #     # --- 3. Feature 엔지니어링 (기존 로직과 동일) ---
-    #     returns_df = pd.DataFrame()
-    #     for name, df in ohlcv_dfs.items():
-    #         returns_df[f'{name}_return'] = df['종가'].pct_change()
-
-    #     final_features = pd.DataFrame(index=returns_df.index)
-
-    #     if 'A' in feature_set:
-    #         final_features['market_return'] = returns_df['KOSPI_return']
-    #         final_features['market_volatility'] = (ohlcv_dfs['KOSPI']['고가'] - ohlcv_dfs['KOSPI']['저가']) / ohlcv_dfs['KOSPI']['시가']
-    #     if 'B' in feature_set:
-    #         final_features['size_factor'] = returns_df['KOSPI_Small_return'] / returns_df['KOSPI_Large_return']
-    #         final_features['concentration_factor'] = returns_df['KOSPI_50_return'] - returns_df['KOSPI_200_ex_return']
-    #         final_features['sector_factor'] = returns_df['Financial_return'] / returns_df['Telecom_return']
-    #     if 'C' in feature_set:
-    #         if not short_value_df.empty and '합계' in short_value_df.columns:
-    #             short_aligned = short_value_df['합계'].reindex(final_features.index, method='ffill')
-    #             final_features['short_intensity'] = short_aligned.pct_change()
-
-    #     # NaN 값 처리
-    #     final_features.replace([np.inf, -np.inf], np.nan, inplace=True)
-    #     final_features.dropna(inplace=True)
+        # 3. 결측치 최종 처리 및 클래스 속성에 저장
+        df_merged['major_flow'].fillna(0, inplace=True)
+        # --- ▲ [핵심 수정] 종료 ▲ ---
         
-    #     logger.info(f"HMM 학습용 데이터 생성 완료. {len(final_features)}일치, {len(final_features.columns)}개 Features")
-    #     return final_features
+        self.pykrx_master_df = df_merged
+        
+        logger.info(f"pykrx 마스터 데이터 로딩 완료. 총 {len(self.pykrx_master_df)}일치 데이터 저장.")
