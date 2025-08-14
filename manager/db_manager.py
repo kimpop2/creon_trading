@@ -316,77 +316,127 @@ class DBManager:
         return self.execute_sql_file('drop_stock_tables')
 
     # --- stock_info 테이블 관련 메서드 ---
-    def save_stock_info(self, stock_info_list: list):
+    # --- stock_info 테이블 관련 메서드 (수정됨) ---
+    def save_stock_info(self, stock_info_list: list) -> bool:
         """
-        종목 기본 정보 및 최신 재무 데이터를 DB의 stock_info 테이블에 저장하거나 업데이트합니다.
-        :param stock_info_list: [{'stock_code': 'A005930', 'stock_name': '삼성전자', 'per': 10.5, ...}, ...]
-        :return: 성공 시 True, 실패 시 False
+        [수정] 새로운 stock_info 테이블 구조에 맞춰 종목 정보를 저장하거나 업데이트합니다.
         """
         conn = self.get_db_connection()
         if not conn: return False
         
+        # 새로운 테이블 구조에 맞춘 SQL 쿼리
         sql = """
-        INSERT INTO stock_info
-        (stock_code, stock_name, market_type, sector, per, pbr, eps, roe, debt_ratio, sales, operating_profit, net_profit, recent_financial_date)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO stock_info (
+            stock_code, stock_name, market_type, sector
+        ) VALUES (
+            %s, %s, %s, %s
+        )
         ON DUPLICATE KEY UPDATE
             stock_name=VALUES(stock_name),
             market_type=VALUES(market_type),
             sector=VALUES(sector),
-            per=VALUES(per),
-            pbr=VALUES(pbr),
-            eps=VALUES(eps),
-            roe=VALUES(roe),
-            debt_ratio=VALUES(debt_ratio),
-            sales=VALUES(sales),
-            operating_profit=VALUES(operating_profit),
-            net_profit=VALUES(net_profit),
-            recent_financial_date=VALUES(recent_financial_date),
-            upd_date=CURRENT_TIMESTAMP() 
+            upd_date=CURRENT_TIMESTAMP()
         """
         try:
             data = []
             for info in stock_info_list:
-                pbr_value = info.get('pbr') 
-                if pbr_value is None:
-                    pbr_value = 0.0 
-
+                # SQL 쿼리 순서에 맞게 데이터 튜플 생성
                 data.append((
-                    info['stock_code'],
-                    info['stock_name'],
-                    info.get('market_type'),
-                    info.get('sector'),
-                    info.get('per'),
-                    pbr_value,
-                    info.get('eps'),
-                    info.get('roe'),
-                    info.get('debt_ratio'),
-                    info.get('sales'),
-                    info.get('operating_profit'),
-                    info.get('net_profit'),
-                    info.get('recent_financial_date')
+                    info.get('stock_code'), info.get('stock_name'),
+                    info.get('market_type'), info.get('sector')
                 ))
             
             cursor = self.execute_sql(sql, data)
             if cursor:
                 logger.debug(f"{len(stock_info_list)}개의 종목 정보를 저장/업데이트했습니다.")
                 return True
-            else:
-                return False
+            return False
         except Exception as e:
             logger.error(f"save_stock_info 처리 중 예외 발생: {e}", exc_info=True)
             return False
 
-    def fetch_stock_info(self, stock_codes: list = None):
+    def save_stock_info_factors(self, stock_info_list: list) -> bool:
         """
-        DB에서 종목 기본 정보 및 최신 재무 데이터를 조회합니다.
-        :param stock_codes: 조회할 종목 코드 리스트 (없으면 전체 조회)
-        :return: Pandas DataFrame
+        [수정] 새로운 stock_info 테이블 구조에 맞춰 종목 정보를 저장하거나 업데이트합니다.
+        """
+        conn = self.get_db_connection()
+        if not conn: return False
+        
+        # 새로운 테이블 구조에 맞춘 SQL 쿼리
+        sql = """
+        INSERT INTO stock_info (
+            stock_code, stock_name, market_type, sector, recent_financial_date,
+            trading_value, trading_intensity, dividend_yield, bps, per, pbr,
+            q_revenue_growth_rate, q_op_income_growth_rate, program_net_buy,
+            foreigner_net_buy, institution_net_buy, sps, credit_ratio,
+            short_volume, beta_coefficient
+        ) VALUES (
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+        )
+        ON DUPLICATE KEY UPDATE
+            stock_name=VALUES(stock_name),
+            market_type=VALUES(market_type),
+            sector=VALUES(sector),
+            recent_financial_date=VALUES(recent_financial_date),
+            trading_value=VALUES(trading_value),
+            trading_intensity=VALUES(trading_intensity),
+            dividend_yield=VALUES(dividend_yield),
+            bps=VALUES(bps),
+            per=VALUES(per),
+            pbr=VALUES(pbr),
+            q_revenue_growth_rate=VALUES(q_revenue_growth_rate),
+            q_op_income_growth_rate=VALUES(q_op_income_growth_rate),
+            program_net_buy=VALUES(program_net_buy),
+            foreigner_net_buy=VALUES(foreigner_net_buy),
+            institution_net_buy=VALUES(institution_net_buy),
+            sps=VALUES(sps),
+            credit_ratio=VALUES(credit_ratio),
+            short_volume=VALUES(short_volume),
+            beta_coefficient=VALUES(beta_coefficient),
+            upd_date=CURRENT_TIMESTAMP()
+        """
+        try:
+            data = []
+            for info in stock_info_list:
+                # SQL 쿼리 순서에 맞게 데이터 튜플 생성
+                data.append((
+                    info.get('stock_code'), info.get('stock_name'),
+                    info.get('market_type'), info.get('sector'),
+                    info.get('recent_financial_date'),
+                    info.get('trading_value'), info.get('trading_intensity'),
+                    info.get('dividend_yield'), info.get('bps'),
+                    info.get('per'), info.get('pbr'),
+                    info.get('q_revenue_growth_rate'), info.get('q_op_income_growth_rate'),
+                    info.get('program_net_buy'), info.get('foreigner_net_buy'),
+                    info.get('institution_net_buy'), info.get('sps'),
+                    info.get('credit_ratio'), info.get('short_volume'),
+                    info.get('beta_coefficient')
+                ))
+            
+            cursor = self.execute_sql(sql, data)
+            if cursor:
+                logger.debug(f"{len(stock_info_list)}개의 종목 정보를 저장/업데이트했습니다.")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"save_stock_info 처리 중 예외 발생: {e}", exc_info=True)
+            return False
+        
+    def fetch_stock_info(self, stock_codes: list = None) -> pd.DataFrame:
+        """
+        [수정] 새로운 stock_info 테이블 구조에 맞춰 종목 정보를 조회합니다.
         """
         conn = self.get_db_connection()
         if not conn: return pd.DataFrame()
+        
+        # 새로운 테이블 구조에 맞춘 SELECT 쿼리
         sql = """
-        SELECT stock_code, stock_name, market_type, sector, per, pbr, eps, roe, debt_ratio, sales, operating_profit, net_profit, recent_financial_date, upd_date
+        SELECT 
+            stock_code, stock_name, market_type, sector, recent_financial_date,
+            trading_value, trading_intensity, dividend_yield, bps, per, pbr,
+            q_revenue_growth_rate, q_op_income_growth_rate, program_net_buy,
+            foreigner_net_buy, institution_net_buy, sps, credit_ratio,
+            short_volume, beta_coefficient, upd_date
         FROM stock_info
         """
         params = []
@@ -400,22 +450,23 @@ class DBManager:
             if cursor:
                 result = cursor.fetchall()
                 df = pd.DataFrame(result)
-                # --- [수정] 숫자 타입 변환 로직 추가 ---
                 if not df.empty:
+                    # 숫자 타입으로 변환할 컬럼 리스트 업데이트
                     numeric_cols = [
-                        'per', 'pbr', 'eps', 'roe', 'debt_ratio', 
-                        'sales', 'operating_profit', 'net_profit'
+                        'trading_value', 'trading_intensity', 'dividend_yield', 'bps',
+                        'per', 'pbr', 'q_revenue_growth_rate', 'q_op_income_growth_rate',
+                        'program_net_buy', 'foreigner_net_buy', 'institution_net_buy',
+                        'sps', 'credit_ratio', 'short_volume', 'beta_coefficient'
                     ]
                     for col in numeric_cols:
                         if col in df.columns:
                             df[col] = pd.to_numeric(df[col], errors='coerce')
-                # --- 수정 끝 ---
                 return df
-            else:
-                return pd.DataFrame()
+            return pd.DataFrame()
         except Exception as e:
             logger.error(f"fetch_stock_info 처리 중 예외 발생: {e}", exc_info=True)
             return pd.DataFrame()
+
         
     # --- market_calendar 테이블에서 캘린더의 날짜를 가지고 온다 ---
     def get_all_trading_days(self, from_date: date, to_date: date) -> list[pd.Timestamp]: # <- 반환 타입 변경
@@ -898,13 +949,14 @@ class DBManager:
             sql += " AND end_date <= %s"
             params.append(end_date)
         sql += " ORDER BY created_at DESC"
-
+        print(sql)
+        print(params)
         try:
             cursor = self.execute_sql(sql, tuple(params) if params else None)
             if cursor:
                 result = cursor.fetchall()
                 df = pd.DataFrame(result)
-                
+                print(df)
                 # --- [수정] 숫자 타입 변환 로직 추가 ---
                 if not df.empty:
                     numeric_cols = [
@@ -1096,7 +1148,7 @@ class DBManager:
         
         sql += " ORDER BY date ASC"
         # --- ▲ [핵심 수정] ---
-
+        #print(sql)
         try:
             # [수정] params가 비어있을 수 있으므로 tuple(params) 사용
             cursor = self.execute_sql(sql, tuple(params) if params else None)
@@ -1120,61 +1172,67 @@ class DBManager:
     # ----------------------------------------------------------------------------
     # 유니버스 관리 테이블
     # ----------------------------------------------------------------------------
-    def save_daily_universe(self, daily_universe_data_list: list, target_date: date):
+    def save_daily_universe(self, universe_data: List[Dict[str, Any]]) -> bool:
         """
-        일별 유니버스 종목 목록을 DB의 daily_universe 테이블에 저장합니다.
-        특정 날짜의 데이터가 이미 존재하면 기존 데이터를 삭제하고 새로 삽입합니다.
-        :param daily_universe_data_list: [{'date': 'YYYY-MM-DD', 'stock_code': '005930', ...}, ...]
-        :param target_date: 데이터를 저장할 날짜 (YYYY-MM-DD), 이 날짜의 기존 데이터는 삭제됩니다.
-        :return: 성공 시 True, 실패 시 False
+        [수정됨] 최종 선정된 유니버스 데이터를 daily_universe 테이블에 저장합니다.
+        (date, stock_code) 복합 키를 기준으로 중복 시 업데이트(UPSERT)합니다.
         """
+        if not universe_data:
+            logger.warning("저장할 daily_universe 데이터가 없습니다.")
+            return True
+
+        # 데이터의 첫 번째 항목에서 날짜를 가져옵니다.
+        target_date = universe_data[0].get('date')
+        if not target_date:
+            logger.error("저장할 데이터에 'date' 키가 없습니다.")
+            return False
+
         conn = self.get_db_connection()
         if not conn: return False
 
         try:
-            # 1. 해당 날짜의 기존 데이터 삭제
-            delete_sql = "DELETE FROM daily_universe WHERE date = %s"
-            cursor = self.execute_sql(delete_sql, (target_date,)) # execute_sql 호출 후 cursor 반환받음
-            logger.info(f"날짜 {target_date}의 기존 daily_universe 데이터 {cursor.rowcount if cursor else 0}개 삭제 완료.")
+            with conn.cursor() as cursor:
+                # 1. 해당 날짜의 기존 데이터 삭제 (재실행 시 데이터 정합성을 위해)
+                delete_sql = "DELETE FROM daily_universe WHERE date = %s"
+                cursor.execute(delete_sql, (target_date,))
+                logger.info(f"날짜 {target_date}의 기존 daily_universe 데이터 {cursor.rowcount}개 삭제 완료.")
 
-            if not daily_universe_data_list:
-                logger.info(f"날짜 {target_date}에 저장할 daily_universe 데이터가 없습니다.")
+                # 2. 새로운 데이터 일괄 삽입
+                # daily_universe 테이블 스키마에 맞춘 INSERT 문
+                insert_sql = """
+                INSERT INTO daily_universe (
+                    date, stock_code, stock_name, theme, stock_score,
+                    price_trend_score, trading_volume_score, volatility_score,
+                    theme_mention_score, theme_id
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """
+                
+                # 딕셔너리 리스트를 SQL에 맞는 튜플 리스트로 변환
+                insert_data = [
+                    (
+                        d.get('date'),
+                        d.get('stock_code'),
+                        d.get('stock_name'),
+                        d.get('theme'),
+                        d.get('stock_score'),
+                        d.get('price_trend_score'),
+                        d.get('trading_volume_score'),
+                        d.get('volatility_score'),
+                        d.get('theme_mention_score'),
+                        d.get('theme_id')
+                    ) for d in universe_data
+                ]
+                
+                cursor.executemany(insert_sql, insert_data)
+                conn.commit()
+                logger.info(f"총 {len(insert_data)}개의 최종 유니버스 데이터를 daily_universe 테이블에 저장했습니다.")
                 return True
-
-            # 2. 새로운 데이터 삽입
-            insert_sql = """
-            INSERT INTO daily_universe
-            (date, stock_code, stock_name, stock_score, 
-             price_trend_score, trading_volume_score, volatility_score, theme_mention_score,
-             theme_id, theme)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """
-            data = []
-            for item in daily_universe_data_list:
-                data.append((
-                    item['date'],
-                    item['stock_code'],
-                    item['stock_name'],
-                    item['stock_score'],
-                    item.get('price_trend_score'),
-                    item.get('trading_volume_score'),
-                    item.get('volatility_score'),
-                    item.get('theme_mention_score'),
-                    item.get('theme_id'),
-                    item.get('theme')
-                ))
-            
-            cursor = self.execute_sql(insert_sql, data) # executemany를 위해 리스트 전달
-            if cursor:
-                logger.info(f"{len(daily_universe_data_list)}개의 daily_universe 데이터를 저장했습니다.")
-                return True
-            else:
-                return False
+                
         except Exception as e:
-            logger.error(f"daily_universe 데이터 저장 오류: {e}", exc_info=True)
             if conn:
-                conn.rollback() # 오류 발생 시 롤백
-            return False
+                conn.rollback()
+                logger.error(f"daily_universe 저장 중 오류 발생: {e}", exc_info=True)
+            return False    
 
     def fetch_daily_universe(self, target_date: date = None, stock_code: str = None) -> pd.DataFrame:
         """
@@ -1271,7 +1329,305 @@ class DBManager:
             logger.error(f"daily_universe에서 종목 코드를 가져오는 중 오류 발생 (기간: {start_date} ~ {end_date}): {e}", exc_info=True)
         return stocks
     
+    def get_latest_theme_reason(self, stock_code: str) -> Optional[str]:
+        """
+        [신규] daily_theme 테이블에서 특정 종목의 가장 최근 reason을 조회합니다.
+        """
+        conn = self.get_db_connection()
+        if not conn: return None
 
+        sql = """
+            SELECT reason 
+            FROM daily_theme 
+            WHERE stock_code = %s 
+            ORDER BY date DESC 
+            LIMIT 1
+        """
+        try:
+            cursor = self.execute_sql(sql, (stock_code,))
+            if cursor:
+                result = cursor.fetchone()
+                if result:
+                    return result['reason']
+            return None
+        except Exception as e:
+            logger.error(f"종목({stock_code})의 최근 reason 조회 중 오류 발생: {e}", exc_info=True)
+            return None
+        
+    def save_daily_theme(self, theme_data_list: list) -> bool:
+        """
+        [신규] daily_theme 테이블에 데이터를 저장하거나 업데이트합니다.
+        """
+        conn = self.get_db_connection()
+        if not conn: return False
+
+        sql = """
+        INSERT INTO daily_theme (
+            date, market, stock_code, stock_name, rate, amount, reason
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            stock_name=VALUES(stock_name),
+            rate=VALUES(rate),
+            amount=VALUES(amount),
+            reason=VALUES(reason)
+        """
+        try:
+            data = []
+            for item in theme_data_list:
+                # 필수 키가 없는 경우 건너뛰기
+                if not all(k in item for k in ['date', 'market', 'stock_code', 'stock_name']):
+                    logger.warning(f"필수 키가 누락되어 레코드를 건너뜁니다: {item}")
+                    continue
+                
+                data.append((
+                    item.get('date'),
+                    item.get('market'),
+                    item.get('stock_code'),
+                    item.get('stock_name'),
+                    item.get('rate'),
+                    item.get('amount'),
+                    item.get('reason')
+                ))
+
+            if not data:
+                logger.warning("저장할 유효한 daily_theme 데이터가 없습니다.")
+                return True
+
+            cursor = self.execute_sql(sql, data)
+            if cursor:
+                logger.debug(f"{len(data)}개의 daily_theme 데이터를 저장/업데이트했습니다.")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"save_daily_theme 처리 중 예외 발생: {e}", exc_info=True)
+            return False
+        
+                
+    def fetch_recent_theme_stocks(self, days: int) -> List[str]:
+        """
+        [신규] 최근 N일간 daily_theme에 등록된 고유한 종목 코드 리스트를 반환합니다.
+        """
+        conn = self.get_db_connection()
+        if not conn: return []
+
+        start_date = date.today() - timedelta(days=days)
+        sql = """
+            SELECT DISTINCT stock_code 
+            FROM daily_theme 
+            WHERE date >= %s
+        """
+        try:
+            cursor = self.execute_sql(sql, (start_date,))
+            if cursor:
+                return [row['stock_code'] for row in cursor.fetchall()]
+            return []
+        except Exception as e:
+            logger.error(f"최근 테마 종목 조회 중 오류 발생: {e}", exc_info=True)
+            return []
+        
+
+    def update_theme_momentum_scores(self, theme_momentum_updates: List[Tuple[float, str]]) -> bool:
+        """
+        계산된 테마 모멘텀 점수를 theme_class 테이블에 일괄 업데이트합니다.
+        :param theme_momentum_updates: [(momentum_score, theme_name), ...] 형태의 튜플 리스트
+        """
+        if not theme_momentum_updates:
+            logger.info("업데이트할 테마 모멘텀 점수가 없습니다.")
+            return True
+        
+        sql = "UPDATE theme_class SET momentum_score = %s WHERE theme = %s"
+        try:
+            cursor = self.execute_sql(sql, theme_momentum_updates)
+            if cursor:
+                logger.info(f"{len(theme_momentum_updates)}개 테마의 모멘텀 점수를 업데이트했습니다.")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"테마 모멘텀 점수 업데이트 중 오류 발생: {e}", exc_info=True)
+            return False
+
+    def fetch_top_momentum_themes(self, limit: int) -> List[Dict[str, Any]]:
+        """
+        momentum_score가 높은 순서대로 상위 테마 정보를 조회합니다.
+        """
+        sql = """
+            SELECT theme_id, theme AS theme_class, momentum_score 
+            FROM theme_class
+            ORDER BY momentum_score DESC
+            LIMIT %s
+        """
+        try:
+            cursor = self.execute_sql(sql, (limit,))
+            return cursor.fetchall() if cursor else []
+        except Exception as e:
+            logger.error(f"상위 모멘텀 테마 조회 중 오류 발생: {e}", exc_info=True)
+            return []
+
+    def fetch_top_stocks_for_theme(self, theme_id: int, limit: int) -> List[Dict[str, Any]]:
+        """
+        특정 테마 ID에 속한 종목들을 stock_score가 높은 순서대로 조회합니다.
+        """
+        sql = """
+            SELECT ts.stock_code, si.stock_name, ts.stock_score
+            FROM theme_stock ts
+            JOIN stock_info si ON ts.stock_code = si.stock_code
+            WHERE ts.theme_id = %s
+            ORDER BY ts.stock_score DESC
+            LIMIT %s
+        """
+        try:
+            cursor = self.execute_sql(sql, (theme_id, limit))
+            return cursor.fetchall() if cursor else []
+        except Exception as e:
+            logger.error(f"테마별 상위 종목 조회 중 오류 발생: {e}", exc_info=True)
+            return []
+
+
+
+
+    def fetch_latest_reasons_for_stocks(self, stock_codes: List[str]) -> Dict[str, Dict[str, Any]]:
+        """
+        주어진 종목 코드 리스트에 대해, 각 종목의 가장 최근 등락률(rate)과 이유(reason)를
+        daily_theme 테이블에서 조회하여 딕셔너리로 반환합니다.
+
+        :param stock_codes: 조회할 종목 코드 리스트
+        :return: {'종목코드': {'rate': 등락률, 'reason': 이유}, ...} 형태의 딕셔너리
+        """
+        if not stock_codes:
+            return {}
+
+        conn = self.get_db_connection()
+        if not conn: return {}
+
+        # ROW_NUMBER() 윈도우 함수를 사용하여 각 종목별로 가장 최신 데이터를 효율적으로 찾습니다.
+        # 1. stock_code 별로 파티션을 나누고, date를 기준으로 내림차순 정렬하여 순번(rn)을 매깁니다.
+        # 2. 순번이 1인 데이터만 선택하면 각 종목의 가장 최신 데이터가 됩니다.
+        sql = f"""
+            WITH LatestReasons AS (
+                SELECT
+                    stock_code,
+                    rate,
+                    reason,
+                    ROW_NUMBER() OVER (PARTITION BY stock_code ORDER BY date DESC) as rn
+                FROM
+                    daily_theme
+                WHERE
+                    stock_code IN ({','.join(['%s'] * len(stock_codes))})
+            )
+            SELECT
+                stock_code,
+                rate,
+                reason
+            FROM
+                LatestReasons
+            WHERE
+                rn = 1;
+        """
+        
+        try:
+            cursor = self.execute_sql(sql, tuple(stock_codes))
+            if not cursor:
+                return {}
+            
+            results = cursor.fetchall()
+            # 결과를 {'A005930': {'rate': 5.5, 'reason': '실적 발표'}, ...} 형태로 가공
+            return {
+                row['stock_code']: {'rate': float(row['rate']), 'reason': row['reason']}
+                for row in results
+            }
+        except Exception as e:
+            logger.error(f"여러 종목의 최근 reason 조회 중 오류 발생: {e}", exc_info=True)
+            return {}       
+
+
+    def fetch_latest_date_from_factors(self) -> Optional[date]:
+        # 쿼리 결과의 컬럼명을 'latest_date'로 명시적으로 지정
+        query = "SELECT MAX(date) as latest_date FROM daily_factors"
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute(query)
+                result = cursor.fetchone() # 결과는 {'latest_date': 값} 형태의 딕셔너리
+                # 숫자 인덱스 [0] 대신, 키 'latest_date'로 값에 접근
+                return result['latest_date'] if result and result.get('latest_date') is not None else None
+        except Exception as e:
+            logger.error(f"daily_factors 마지막 날짜 조회 중 DB 오류: {type(e).__name__} - {repr(e)}")
+            return None
+            
+
+    def fetch_factor_stocks_by_date(self, target_date: date) -> list:
+        # SQL의 DATE() 함수를 사용해 date 컬럼의 날짜 부분만 비교하도록 수정
+        query = "SELECT DISTINCT stock_code FROM daily_factors WHERE date = %s"
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute(query, (target_date,))
+                results = cursor.fetchall()
+                return [row['stock_code'] for row in results]
+        except Exception as e:
+            logger.error(f"{target_date}의 팩터 대상 종목 조회 중 DB 오류: {type(e).__name__} - {repr(e)}")
+            return []
+            
+    def fetch_stock_info(self, stock_codes: list = None, target_date: date = None) -> pd.DataFrame:
+        """
+        [수정됨] stock_info 테이블에서 종목 정보를 조회합니다.
+        target_date가 주어지면 regdate의 날짜 부분을 필터링합니다.
+        """
+        query = "SELECT * FROM stock_info"
+        conditions = []
+        params = []
+
+        if stock_codes:
+            conditions.append(f"stock_code IN ({', '.join(['%s'] * len(stock_codes))})")
+            params.extend(stock_codes)
+        
+        # regdate의 날짜 부분과 target_date를 비교하는 조건 추가
+        if target_date:
+            conditions.append("DATE(reg_date) = %s")
+            params.append(target_date)
+
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+
+        try:
+            df = pd.read_sql(query, self.conn, params=params)
+            return df
+        except Exception as e:
+            logger.error(f"stock_info 조회 중 DB 오류 발생: {e}", exc_info=True)
+            return pd.DataFrame()
+
+
+    def update_daily_factors_from_snapshot(self, data: List[Dict[str, Any]]) -> bool:
+        """
+        stock_info의 스냅샷 데이터를 받아 daily_factors 테이블을 bulk update합니다.
+        MySQL의 INSERT ... ON DUPLICATE KEY UPDATE 구문을 사용합니다.
+        """
+        if not data:
+            return True
+
+        # 데이터에서 컬럼 목록을 동적으로 생성
+        sample = data[0]
+        columns = sorted(sample.keys())
+        
+        # ON DUPLICATE KEY UPDATE 구문 생성
+        update_clause = ", ".join([f"{col} = VALUES({col})" for col in columns if col not in ['date', 'stock_code']])
+
+        query = f"""
+            INSERT INTO daily_factors ({', '.join(columns)})
+            VALUES ({', '.join(['%s'] * len(columns))})
+            ON DUPLICATE KEY UPDATE {update_clause}
+        """
+        
+        # executemany에 전달할 튜플 리스트 생성
+        values = [tuple(item[col] for col in columns) for item in data]
+
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.executemany(query, values)
+            self.conn.commit()
+            return True
+        except Exception as e:
+            self.conn.rollback()
+            logger.error(f"daily_factors 스냅샷 업데이트 중 DB 오류 발생: {e}", exc_info=True)
+            return False
     # ----------------------------------------------------------------------------
     # 자동매매 관리 테이블
     # ----------------------------------------------------------------------------
@@ -2344,8 +2700,8 @@ class DBManager:
 
         sql = """
             INSERT INTO strategy_profiles (strategy_name, model_id, regime_id, sharpe_ratio, mdd,
-                                           total_return, win_rate, num_trades, profiling_start_date, profiling_end_date)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                        total_return, win_rate, num_trades, profiling_start_date, profiling_end_date, params_json)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
                 sharpe_ratio = VALUES(sharpe_ratio),
                 mdd = VALUES(mdd),
@@ -2353,14 +2709,15 @@ class DBManager:
                 win_rate = VALUES(win_rate),
                 num_trades = VALUES(num_trades),
                 profiling_start_date = VALUES(profiling_start_date),
-                profiling_end_date = VALUES(profiling_end_date)
+                profiling_end_date = VALUES(profiling_end_date),
+                params_json = VALUES(params_json)
         """
         
         # 딕셔너리 리스트를 튜플 리스트로 변환
         data_tuples = [
             (p['strategy_name'], p['model_id'], p['regime_id'], p.get('sharpe_ratio'), p.get('mdd'),
-             p.get('total_return'), p.get('win_rate'), p.get('num_trades'),
-             p['profiling_start_date'], p['profiling_end_date'])
+            p.get('total_return'), p.get('win_rate'), p.get('num_trades'),
+            p['profiling_start_date'], p['profiling_end_date'], p.get('params_json'))
             for p in profiles_data_list
         ]
         
@@ -2474,3 +2831,44 @@ class DBManager:
         except Exception as e:
             logger.error(f"전략 프로파일 로드 실패(모델 ID: {model_id}, 국면: {regime_id}): {e}", exc_info=True)
             return pd.DataFrame()
+
+
+    def fetch_latest_wf_model(self) -> Optional[Dict[str, Any]]:
+        """
+        [신규] 이름이 'wf_model_'로 시작하는 HMM 모델 중,
+        가장 최근에 생성된(updated_at 기준) 모델 정보를 반환합니다.
+        """
+        conn = self.get_db_connection()
+        if not conn:
+            return None
+
+        sql = """
+            SELECT model_id, model_name, n_states, observation_vars, model_params_json,
+                   training_start_date, training_end_date
+            FROM hmm_models 
+            WHERE model_name LIKE 'wf_model_%'
+            ORDER BY created_at DESC
+            LIMIT 1
+        """
+        try:
+            cursor = self.execute_sql(sql)
+            if cursor:
+                row = cursor.fetchone()
+                if row:
+                    model_info = {
+                        "model_id": row['model_id'],
+                        "model_name": row['model_name'],
+                        "n_states": row['n_states'],
+                        "observation_vars": json.loads(row['observation_vars']),
+                        "model_params": json.loads(row['model_params_json']),
+                        "training_start_date": row['training_start_date'],
+                        "training_end_date": row['training_end_date']
+                    }
+                    logger.info(f"가장 최신 워크포워드 HMM 모델 '{model_info['model_name']}' (ID: {model_info['model_id']})을(를) DB에서 불러왔습니다.")
+                    return model_info
+            
+            logger.warning("DB에서 워크포워드 모델('wf_model_%')을 찾을 수 없습니다.")
+            return None
+        except Exception as e:
+            logger.error(f"최신 워크포워드 HMM 모델 로드 실패: {e}", exc_info=True)
+            return None            

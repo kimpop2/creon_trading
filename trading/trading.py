@@ -15,7 +15,7 @@ if project_root not in sys.path:
 
 #from trading.abstract_broker import AbstractBroker
 from trading.brokerage import Brokerage
-from trading.abstract_report import ReportGenerator, TradingDB
+from trading.report_generator import ReportGenerator, TradingDB
 
 from api.creon_api import CreonAPIClient
 from manager.db_manager import DBManager
@@ -24,24 +24,11 @@ from strategies.strategy import DailyStrategy, MinuteStrategy
 from util.notifier import Notifier
 from config.settings import MIN_STOCK_CAPITAL
 from manager.capital_manager import CapitalManager
-# --- 사용할 모든 전략 클래스를 임포트해야 함 ---
-from strategies.sma_daily import SMADaily
-from strategies.dual_momentum_daily import DualMomentumDaily
-from strategies.vol_breakout_daily import VolBreakoutDaily
-from strategies.triple_screen_daily import TripleScreenDaily
-from strategies.vol_quality_daily import VolQualityDaily
-from strategies.target_price_minute import TargetPriceMinute
-
 from config.settings import (
-    MIN_STOCK_CAPITAL, PRINCIPAL_RATIO, PORTFOLIO_FOR_HMM_OPTIMIZATION, COMMON_PARAMS,
+    MIN_STOCK_CAPITAL, PRINCIPAL_RATIO, STRATEGY_CONFIGS, COMMON_PARAMS,
     MARKET_OPEN_TIME, MARKET_CLOSE_TIME
 )
-# 모든 전략 클래스를 이름으로 쉽게 찾을 수 있도록 딕셔너리로 매핑
-ALL_STRATEGY_CLASSES = {
-    "SMADaily": SMADaily,
-    "DualMomentumDaily": DualMomentumDaily,
-    # ... (기타 모든 전략 클래스) ...
-}
+
 logger = logging.getLogger(__name__)
 
 class Trading:
@@ -51,7 +38,7 @@ class Trading:
 
         self.manager = manager
         self.broker = Brokerage(self.api_client, self.manager, self.notifier, initial_cash=initial_cash)
-        self.capital_manager = CapitalManager(self.broker, PORTFOLIO_FOR_HMM_OPTIMIZATION)
+        self.capital_manager = CapitalManager(self.broker, STRATEGY_CONFIGS)
 
         self.daily_strategies: List[DailyStrategy] = []
         self.minute_strategy: Optional[MinuteStrategy] = None
@@ -503,59 +490,25 @@ if __name__ == "__main__":
             initial_cash=INITIAL_CASH
         )
         
-        daily_strategies_to_run = []
-        principal_ratio_to_use = PRINCIPAL_RATIO # 기본값
-        
-        # --- [핵심 수정] HMM 작전 계획 로드 ---
-        directive_path = os.path.join(project_root, 'config', 'daily_directive.json')
-        if os.path.exists(directive_path):
-            logger.info("HMM 작전 계획 파일('daily_directive.json')을 발견했습니다. HMM 모드로 실행합니다.")
-            with open(directive_path, 'r', encoding='utf-8') as f:
-                directive = json.load(f)
-            
-            principal_ratio_to_use = directive['total_principal_ratio']
-            
-            # CapitalManager에 동적으로 계산된 전략 설정을 주입
-            dynamic_strategy_configs = []
-            for item in directive['portfolio']:
-                strategy_class = ALL_STRATEGY_CLASSES.get(item['name'])
-                if strategy_class:
-                    # 동적으로 전략 객체 생성 및 리스트에 추가
-                    strategy_instance = strategy_class(
-                        broker=trading_system.broker,
-                        data_store=trading_system.data_store,
-                        strategy_params=item['params']
-                    )
-                    daily_strategies_to_run.append(strategy_instance)
-                    dynamic_strategy_configs.append(item) # weight 정보 포함
-            
-            # CapitalManager를 HMM이 결정한 동적 가중치로 재설정
-            trading_system.capital_manager = CapitalManager(trading_system.broker, dynamic_strategy_configs)
+        from strategies.sma_daily import SMADaily
+        sma_strategy = SMADaily(broker=trading_system.broker, data_store=trading_system.data_store, strategy_params=SMA_DAILY_PARAMS)
 
-        else:
-            logger.info("HMM 작전 계획 파일이 없습니다. 설정 파일(settings.py) 기반의 정적 모드로 실행합니다.")
-            # 기존 방식: settings.py에서 모든 전략 로드
-            for config in PORTFOLIO_FOR_HMM_OPTIMIZATION:
-                strategy_class = ALL_STRATEGY_CLASSES.get(config['name'])
-                if strategy_class:
-                     daily_strategies_to_run.append(strategy_class(
-                        broker=trading_system.broker,
-                        data_store=trading_system.data_store,
-                        strategy_params=config['params']
-                    ))
-        
-        # --- 공통 실행 로직 ---
-        minute_strategy = TargetPriceMinute(trading_system.broker, trading_system.data_store, {})
-        
+        from strategies.dual_momentum_daily import DualMomentumDaily
+        dm_strategy = DualMomentumDaily(broker=trading_system.broker, data_store=trading_system.data_store, strategy_params=DUAL_MOMENTUM_DAILY_PARAMS)
+        # 거래량 돌파 전략
+        from strategies.vol_breakout_daily import VolBreakoutDaily
+        vb_strategy = VolBreakoutDaily(broker=trading_system.broker, data_store=trading_system.data_store, strategy_params=VOL_BREAKOUT_DAILY_PARAMS)
+       
+        from strategies.target_price_minute import TargetPriceMinute
+        minute_strategy = TargetPriceMinute(broker=trading_system.broker, data_store=trading_system.data_store, strategy_params=COMMON_PARAMS)        
+
         trading_system.set_strategies(
-            daily_strategies=daily_strategies_to_run,
+            daily_strategies=[sma_strategy, dm_strategy, vb_strategy],
             minute_strategy=minute_strategy
         )
+      
         trading_system.set_broker_stop_loss_params(STOP_LOSS_PARAMS)
 
-        # CapitalManager가 사용할 총 투자원금 비율을 최종 설정
-        # (Trading 클래스 내부에서 capital_manager.get_total_principal 호출 시 이 값을 사용하도록 수정 필요)
-        trading_system.principal_ratio = principal_ratio_to_use 
         if trading_system.prepare_for_system():
             pythoncom.CoInitialize()
             try:

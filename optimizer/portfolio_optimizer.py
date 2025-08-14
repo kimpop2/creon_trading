@@ -9,7 +9,10 @@ from typing import Dict, List, Any
 import sys
 import os
 import json
-
+from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.gaussian_process.kernels import Matern
+from scipy.stats import norm
+from scipy.optimize import minimize
 # --- 프로젝트 루트 경로 추가 ---
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
@@ -17,35 +20,23 @@ if project_root not in sys.path:
 
 # --- 필요한 모듈 임포트 ---
 from api.creon_api import CreonAPIClient
-from manager.backtest_manager import BacktestManager
 from manager.db_manager import DBManager
+from manager.backtest_manager import BacktestManager
 from trading.hmm_backtest import HMMBacktest
-from strategies.pass_minute import PassMinute
 # [변경] 모든 전략 클래스를 임포트해야 동적으로 생성 가능
 from strategies.sma_daily import SMADaily
 from strategies.dual_momentum_daily import DualMomentumDaily
-# from strategies.triple_screen_daily import TripleScreenDaily # 필요시 추가
+from strategies.breakout_daily import BreakoutDaily
+from strategies.closing_bet_daily import ClosingBetDaily
+from strategies.pass_minute import PassMinute
 
 from config.settings import (
-    INITIAL_CASH, 
-    COMMON_OPTIMIZATION_PARAMS, HMM_OPTIMIZATION_PARAMS,
-    # [변경] 2단계 최적화용 포트폴리오 설정을 임포트
-    PORTFOLIO_FOR_HMM_OPTIMIZATION, LIVE_HMM_MODEL_NAME 
+    HMM_OPTIMIZATION_PARAMS, 
+    ACTIVE_STRATEGIES_FOR_HMM,
+    STRATEGY_CONFIGS  # [추가] STRATEGY_CONFIGS 임포트
 )
-from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels import Matern
-from scipy.stats import norm
-from scipy.optimize import minimize
-
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
-# [신규] 전략 이름(str)을 실제 클래스와 매핑하는 딕셔너리
-STRATEGY_CLASSES = {
-    'SMADaily': SMADaily,
-    'DualMomentumDaily': DualMomentumDaily,
-    # 'TripleScreenDaily': TripleScreenDaily, # 필요시 추가
-}
 
 class PortfolioOptimizer:
     def __init__(self, backtest_manager: BacktestManager, initial_cash: float):
@@ -61,10 +52,10 @@ class PortfolioOptimizer:
         # 포트폴리오 옵티마이저는 항상 PassMinute를 사용
         minute_strategy = PassMinute(
             broker=self.backtest.broker,
-            data_store=self.backtest.data_store,
-            strategy_params={}
+            data_store=self.backtest.data_store
         )
         self.backtest.set_strategies(daily_strategies=[], minute_strategy=minute_strategy)
+
 
     def _prepare_data_once(self, start_date, end_date):
         if self.is_data_prepared: return
@@ -74,6 +65,7 @@ class PortfolioOptimizer:
         self.backtest.prepare_for_system()
         self.is_data_prepared = True
         logger.info("데이터 사전 로딩 완료.")
+
 
     def _generate_grid_combinations(self, num_intervals=4) -> List[Dict[str, Any]]:
         """
@@ -98,38 +90,70 @@ class PortfolioOptimizer:
         logger.info(f"총 {len(final_combinations)}개의 HMM 정책 파라미터 조합 생성 완료.")
         return final_combinations
 
+
     def _run_single_backtest(self, params: Dict[str, Any], start_date: date, end_date: date, model_name: str) -> Dict[str, Any]:
         try:
             hmm_params_for_run = params.get('hmm_params', {})
             
             daily_strategies_list = []
-            for config in PORTFOLIO_FOR_HMM_OPTIMIZATION:
-                strategy_class = STRATEGY_CLASSES.get(config['name'])
-                if not strategy_class: raise ValueError(f"'{config['name']}' 전략 클래스를 찾을 수 없습니다.")
-                instance = strategy_class(broker=self.backtest.broker, data_store=self.backtest.data_store, strategy_params=config['params'])
-                daily_strategies_list.append(instance)
+            # [수정] settings.py의 ACTIVE_STRATEGIES_FOR_HMM 리스트를 사용
+            for strategy_name in ACTIVE_STRATEGIES_FOR_HMM:
+                # [수정] globals()를 사용해 문자열 이름으로 클래스 객체를 동적으로 찾음
+                strategy_class = globals().get(strategy_name)
+                
+                if strategy_class:
+                    instance = strategy_class(
+                        broker=self.backtest.broker, 
+                        data_store=self.backtest.data_store
+                    )
+                    # settings.py에서 해당 전략의 default_params를 가져와 할당합니다.
+                    # 이렇게 하면 전략이 자신의 기본 파라미터로 동작하게 됩니다.
+                    default_params = STRATEGY_CONFIGS.get(strategy_name, {}).get('default_params', {})
+                    if not default_params:
+                        logger.warning(f"'{strategy_name}'의 default_params를 settings.py에서 찾을 수 없습니다.")
+                    instance.strategy_params = default_params
 
-            minute_strategy = PassMinute(broker=self.backtest.broker, data_store=self.backtest.data_store, strategy_params={})
+                    daily_strategies_list.append(instance)
+                else:
+                    logger.warning(f"전략 클래스 '{strategy_name}'를 찾을 수 없습니다. 임포트되었는지 확인하세요.")
 
-            # [핵심] 수정된 reset_and_rerun 호출 (이제 항상 model_name을 전달)
             _, metrics = self.backtest.reset_and_rerun(
                 daily_strategies=daily_strategies_list,
-                minute_strategy=minute_strategy,
+                minute_strategy=self.backtest.minute_strategy,
                 mode='hmm',
                 hmm_params=hmm_params_for_run,
-                model_name=model_name # <--- 이 model_name을 기반으로 HMM모델/프로파일이 로드됨
+                model_name=model_name
             )
             
-            if not metrics: raise ValueError("백테스트 실행 후 유효한 성과 지표(metrics)가 반환되지 않았습니다.")
+            if not metrics: raise ValueError("백테스트 결과가 유효하지 않습니다.")
             return {'params': params, 'metrics': metrics, 'success': True}
-            
         except Exception as e:
-            logger.error(f"백테스트 실패 (파라미터: {params}): {e}", exc_info=True)
+            logger.error(f"백테스트 실패 (파라미터: {params}): {e}", exc_info=False)
             return {'params': params, 'metrics': {}, 'success': False}
+
+
+    def run_hybrid_optimization(self, start_date: date, end_date: date, model_name: str):
+        logger.info(f"포트폴리오 HMM 정책 최적화를 시작합니다. (모델: {model_name})")
+        self._prepare_data_once(start_date, end_date)
         
-    # _run_broad_grid_search, _run_refined_bayesian_search, _propose_next_point, _vector_to_params
-    # 메서드들은 수정할 필요 없이 그대로 재사용 가능합니다.
-    # 단, param_config를 HMM_OPTIMIZATION_PARAMS로 고정해야 합니다.
+        grid_best_result = self._run_broad_grid_search(start_date, end_date, model_name)
+        if grid_best_result is None: return None
+
+        bayesian_best_result = self._run_refined_bayesian_search(grid_best_result['params'], start_date, end_date, model_name)
+        
+        logger.info("\n" + "="*50 + "\n--- 최종 최적화 결과 비교 ---\n" + "="*50)
+        grid_score = grid_best_result['metrics']['sharpe_ratio']
+        bayesian_score = bayesian_best_result['metrics']['sharpe_ratio']
+        
+        logger.info(f"그리드 서치 최고 샤프 지수: {grid_score:.3f}")
+        logger.info(f"베이지안 정밀 탐색 최고 샤프 지수: {bayesian_score:.3f}")
+        
+        final_best = bayesian_best_result if bayesian_best_result['metrics']['sharpe_ratio'] > grid_best_result['metrics']['sharpe_ratio'] else grid_best_result
+        logger.info(f"최종 선택: {'베이지안' if bayesian_score > grid_score else '그리드 서치'} 결과")
+        logger.info(f"최종 최적 파라미터: {final_best['params']}")
+        logger.info(f"최종 최고 성과: {final_best['metrics']}")
+        return final_best
+
 
     def _run_broad_grid_search(self, start_date, end_date, model_name):
         logger.info("\n" + "="*50 + "\n--- 1단계: 그리드 서치를 이용한 넓은 탐색 시작 ---\n" + "="*50)
@@ -149,6 +173,7 @@ class PortfolioOptimizer:
         best_result = max(successful_results, key=lambda x: x['metrics'].get('sharpe_ratio', -999))
         logger.info(f"1단계 최고 성과: 샤프지수 {best_result['metrics']['sharpe_ratio']:.2f}, 파라미터: {best_result['params']}")
         return best_result
+
 
     def _run_refined_bayesian_search(self, best_params_from_grid, start_date, end_date, model_name, n_initial=10, n_iter=20):
         logger.info("\n" + "="*50 + "\n--- 2단계: 베이지안을 이용한 정밀 탐색 시작 ---\n" + "="*50)
@@ -224,7 +249,7 @@ class PortfolioOptimizer:
         logger.info(f"2단계 최고 성과: 샤프지수 {best_metrics['sharpe_ratio']:.2f}, 파라미터: {final_params_structure}")
         return {'params': final_params_structure, 'metrics': best_metrics}
     
-    # _propose_next_point, _vector_to_params는 수정 없이 재사용
+
     def _propose_next_point(self, gp, bounds):
         def ei(x, gp, y_max):
             mean, std = gp.predict(x.reshape(1, -1), return_std=True)
@@ -246,105 +271,3 @@ class PortfolioOptimizer:
             params[p_info['name']] = p_info['type'](round(val) if p_info['type'] == int else val)
         return params
 
-    # [수정] run_hybrid_optimization 및 하위 search 메서드들에 model_name 인자 전달
-    def run_hybrid_optimization(self, start_date: date, end_date: date, model_name: str):
-        logger.info(f"포트폴리오 HMM 정책 최적화를 시작합니다. (모델: {model_name})")
-        self._prepare_data_once(start_date, end_date)
-        
-        grid_best_result = self._run_broad_grid_search(start_date, end_date, model_name)
-        if grid_best_result is None: return None
-
-        bayesian_best_result = self._run_refined_bayesian_search(grid_best_result['params'], start_date, end_date, model_name)
-        
-        logger.info("\n" + "="*50 + "\n--- 최종 최적화 결과 비교 ---\n" + "="*50)
-        grid_score = grid_best_result['metrics']['sharpe_ratio']
-        bayesian_score = bayesian_best_result['metrics']['sharpe_ratio']
-        
-        logger.info(f"그리드 서치 최고 샤프 지수: {grid_score:.3f}")
-        logger.info(f"베이지안 정밀 탐색 최고 샤프 지수: {bayesian_score:.3f}")
-        
-        final_best = bayesian_best_result if bayesian_best_result['metrics']['sharpe_ratio'] > grid_best_result['metrics']['sharpe_ratio'] else grid_best_result
-        logger.info(f"최종 선택: {'베이지안' if bayesian_score > grid_score else '그리드 서치'} 결과")
-        logger.info(f"최종 최적 파라미터: {final_best['params']}")
-        logger.info(f"최종 최고 성과: {final_best['metrics']}")
-        return final_best
-
-def run_portfolio_optimization(model_name: str, start_date: date, end_date: date, backtest_manager: BacktestManager) -> dict:
-    """
-    롤링 윈도우의 단일 기간에 대한 포트폴리오 최적화를 실행하고, 최적의 정책(policy) 딕셔너리를 반환합니다.
-    """
-    logger.info(f"====== 포트폴리오 최적화 시작: {model_name} ({start_date} ~ {end_date}) ======")
-
-    optimizer = PortfolioOptimizer(
-        backtest_manager=backtest_manager,
-        initial_cash=INITIAL_CASH
-    )
-    
-    final_results = optimizer.run_hybrid_optimization(
-        start_date=start_date,
-        end_date=end_date,
-        model_name=model_name
-    )
-
-    if final_results:
-        best_hmm_params = final_results.get('params', {}).get('hmm_params', {})
-        policy_rules = {
-            "regime_to_principal_ratio": {
-                "0": 1.0,
-                "1": best_hmm_params.get('policy_bear_ratio', 0.5),
-                "2": best_hmm_params.get('policy_crisis_ratio', 0.2),
-                "3": 1.0
-            },
-            "default_principal_ratio": 1.0
-        }
-        logger.info(f"✅ 최적 정책 발견: {json.dumps(policy_rules, indent=2)}")
-        return policy_rules
-    else:
-        logger.error("최적 정책을 찾지 못했습니다.")
-        return {}
-    
-if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO,
-                        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-                        handlers=[
-                            logging.FileHandler("logs/portfolio_optimizer_run.log", encoding='utf-8'),
-                            logging.StreamHandler(sys.stdout)
-                        ])
-    
-    api_client = CreonAPIClient() 
-    db_manager = DBManager()
-    backtest_manager = BacktestManager(api_client, db_manager)
-
-    start_date = datetime(2025, 7, 1).date()
-    end_date = datetime(2025, 7, 10).date()
-    backtest_manager.prepare_pykrx_data_for_period(start_date, end_date)
-
-    optimizer = PortfolioOptimizer(
-        backtest_manager=backtest_manager,
-        initial_cash=INITIAL_CASH
-    )
-
-    final_results = optimizer.run_hybrid_optimization(
-        start_date=start_date,
-        end_date=end_date,
-        model_name=LIVE_HMM_MODEL_NAME 
-    )
-
-    if final_results:
-        logger.info("\n" + "="*50 + "\n--- 최종 포트폴리오 최적화 결과 ---\n" + "="*50)
-        logger.info(f"최고 성과 HMM 정책 파라미터: {final_results.get('params')}")
-        logger.info(f"최고 성과 지표: {final_results.get('metrics')}")
-        
-        # 최종 결과를 policy.json 형식으로 저장
-        policy_rules = {
-            "regime_to_principal_ratio": {
-                "0": 1.0, # 급등장/상승장은 항상 100%
-                "1": final_results['params']['hmm_params'].get('policy_bear_ratio', 0.5),
-                "2": final_results['params']['hmm_params'].get('policy_crisis_ratio', 0.2)
-            },
-            "default_principal_ratio": 1.0
-        }
-        result_filename = "optimal_policy.json"
-        with open(result_filename, 'w', encoding='utf-8') as f:
-            json.dump(policy_rules, f, ensure_ascii=False, indent=4)
-        logger.info(f"✅ 최적 HMM 정책을 '{result_filename}' 파일에 저장했습니다. config/policy.json으로 활용하세요.")

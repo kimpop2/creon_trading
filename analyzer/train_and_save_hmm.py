@@ -10,6 +10,7 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
+from api.creon_api import CreonAPIClient
 from manager.db_manager import DBManager
 from manager.backtest_manager import BacktestManager
 from analyzer.hmm_model import RegimeAnalysisModel
@@ -92,20 +93,37 @@ def run_hmm_training(model_name: str, start_date: date, end_date: date, backtest
 
 if __name__ == '__main__':
     # 테스트용 파라미터
-    test_model_name = "test_model_2025_08"
-    test_start_date = date(2024, 8, 1)
-    test_end_date = date(2025, 7, 31)    
+    test_model_name = LIVE_HMM_MODEL_NAME
+    test_start_date = date(2024, 1, 1)
+    test_end_date = date(2025, 8, 8)
     logger.info(f"모듈 테스트를 시작합니다: '{test_model_name}'")
     
-    # 함수 실행
-    success = run_hmm_training(
-        model_name=test_model_name,
-        start_date=test_start_date,
-        end_date=test_end_date,
-        n_states=4
-    )
-    
-    if success:
-        logger.info(f"✅ 모듈 테스트 성공: '{test_model_name}'")
-    else:
-        logger.error(f"❌ 모듈 테스트 실패.")    # 기본값(4개)으로 생성
+    db_manager = None
+    try:
+        # [수정] 테스트 실행을 위한 객체 생성
+        api_client = CreonAPIClient() # BacktestManager 생성에 필요
+        db_manager = DBManager()
+        backtest_manager = BacktestManager(api_client, db_manager)
+
+        # [수정] get_market_data_for_hmm이 pykrx 데이터를 사용하므로 사전 로드
+        backtest_manager.prepare_pykrx_data_for_period(test_start_date, test_end_date)
+        
+        # [수정] backtest_manager 인자 추가
+        success = run_hmm_training(
+            model_name=test_model_name,
+            start_date=test_start_date,
+            end_date=test_end_date,
+            backtest_manager=backtest_manager, 
+            n_states=4
+        )
+        
+        if success:
+            logger.info(f"✅ 모듈 테스트 성공: '{test_model_name}'")
+        else:
+            logger.error(f"❌ 모듈 테스트 실패.")
+            
+    except Exception as e:
+        logger.critical(f"테스트 실행 중 오류 발생: {e}", exc_info=True)
+    finally:
+        if db_manager:
+            db_manager.close()

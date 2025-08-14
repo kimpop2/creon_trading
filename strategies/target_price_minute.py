@@ -14,9 +14,13 @@ class TargetPriceMinute(MinuteStrategy):
     - DailyStrategy에서 생성된 target_price를 기반으로 분봉 매매를 실행합니다.
     - target_price가 해당 분봉의 고가와 저가 사이에 들어오면 즉시 주문을 실행합니다.
     """
-    def __init__(self, broker, data_store, strategy_params: Dict[str, Any]):
-        super().__init__(broker, data_store, strategy_params)
-        self.strategy_name = "TargetPriceMinute"
+    def __init__(self, broker, data_store):
+        super().__init__(broker, data_store)
+        self._validate_strategy_params()
+
+    def _validate_strategy_params(self):
+        """전략 파라미터의 유효성을 검증합니다."""
+        pass
 
     def run_minute_logic(self, current_dt: datetime, stock_code: str):
         current_minute_dt = current_dt.replace(second=0, microsecond=0)

@@ -9,7 +9,7 @@ from typing import Optional, List, Dict, Any
 # --- 프로젝트의 다른 모듈 임포트 ---
 from manager.db_manager import DBManager
 # BacktestManager에서 사용하던 유틸리티 임포트
-from util.strategies_util import calculate_sma, calculate_rsi, calculate_ema, calculate_macd
+from util.indicators import calculate_sma, calculate_rsi, calculate_ema, calculate_macd
 
 logger = logging.getLogger(__name__)
 

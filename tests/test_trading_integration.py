@@ -16,7 +16,7 @@ if project_root not in sys.path:
 # --- 필요한 모듈 임포트 ---
 from api.creon_api import CreonAPIClient, OrderType
 from manager.db_manager import DBManager
-from trading.trading import Trading
+from scripts.execution.run_hmm_trading import Trading
 from util.notifier import Notifier
 from strategies.sma_daily import SMADaily
 from strategies.target_price_minute import TargetPriceMinute

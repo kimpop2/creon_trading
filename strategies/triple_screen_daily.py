@@ -4,7 +4,7 @@ import pandas as pd
 from datetime import date
 from typing import Dict, List, Tuple, Any
 from strategies.strategy import DailyStrategy
-from util.strategies_util import calculate_sma, calculate_rsi
+from util.indicators import calculate_sma, calculate_rsi
 import logging
 
 logger = logging.getLogger(__name__)

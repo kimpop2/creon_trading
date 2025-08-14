@@ -1,9 +1,9 @@
 # strategies/sma_daily.py (최종 수정안)
 import pandas as pd
-from datetime import date
+from datetime import date, timedelta
 from typing import Dict, List, Tuple, Any
 from .strategy import DailyStrategy
-from util.strategies_util import calculate_sma
+from util.indicators import calculate_sma
 import logging
 
 logger = logging.getLogger(__name__)
@@ -13,24 +13,19 @@ class SMADaily(DailyStrategy):
     SMA(Simple Moving Average) 기반 일봉 전략 (단순화 버전).
     골든크로스/데드크로스 발생 시 매매 대상을 결정하는 역할만 수행합니다.
     """
-    def __init__(self, broker, data_store, strategy_params: Dict[str, Any]):
-        super().__init__(broker, data_store, strategy_params)
-        self._validate_parameters()
+    def __init__(self, broker, data_store):
+        super().__init__(broker, data_store)
+        self._validate_strategy_params()
 
-    def _validate_parameters(self):
-        """전략 파라미터 검증"""
-        required_params = ['short_sma_period', 'long_sma_period', 'min_trading_value']
-        for param in required_params:
-            if param not in self.strategy_params:
-                raise ValueError(f"SMA 전략에 필요한 파라미터 '{param}'이 설정되지 않았습니다.")
-        logger.info("SMA 전략 파라미터 검증 완료.")
+    def _validate_strategy_params(self):
+        """전략 파라미터의 유효성을 검증합니다."""
+        pass
 
     def filter_universe(self, universe_codes: List[str], current_date: date) -> List[str]:
         return universe_codes
-    
         """최소 거래대금 조건을 만족하는 종목만 선별합니다."""
         min_trading_value = self.strategy_params['min_trading_value']
-        lookback_start_date = current_date - pd.DateOffset(days=30)
+        lookback_start_date = current_date - timedelta(days=30)
 
         avg_values = self.broker.manager.fetch_average_trading_values(
             universe_codes, lookback_start_date, current_date

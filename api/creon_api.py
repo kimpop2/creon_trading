@@ -426,8 +426,88 @@ class CreonAPIClient:
         # 단일 문자열로 반환된 경우
         return code
 
+    def get_market_type(self, stock_name: str) -> Optional[str]:
+        """
+        [신규] NameToCode의 위험성을 회피하는 안전한 종목 코드 조회 메서드.
+        여러 코드가 반환될 경우, 일반주(코드가 '0'으로 끝남)를 우선적으로 선택합니다.
+        """
+        # [수정] 메서드 이름을 NameToCode -> GetStockCodeByName 으로 변경
+        code = self.cp_code_mgr.GetStockMarketKind(stock_name)
+        if code == 1 :
+            market_type = 'KOSPI'
+        elif code == 2:
+            market_type = 'KOSDAQ'
+        # 단일 문자열로 반환된 경우
+        return market_type
 
+    def get_top_movers(self, market='all', top_n=200) -> pd.DataFrame:
+        """
+        [수정] 당일 등락률 상위 종목을 연속 조회하여 DataFrame으로 반환합니다.
+        거래대금을 현재가 * 거래량으로 계산합니다.
+        """
+        logger.info(f"당일 등락률 상위 {top_n}개 종목 조회를 시작합니다 (시장: {market}).")
+        
+        if market == 'kospi':
+            market_code = ord('1')
+        elif market == 'kosdaq':
+            market_code = ord('2')
+        else: # all
+            market_code = ord('0')
 
+        obj_7043 = win32com.client.Dispatch("CpSysDib.CpSvrNew7043")
+        # --- 요청 값 설정 ---
+        obj_7043.SetInputValue(0, market_code)  # 0: 시장 구분 (0: 전체, 1: 거래소, 2: 코스닥)
+        obj_7043.SetInputValue(1, ord('2'))     # 1: 선택 기준 (2: 상승)
+        obj_7043.SetInputValue(2, ord('1'))     # 2: 기준 일자 (1: 당일)
+        obj_7043.SetInputValue(3, 21)           # 3: 순서 구분 (21: 전일대비율 상위순)
+        obj_7043.SetInputValue(4, ord('1'))     # 4: 관리 구분 (1: 관리제외)
+        obj_7043.SetInputValue(5, ord('0'))     # 5: 거래량 구분 (0: 전체)
+        obj_7043.SetInputValue(6, ord('1'))     # 6: 기간 구분 (상승/하락 시, 0: 시가대비, 1: 고가대비, 2: 저가대비)
+        obj_7043.SetInputValue(7, 0)            # 7: 등락률 시작 (0%)
+        obj_7043.SetInputValue(8, 100)          # 8: 등락률 끝 (100%)
+
+        all_results = []
+        
+        while True:
+            status_code, msg = self._execute_block_request(obj_7043)
+            if status_code != 0:
+                logger.error(f"등락률 상위 조회 실패: {msg}")
+                return pd.DataFrame()
+
+            count = obj_7043.GetHeaderValue(0)
+            if count == 0:
+                break
+            
+            for i in range(count):
+                # --- 결과 데이터 파싱 ---
+                current_price = obj_7043.GetDataValue(2, i)   # 2: 현재가
+                trading_volume = obj_7043.GetDataValue(6, i)  # 6: 거래량
+                
+                # 거래대금을 (현재가 * 거래량) / 1,000,000 으로 계산
+                trading_value = (current_price * trading_volume) / 1000000 if trading_volume > 0 else 0
+
+                result = {
+                    'stock_code': obj_7043.GetDataValue(0, i),      # 0: 종목코드
+                    'stock_name': obj_7043.GetDataValue(1, i),      # 1: 종목명
+                    'current_price': current_price,
+                    'change_rate': obj_7043.GetDataValue(5, i),     # 5: 대비율(등락률)
+                    'trading_volume': trading_volume,
+                    'trading_value': trading_value,
+                }
+                all_results.append(result)
+
+            if not obj_7043.Continue or len(all_results) >= top_n:
+                break
+        
+        if not all_results:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(all_results)
+        df_sorted = df.sort_values(by='change_rate', ascending=False).head(top_n)
+        
+        logger.info(f"총 {len(df_sorted)}개의 등락률 상위 종목 조회 완료.")
+        return df_sorted
+    
     def get_current_prices_bulk(self, stock_codes: List[str]) -> Dict[str, Dict[str, float]]:
         """
         [수정] MarketEye를 사용하여 여러 종목의 당일 OHLCV 및 '시각' 데이터를 일괄 조회합니다.
@@ -493,7 +573,7 @@ class CreonAPIClient:
             return {}
 
         # 1. 요청할 필드 ID 리스트를 순서대로 정의
-        request_fields = [0, 4, 11, 24, 67, 74, 89, 97, 98, 116, 118, 120, 123, 126, 127, 150]
+        request_fields = [0, 4, 11, 24, 67, 74, 89, 97, 98, 116, 118, 120, 123, 126, 127, 150, 111]
 
         all_results = {}
         CHUNK_SIZE = 200
@@ -532,7 +612,8 @@ class CreonAPIClient:
                 credit_ratio_val = objMarketEye.GetDataValue(13, j) # 신용잔고율
                 short_volume_val = objMarketEye.GetDataValue(14, j) # 공매도 수량
                 beta_coefficient_val = objMarketEye.GetDataValue(15, j) # 베타계수
-
+                recent_financial_date_val = objMarketEye.GetDataValue(16, j) # 최근분기년월(ulong) - yyyymm
+               
                 # --- 안전한 타입 변환 후 딕셔너리 생성 ---
                 try:
                     all_results[code] = {
@@ -552,6 +633,7 @@ class CreonAPIClient:
                         'credit_ratio': float(credit_ratio_val),
                         'short_volume': float(short_volume_val),
                         'beta_coefficient': float(beta_coefficient_val),
+                        'recent_financial_date': recent_financial_date_val
                     }
                 except (ValueError, TypeError) as e:
                     logger.warning(f"[{code}] 종목의 데이터 타입 변환 중 오류 발생: {e}. 해당 종목을 건너뜁니다.")

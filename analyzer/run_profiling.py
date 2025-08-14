@@ -82,9 +82,9 @@ def run_strategy_profiling(model_name: str, start_date: date, end_date: date):
 if __name__ == "__main__":
     # 이 스크립트를 직접 실행하면, 아래 파라미터로 함수의 동작을 테스트합니다.
     # 롤링 윈도우의 첫 번째 루프를 가정
-    test_model_name = "wf_model_2024_09" # walk-forward model for 2024-09
-    test_start_date = date(2023, 7, 1)  # 학습 기간 시작
-    test_end_date = date(2024, 6, 30)    # 학습 기간 종료
+    test_model_name = LIVE_HMM_MODEL_NAME # walk-forward model for 2024-09
+    test_start_date = date(2024, 8, 1)  # 학습 기간 시작
+    test_end_date = date(2025, 7, 30)    # 학습 기간 종료
     
     logger.info(f"모듈 테스트를 시작합니다: '{test_model_name}'")
     success = run_strategy_profiling(

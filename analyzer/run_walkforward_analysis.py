@@ -7,6 +7,7 @@ import pandas as pd
 import numpy as np
 import sys
 import os
+import json
 from multiprocessing import Pool, freeze_support # 병렬 처리를 위한 Pool, freeze_support 임포트
 
 # --- 상대 경로 임포트 ---
@@ -14,19 +15,24 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from optimizer.system_optimizer import run_system_optimization
 from trading.hmm_backtest import run_backtest_and_save_to_db, run_final_backtest
 from analyzer.train_and_save_hmm import run_hmm_training 
 from analyzer.run_profiling import run_strategy_profiling
-from optimizer.portfolio_optimizer import run_portfolio_optimization
+from optimizer.run_portfolio_optimization import run_portfolio_optimization
+from optimizer.run_system_optimization import run_system_optimization
 from api.creon_api import CreonAPIClient
 from manager.db_manager import DBManager
 from manager.backtest_manager import BacktestManager
 # --- 로깅 설정 ---
+# 1. 로그 파일을 저장할 절대 경로를 계산합니다.
+log_dir = os.path.join(project_root, 'logs')
+# 3. 절대 경로를 사용하여 로그 파일 핸들러를 설정합니다.
+log_file_path = os.path.join(log_dir, 'walkforward_analysis.log')
+
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                     handlers=[
-                        logging.FileHandler("logs/walkforward_analysis.log", encoding='utf-8'),
+                        logging.FileHandler(log_file_path, encoding='utf-8'), # <--- 절대 경로로 수정
                         logging.StreamHandler(sys.stdout)
                     ])
 logger = logging.getLogger("WalkForwardOrchestrator")
@@ -86,15 +92,20 @@ def run_single_window(args: tuple):
         # 4. 전략 프로파일링
         run_strategy_profiling(model_name, training_start, training_end)
         
-        # 5. 포트폴리오 운영 정책 최적화
+        #5. 포트폴리오 운영 정책 최적화
         optimal_policy = run_portfolio_optimization(model_name, training_start, training_end, backtest_manager)
         if not optimal_policy:
             logger.warning(f"최적 정책을 찾지 못해 [{model_name}]의 최종 검증을 건너뜁니다.")
             return pd.Series(dtype=float)
-
-        # 6. 최종 성과 검증 (Out-of-Sample)
-        monthly_result_series = run_final_backtest(model_name, test_start, test_end, optimal_policy, backtest_manager)
-        
+            
+        if optimal_policy:
+            result_filename = "policy.json"
+            with open(result_filename, 'w', encoding='utf-8') as f:
+                json.dump(optimal_policy, f, ensure_ascii=False, indent=4)
+            logger.info(f"✅ 최적 HMM 정책을 '{result_filename}' 파일에 저장했습니다. config/policy.json으로 활용하세요.")
+            # 6. 최종 성과 검증 (Out-of-Sample)
+            monthly_result_series = run_final_backtest(model_name, test_start, test_end, optimal_policy, backtest_manager)
+            
         logger.info(f"### 윈도우 처리 완료: {model_name} ###")
         return monthly_result_series
 
@@ -110,10 +121,14 @@ def main():
     logger.info("="*80)
 
     # 1. 핵심 설정값 정의
-    TOTAL_MONTHS = 12      # [수정] 총 6번의 롤링 테스트 수행
-    TRAINING_MONTHS = 12  # 학습 기간 (12개월)
-    GAP_MONTHS = 2        # 학습과 검증 사이의 공백 기간 (2개월)
+    TOTAL_MONTHS = 12      # [수정] 총 12번의 롤링 테스트 수행
+    TRAINING_MONTHS = 9  # 학습 기간 (12개월)
+    GAP_MONTHS = 2        # 학습과 검증 사이의 공백 기간 (1개월)
     TEST_MONTHS = 1       # 검증 기간 (1개월)
+    # TOTAL_MONTHS = 1      # [수정] 총 6번의 롤링 테스트 수행
+    # TRAINING_MONTHS = 6  # 학습 기간 (12개월)
+    # GAP_MONTHS = 2        # 학습과 검증 사이의 공백 기간 (2개월)
+    # TEST_MONTHS = 1       # 검증 기간 (1개월)
     NUM_PROCESSES = 4     # [추가] 동시에 실행할 프로세스 수
 
     today = date.today()

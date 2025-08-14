@@ -1,193 +1,143 @@
+# setup/setup_daily_universe.py 파일 전체를 아래 코드로 교체하세요.
+
+import logging
+from datetime import date, timedelta
+from time import time
 import sys
 import os
-from datetime import date, timedelta, datetime
-import logging
-import time
-import pandas as pd # market_calendar 처리용으로 필요
 
-# 프로젝트 루트 경로를 sys.path에 추가 (manager 디렉토리에서 실행 가능하도록)
+# 프로젝트 루트 경로 설정
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-# 필요한 모듈 임포트
+# 필요한 Manager 클래스 임포트
+from api.creon_api import CreonAPIClient
+from manager.db_manager import DBManager
 from manager.setup_manager import SetupManager
-from manager.backtest_manager import BacktestManager
-from manager.db_manager import DBManager # fetch_market_calendar 사용을 위해 직접 임포트
 
-# 로거 설정
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+# 로깅 설정
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger('DailyUniverseSetup')
 
-class DailyUniverseFiller:
+def run_universe_selection_process(target_num_stocks: int = 100):
     """
-    daily_universe 테이블에 과거 데이터를 채우는 작업을 관리하는 클래스.
-    일봉 데이터 사전 캐싱 및 SetupManager 반복 실행을 포함합니다.
+    [수정됨] 최종 유니버스 선정 시 종목 중복을 제거하는 로직이 추가된 전체 프로세스.
     """
-    def __init__(self, start_date: date, end_date: date, setup_parameters: dict = None):
-        """
-        DailyUniverseFiller를 초기화합니다.
-        :param start_date: 데이터 채우기를 시작할 전체 기간의 시작 날짜
-        :param end_date: 데이터 채우기를 종료할 전체 기간의 종료 날짜
-        :param setup_parameters: SetupManager에 전달할 사용자 정의 파라미터 (없으면 기본값 사용)
-        """
-        self.start_fill_date = start_date
-        self.end_fill_date = end_date
+    logger.info("========== 🚀 당일 최종 유니버스 선정 프로세스 시작 (Target: daily_universe) ==========")
+    start_time = time()
+
+    api_client = None
+    db_manager = None
+
+    try:
+        # --- 1. 필수 모듈 초기화 ---
+        logger.info("[1/4] API 및 DB Manager 초기화...")
+        api_client = CreonAPIClient()
+        if not api_client.is_connected():
+            raise ConnectionError("Creon API 연결에 실패했습니다.")
         
-        # SetupManager에 전달할 파라미터 설정 (기본값 제공)
-        self.setup_parameters = setup_parameters if setup_parameters is not None else {
-            'weight_price_trend': 50,
-            'weight_trading_volume': 20,
-            'weight_volatility': 15,
-            'weight_theme_mention': 15,
-            'ma_window_short': 5,
-            'ma_window_long': 20,
-            'volume_recent_days': 10,     # 거래량 점수 계산을 위한 최근 거래대금 기간
-            'atr_window': 14,            # 변동성 측정 ATR 기간
-            'daily_range_ratio_window': 7 # 일중 변동폭 비율 기간 (최소 데이터 요구 사항 및 평균 계산 기간)
-        }
+        db_manager = DBManager()
+        setup_manager = SetupManager(api_client, db_manager)
+        logger.info("초기화 완료.")
+
+        # --- 2. 테마 모멘텀 점수 계산 ---
+        logger.info("[2/4] 테마 모멘텀 점수 계산 시작...")
+        if not setup_manager.calculate_theme_momentum_scores(data_period_days=40):
+            logger.error("테마 모멘텀 점수 계산에 실패하여 프로세스를 중단합니다.")
+            return
+        logger.info("테마 모멘텀 점수 계산 및 DB 업데이트 완료.")
         
-    def prepare_theme_daily_price(self):
-        """
-        daily_universe 테이블에 등록될 종목들의 일봉 데이터를 미리 캐싱합니다.
-        `daily_universe` 테이블에서 해당 기간의 종목 코드를 가져와 `daily_price` 테이블에 데이터를 셋팅합니다.
-        캐시 함수 특성상 이미 있는 데이터는 다시 가져오지 않으므로 효율적입니다.
-        """
-        logger.info(f"--- 일봉 데이터 사전 캐싱 시작 (daily_universe 종목 기준) ---")
-        logger.info(f"전체 조회 기간: {self.start_fill_date} ~ {self.end_fill_date}")
-
-        # BacktestManager 인스턴스를 생성하고, 그 안에 포함된 db_manager를 사용
-        backtest_manager = BacktestManager()
-        self.db_manager = backtest_manager.db_manager 
+        # --- 3. 유니버스 후보군 생성 ---
+        logger.info("[3/4] 유니버스 후보군 생성 시작...")
+        candidates = setup_manager.generate_universe_candidates(limit_themes=10, limit_stocks_per_theme=20)
         
-        try:
-            # 1. daily_universe 테이블에서 전체 기간에 해당하는 고유 종목 코드 가져오기
-            # 올바른 메서드명: fetch_stock_codes_from_daily_theme_by_date_range
-            unique_stock_info = self.db_manager.fetch_daily_theme_stock(
-                self.start_fill_date, self.end_fill_date
-            )
-            
-            if not unique_stock_info: # 변경된 변수명 사용
-                logger.warning("지정된 기간 내 daily_universe에 등록된 종목이 없습니다. 일봉 캐싱을 건너뜁니다.")
-                return
+        if not candidates:
+            logger.warning("생성된 유니버스 후보군이 없습니다. 프로세스를 종료합니다.")
+            return
+        logger.info(f"{len(candidates)}개 테마의 후보군 생성 완료.")
 
-            logger.info(f"총 {len(unique_stock_info)}개의 종목에 대해 일봉 데이터를 캐싱합니다.") # 변경된 변수명 사용
-
-            # 2. 각 종목에 대해 일봉 데이터 캐싱할 기간 설정
-            cache_from_date = self.start_fill_date - timedelta(days=40) # 20일치로 수정
-            cache_to_date = self.end_fill_date
-
-            logger.info(f"캐싱할 일봉 데이터 기간: {cache_from_date} ~ {cache_to_date}")
-
-            # 3. BacktestManager의 cache_daily_ohlcv를 사용하여 데이터 캐싱
-            # unique_stock_info의 각 항목은 (stock_code, stock_name) 튜플이므로 언패킹하여 사용합니다.
-            for i, (stock_code, stock_name) in enumerate(unique_stock_info): # <--- 이 부분이 중요하게 수정되었습니다.
-                try:
-                    # cache_daily_ohlcv는 이미 DB에 있는 데이터는 건너뛰므로 효율적입니다.
-                    backtest_manager.cache_daily_ohlcv(stock_code, cache_from_date, cache_to_date) # <--- stock_code를 직접 사용
-                    if (i + 1) % 50 == 0 or (i + 1) == len(unique_stock_info): # 변경된 변수명 사용
-                        logger.info(f"... {i+1}/{len(unique_stock_info)} 종목 일봉 데이터 캐싱 중...") # 변경된 변수명 사용
-                except Exception as e:
-                    logger.error(f"종목 {stock_name} ({stock_code})의 일봉 데이터 캐싱 중 오류 발생: {e}", exc_info=True) # <--- stock_name과 stock_code를 직접 사용
-                
-                # API 요청 빈도 조절이 필요할 경우 주석 해제 (예: time.sleep(0.05))
-                # time.sleep(0.05) 
-                
-        except Exception as e:
-            logger.critical(f"일봉 데이터 사전 캐싱 중 치명적인 오류 발생: {e}", exc_info=True)
-        finally:
-            # DBManager 연결을 닫습니다. (BacktestManager 내부의 db_manager 인스턴스)
-            # if self.db_manager: 
-            #     self.db_manager.close() # 명시적으로 연결 닫기
-            logger.info("일봉 데이터 사전 캐싱 완료.")
-
-    def run_daily_universe_filling_process(self):
-        """
-        지정된 기간 동안 `daily_universe` 테이블에 데이터를 채웁니다.
-        영업일(trading day)에만 SetupManager를 실행하여 점수를 계산하고 저장합니다.
-        """
-        logger.info(f"--- daily_universe 테이블 데이터 채우기 시작 ---")
-        logger.info(f"전체 채우기 기간: {self.start_fill_date} ~ {self.end_fill_date}")
+        # --- 4. 최종 유니버스 선정 및 저장 ---
+        logger.info(f"[4/4] 최종 유니버스 선정 (상위 {target_num_stocks}개) 및 저장 시작...")
         
-        try:
-            # 시장 캘린더 데이터 로드
-            market_calendar_df = self.db_manager.fetch_market_calendar(self.start_fill_date, self.end_fill_date)
-            
-            if market_calendar_df.empty:
-                logger.error("시장 캘린더 데이터를 가져올 수 없습니다. daily_universe 채우기를 중단합니다.")
-                return
+        # [핵심 수정] 종목 코드 기준 중복 제거 로직
+        unique_stocks = {}
+        for theme_data in candidates:
+            for stock_info in theme_data['recommended_stocks']:
+                stock_code = stock_info.get('stock_code')
+                if not stock_code:
+                    continue
 
-            # 영업일만 필터링하고 날짜를 리스트로 변환하여 정렬
-            trading_dates = market_calendar_df[market_calendar_df['is_holiday'] == 0]['date'].dt.date.tolist()
-            trading_dates.sort() # 날짜가 오름차순으로 정렬되도록 보장
-
-            if not trading_dates:
-                logger.warning("지정된 기간 내 영업일이 없습니다. daily_universe 채우기를 건너뜁니다.")
-                return
-
-            logger.info(f"총 {len(trading_dates)}개의 영업일에 대해 daily_universe를 채웁니다.")
-            # SetupManager 인스턴스는 각 날짜별로 새로 생성하여 독립적인 상태를 유지
-            manager = SetupManager(setup_parameters=self.setup_parameters, db_manager=self.db_manager)
-
-            # 영업일을 순회하며 SetupManager 실행
-            for current_date in trading_dates:
-                # current_date가 전체 채우기 기간 내에 있는지 다시 확인 (필요에 따라)
-                if current_date < self.start_fill_date or current_date > self.end_fill_date:
-                    continue # 범위를 벗어나는 날짜는 건너뜀 (정렬되어 있으므로 처음/끝에서만 발생)
-
-                iteration_to_date = current_date
-                # 각 날짜의 from_date는 해당 날짜로부터 30일 이전으로 설정
-                iteration_from_date = current_date - timedelta(days=30)
+                # 각 점수를 안전하게 float으로 변환 (None일 경우 0.0)
+                stock_score = float(stock_info.get('stock_score', 0.0) or 0.0)
+                price_trend_score = float(stock_info.get('price_trend_score', 0.0) or 0.0)
+                trading_volume_score = float(stock_info.get('trading_volume_score', 0.0) or 0.0)
+                volatility_score = float(stock_info.get('volatility_score', 0.0) or 0.0)
+                theme_mention_score = float(stock_info.get('theme_mention_score', 0.0) or 0.0)
                 
-                logger.info(f"\n======== SetupManager 실행: 데이터 기준 날짜 {iteration_to_date} (영업일) =========================")
-                logger.info(f"점수 계산 기간: {iteration_from_date} ~ {iteration_to_date}")
-
-                try:
-                    manager.run_all_processes(from_date=iteration_from_date, to_date=iteration_to_date)
-                    logger.info(f"날짜 {iteration_to_date}의 daily_universe 데이터 처리가 완료되었습니다.")
-                except Exception as e:
-                    logger.error(f"날짜 {iteration_to_date} SetupManager 실행 중 오류 발생: {e}", exc_info=True)
+                # 최종 저장될 종합 점수 계산
+                total_score = stock_score + price_trend_score + trading_volume_score + volatility_score + theme_mention_score
                 
-                # 과도한 요청 방지를 위해 잠시 대기 (필요에 따라 조절)
-                time.sleep(1) # 각 일자 처리 후 1초 대기
+                # stock_info 딕셔너리에 계산된 점수들 업데이트
+                stock_info.update({
+                    'theme': theme_data.get('theme_class'),
+                    'theme_id': theme_data.get('theme_id'),
+                    'stock_score': total_score,
+                    'price_trend_score': price_trend_score,
+                    'trading_volume_score': trading_volume_score,
+                    'volatility_score': volatility_score,
+                    'theme_mention_score': theme_mention_score
+                })
 
-        except Exception as e:
-            logger.critical(f"daily_universe 테이블 채우기 중 치명적인 오류 발생: {e}", exc_info=True)
-        finally:
-            if self.db_manager: # db_manager 인스턴스가 성공적으로 생성되었다면 연결 닫기
-                self.db_manager.close()
-            logger.info("--- daily_universe 테이블 데이터 채우기 완료 ---")
+                # 종목이 이미 unique_stocks에 있다면, 새로 계산된 점수가 더 높을 경우에만 교체
+                if stock_code in unique_stocks:
+                    if total_score > unique_stocks[stock_code].get('stock_score', 0.0):
+                        unique_stocks[stock_code] = stock_info
+                else:
+                    unique_stocks[stock_code] = stock_info
+        
+        # 중복이 제거된 후보군 리스트 생성
+        all_candidate_stocks = list(unique_stocks.values())
 
-    def run(self):
-        """
-        전체 프로세스를 실행합니다 (일봉 데이터 사전 캐싱 -> daily_universe 데이터 채우기).
-        """
-        self.prepare_theme_daily_price()
-        self.run_daily_universe_filling_process()
+        # 종합 점수(stock_score) 기준으로 내림차순 정렬
+        all_candidate_stocks.sort(key=lambda x: x['stock_score'], reverse=True)
+        final_universe = all_candidate_stocks[:target_num_stocks]
 
+        if not final_universe:
+            logger.warning("최종 선정된 유니버스 종목이 없습니다.")
+            return
 
-if __name__ == "__main__":
-    # --- 전체 데이터 채우기 기간 설정 (main 함수 실행 시 기준) ---
-    start_fill_date_main = date(2025, 7, 2) # 예시 시작 날짜 (사용자 정의 가능)
-    end_fill_date_main = datetime.today().date() # 오늘 날짜
+        # DB 저장을 위해 최종 데이터 포맷팅
+        today = date.today()
+        data_to_save = [
+            {
+                'date': today,
+                'stock_code': d.get('stock_code'),
+                'stock_name': d.get('stock_name'),
+                'theme': d.get('theme'),
+                'stock_score': d.get('stock_score', 0.0),
+                'price_trend_score': d.get('price_trend_score', 0.0),
+                'trading_volume_score': d.get('trading_volume_score', 0.0),
+                'volatility_score': d.get('volatility_score', 0.0),
+                'theme_mention_score': d.get('theme_mention_score', 0.0),
+                'theme_id': d.get('theme_id')
+            } for d in final_universe
+        ]
+        
+        # DB에 최종 저장
+        if db_manager.save_daily_universe(data_to_save):
+            logger.info("최종 유니버스 선정 및 저장이 성공적으로 완료되었습니다.")
+        else:
+            logger.error("최종 유니버스 저장에 실패했습니다.")
 
-    # SetupManager에 적용할 고정 파라미터 설정 (main 함수에서 전달)
-    custom_setup_params = {
-        'weight_price_trend': 50,
-        'weight_trading_volume': 20,
-        'weight_volatility': 15,
-        'weight_theme_mention': 15,
-        'ma_window_short': 5,
-        'ma_window_long': 20,
-        'volume_recent_days': 10,
-        'atr_window': 14,
-        'daily_range_ratio_window': 7
-    }
+    except Exception as e:
+        logger.critical(f"유니버스 선정 프로세스 중 치명적인 오류 발생: {e}", exc_info=True)
+    finally:
+        if db_manager:
+            db_manager.close()
+        
+        end_time = time()
+        logger.info(f"========== ✅ 당일 최종 유니버스 선정 프로세스 종료 (총 소요 시간: {end_time - start_time:.2f}초) ==========")
 
-    # DailyUniverseFiller 인스턴스 생성 및 실행
-    filler = DailyUniverseFiller(
-        start_date=start_fill_date_main,
-        end_date=end_fill_date_main,
-        setup_parameters=custom_setup_params
-    )
-    filler.run()
+if __name__ == '__main__':
+    run_universe_selection_process(target_num_stocks=100)

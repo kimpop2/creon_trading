@@ -3,42 +3,29 @@
 import logging
 import pandas as pd
 import numpy as np 
-from datetime import datetime, date, time
+from datetime import datetime, date, timedelta
 from typing import Dict, List, Tuple, Any
 
-from util.strategies_util import * # utils.py에 있는 모든 함수를 임포트한다고 가정 
+from util.indicators import * # utils.py에 있는 모든 함수를 임포트한다고 가정 
 from strategies.strategy import DailyStrategy 
 
 logger = logging.getLogger(__name__)
 
 class DualMomentumDaily(DailyStrategy): # DailyStrategy 상속 
-    def __init__(self, broker, data_store, strategy_params: Dict[str, Any]): 
+    def __init__(self, broker, data_store): 
         # DailyStrategy에서 broker, data_store 연결, signal 초기화 진행
-        super().__init__(broker, data_store, strategy_params)
-        
-        # 파라미터 검증
-        self._validate_parameters()
+        super().__init__(broker, data_store)
+        self._validate_strategy_params()
 
-    def _validate_parameters(self):
-        """전략 파라미터 검증"""
-        required_params = [
-            'momentum_period', 'rebalance_weekday', 'safe_asset_code', 'num_top_stocks'
-        ]
-        
-        for param in required_params:
-            if param not in self.strategy_params:
-                raise ValueError(f"필수 파라미터 누락: {param}")
-        
-        logger.info(f"듀얼 모멘텀 전략 파라미터 검증 완료: "
-                   f"모멘텀기간={self.strategy_params['momentum_period']}일, "
-                   f"리밸런싱요일={self.strategy_params['rebalance_weekday']}, "
-                   f"선택종목수={self.strategy_params['num_top_stocks']}개")
+    def _validate_strategy_params(self):
+        """전략 파라미터의 유효성을 검증합니다."""
+        pass
 
     def filter_universe(self, universe_codes: List[str], current_date: date) -> List[str]:
         return universe_codes
         # [수정] 최소 거래대금 필터 추가
         min_trading_value = self.strategy_params.get('min_trading_value', 1000000000)
-        lookback_start_date = current_date - pd.DateOffset(days=30)
+        lookback_start_date = current_date - timedelta(days=30)
         avg_values = self.broker.manager.fetch_average_trading_values(
             universe_codes, lookback_start_date, current_date
         )

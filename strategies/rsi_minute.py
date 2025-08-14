@@ -3,7 +3,7 @@ import numpy as np
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Any
 from strategies.strategy import MinuteStrategy
-from util.strategies_util import *
+from util.indicators import *
 import logging
 
 logger = logging.getLogger(__name__)
@@ -16,10 +16,8 @@ class RSIMinute(MinuteStrategy):
     - 과매수/과매도 구간에서 매매 신호 생성
     - 타임컷 강제매매 기능 포함
     """
-    def __init__(self, broker, data_store, strategy_params: Dict[str, Any]):
-        super().__init__(broker, data_store, strategy_params)
-        self.strategy_name = "RSIMinute"
-        
+    def __init__(self, broker, data_store):
+        super().__init__(broker, data_store)
         # 전략 파라미터 검증
         self._validate_strategy_params()
 
@@ -30,21 +28,10 @@ class RSIMinute(MinuteStrategy):
 
     def _validate_strategy_params(self):
         """전략 파라미터의 유효성을 검증합니다."""
-        required_params = ['minute_rsi_period', 'minute_rsi_oversold', 'minute_rsi_overbought']
-        
-        for param in required_params:
-            if param not in self.strategy_params:
-                raise ValueError(f"RSI 분봉봉 전략에 필요한 파라미터 '{param}'이 설정되지 않았습니다.")
-        
+
         # 과매수 과매도 점수 검증
         if self.strategy_params['minute_rsi_overbought'] <= self.strategy_params['minute_rsi_oversold']:
             raise ValueError("과매수 overbought 점수 는 과매도 점수 oversold 보다 커야 합니다.")
-        
-        # 파라미터 로그
-        logging.info(f"RSI 분봉 전략 파라미터 검증 완료: "
-                    f"RSI 분봉 기간={self.strategy_params['minute_rsi_period']}, "
-                    f"과매수 점수={self.strategy_params['minute_rsi_oversold']}, "
-                    f"과매도 점수={self.strategy_params['minute_rsi_overbought']} ")
 
 
     def _calculate_rsi(self, historical_data, stock_code):

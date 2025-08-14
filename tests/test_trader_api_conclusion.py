@@ -14,7 +14,7 @@ sys.path.insert(0, project_root)
 
 from api.creon_api import CreonAPIClient
 from manager.trader_manager import TraderManager
-from util.const import *
+from util.constants import *
 
 
 class TestTraderAPIConclusion(unittest.TestCase):

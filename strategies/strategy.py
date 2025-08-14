@@ -9,8 +9,8 @@ import sys
 import os
 
 from trading.broker import Broker
-from util.strategies_util import *
-from config.settings import MIN_STOCK_CAPITAL
+from util.indicators import *
+from config.settings import STRATEGY_CONFIGS, MIN_STOCK_CAPITAL
 # --- 로거 설정 ---
 logger = logging.getLogger(__name__)
 
@@ -91,15 +91,34 @@ class BaseStrategy(abc.ABC):
                 return filtered_df.tail(lookback_period)
             return filtered_df
         return pd.DataFrame()
-
+    
+    def _load_and_required_params(self) -> Dict[str, Any]:
+        """
+        STRATEGY_CONFIGS에서 설정을 자동으로 찾아 로드하고,
+        필수 파라미터의 존재 여부 및 None이 아닌지 검증합니다.
+        """
+        if self.strategy_name not in STRATEGY_CONFIGS:
+            raise ValueError(f"config.settings.STRATEGY_CONFIGS에 '{self.strategy_name}' 전략 설정이 없습니다.")
+        
+        params = STRATEGY_CONFIGS[self.strategy_name].get('default_params', {})
+        
+        # [수정] 자식 클래스에 정의된 REQUIRED_PARAMS 목록을 순회하며 검증
+        for required in params:
+            # [수정] 키가 없거나, 키는 있지만 그 값이 None인 경우 에러 발생
+            if required not in params or params[required] is None:
+                raise ValueError(f"'{self.strategy_name}' 전략의 필수 파라미터 '{required}' 값이 설정되지 않았습니다.")
+        
+        logger.debug(f"[{self.strategy_name}] 파라미터 로드 및 검증 완료.")
+        return params
+    
 class DailyStrategy(BaseStrategy):
     """일봉 전략을 위한 추상 클래스 (예: 리밸런싱, 모멘텀 계산)."""
-    def __init__(self, broker, data_store, strategy_params: Dict[str, Any]):
+    def __init__(self, broker, data_store):
         super().__init__()
         self.broker = broker
         self.data_store = data_store
-        self.strategy_params = strategy_params
         self.strategy_name = self.__class__.__name__
+        self.strategy_params = self._load_and_required_params()
         
         self.signals = {}
         self._initialize_signals_for_all_stocks()
@@ -292,12 +311,14 @@ class DailyStrategy(BaseStrategy):
     
 class MinuteStrategy(BaseStrategy):
     """분봉 전략을 위한 추상 클래스 (예: 매매 실행, 장내 신호)."""
-    def __init__(self, broker, data_store, strategy_params: Dict[str, Any]):
+    def __init__(self, broker, data_store):
         super().__init__()
         self.broker = broker
         self.data_store = data_store
-        self.strategy_params = strategy_params
+        self.broker = broker
+        self.data_store = data_store
         self.strategy_name = self.__class__.__name__
+        self.strategy_params = self._load_and_required_params()
         self.signals = {}
 
     def run_daily_logic(self, current_date):

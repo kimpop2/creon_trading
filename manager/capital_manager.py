@@ -2,35 +2,44 @@
 
 import logging
 from typing import Dict, Any, List
-
+import sys
+import os
 # trading.abstract_broker에서 AbstractBroker를 임포트하여 타입 힌팅에 사용합니다.
 # 실제 런타임 의존성을 만들지 않기 위해 TYPE_CHECKING 블록을 사용할 수 있습니다.
 from typing import TYPE_CHECKING
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..')) 
+sys.path.insert(0, project_root)
 if TYPE_CHECKING:
     from trading.abstract_broker import AbstractBroker
-
+from config.settings import STRATEGY_CONFIGS, ACTIVE_STRATEGIES_FOR_HMM
+from trading.abstract_broker import AbstractBroker
 logger = logging.getLogger(__name__)
+
 
 class CapitalManager:
     """
-    5단계 계층적 자금 관리 프레임워크를 기반으로,
-    시스템의 모든 자금 관련 계산 및 의사결정을 전담하는 클래스.
+    정적 자금 배분을 담당하며, settings.py에서 직접 포트폴리오 설정을 로드합니다.
     """
-    def __init__(self, broker: 'AbstractBroker', portfolio_configs: List[Dict[str, Any]]):
-        """
-        CapitalManager를 초기화합니다.
-
-        :param broker: AbstractBroker를 구현한 브로커 객체.
-        :param portfolio_configs: 각 전략의 설정을 담은 딕셔너리 리스트.
-               예: [{'name': 'SMADaily', 'weight': 0.6, 'max_position_count': 10}, ...]
-        """
-        if not hasattr(broker, 'get_current_cash_balance') or not hasattr(broker, 'get_portfolio_value'):
+    def __init__(self, broker: AbstractBroker):
+        # [핵심 2] 생성자에서 portfolio_configs 인자 제거
+        if not hasattr(broker, 'get_current_cash_balance'):
             raise TypeError("제공된 broker 객체가 AbstractBroker의 인터페이스를 따르지 않습니다.")
         
         self.broker = broker
-        # 전략 설정을 이름으로 쉽게 조회할 수 있도록 딕셔너리로 변환
-        self.strategy_configs = {config['name']: config for config in portfolio_configs}
-        logger.info("CapitalManager 초기화 완료.")
+        
+        # [핵심 3] settings.py 정보를 기반으로 내부 설정 자동 구성
+        self.strategy_configs = {}
+        for strategy_name in ACTIVE_STRATEGIES_FOR_HMM:
+            if strategy_name in STRATEGY_CONFIGS:
+                config = STRATEGY_CONFIGS[strategy_name]
+                # 'name'과 'portfolio_params' 안의 'weight'를 추출
+                self.strategy_configs[strategy_name] = {
+                    "name": strategy_name,
+                    "weight": config.get("portfolio_params", {}).get("weight", 0)
+                }
+        
+        logger.info(f"CapitalManager 초기화 완료. {len(self.strategy_configs)}개 활성 전략의 가중치 로드.")
+
 
     def get_account_equity(self, current_prices: Dict[str, float]) -> float:
         """
@@ -59,7 +68,7 @@ class CapitalManager:
         
         total_principal = account_equity * principal_ratio
         logger.debug(f"총 투자원금(Total Principal) 계산: {total_principal:,.0f}원 (총자산의 {principal_ratio:.0%})")
-        return total_principal
+        return total_principal, None
 
     def get_strategy_capital(self, strategy_name: str, total_principal: float) -> float:
         """

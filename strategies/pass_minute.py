@@ -14,11 +14,14 @@ class PassMinute(MinuteStrategy):
     - 분봉 데이터 없이 일봉 데이터(고가, 저가)만으로 매매를 시뮬레이션합니다.
     - 진입, 리밸런싱 매도, 손절, 익절, 트레일링 스탑을 모두 지원합니다.
     """
-    def __init__(self, broker, data_store, strategy_params: Dict[str, Any]):
-        super().__init__(broker, data_store, strategy_params)
-        #self.strategy_name = "PassMinute"
-        # backtest.py에서 이 플래그를 확인하여 분봉 루프를 건너뜁니다.
+    def __init__(self, broker, data_store):
+        super().__init__(broker, data_store)
+        self._validate_strategy_params()
         self.is_fast_simulation_strategy = True
+
+    def _validate_strategy_params(self):
+        """전략 파라미터의 유효성을 검증합니다."""
+        pass
 
     def run_minute_logic(self, current_dt: datetime, stock_code: str):
         """
@@ -83,10 +86,11 @@ class PassMinute(MinuteStrategy):
 
         # 3. 신규 매수 로직
         if signal_info and signal_info.get('signal_type') == 'buy' and current_position_size == 0:
-            target_price = signal_info.get('target_price')
-            if target_price and daily_bar['low'] <= target_price <= daily_bar['high']:
-                target_quantity = signal_info.get('target_quantity', 0)
-                if target_quantity > 0:
-                    logging.info(f"✅ [PassMinute-목표가 매수] {stock_code}: Target {target_price:,.0f}")
-                    self.broker.execute_order(stock_code, 'buy', target_price, target_quantity, order_time=current_dt)
-                    self.reset_signal(stock_code)
+            # --- ▼ [수정] 목표가 조건 삭제 및 시가 매수 로직으로 변경 ▼ ---
+            execution_price = daily_bar['open'] # 다음 날 시가를 실행 가격으로 설정
+            target_quantity = signal_info.get('target_quantity', 0)
+            
+            if target_quantity > 0:
+                logging.info(f"✅ [PassMinute-시가 매수] {stock_code}: at {execution_price:,.0f}")
+                self.broker.execute_order(stock_code, 'buy', execution_price, target_quantity, order_time=current_dt)
+                self.reset_signal(stock_code)

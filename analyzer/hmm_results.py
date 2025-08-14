@@ -36,7 +36,7 @@ def analyze_and_visualize_hmm():
     print("HMM 모델 결과 분석을 시작합니다...")
     
     db_manager = DBManager()
-    
+    LIVE_HMM_MODEL_NAME = 'wf_model_202508'
     model_info = db_manager.fetch_hmm_model_by_name(LIVE_HMM_MODEL_NAME)
     if not model_info:
         print(f"'{LIVE_HMM_MODEL_NAME}' 모델을 DB에서 찾을 수 없습니다.")
