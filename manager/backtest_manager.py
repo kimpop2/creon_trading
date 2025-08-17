@@ -14,7 +14,7 @@ if project_root not in sys.path:
 from manager.data_manager import DataManager
 from api.creon_api import CreonAPIClient
 from manager.db_manager import DBManager
-
+from config.settings import STRATEGY_CONFIGS
 logger = logging.getLogger(__name__)
 
 class BacktestManager(DataManager):
@@ -24,9 +24,57 @@ class BacktestManager(DataManager):
     def __init__(self, api_client: CreonAPIClient, db_manager: DBManager):
         super().__init__(api_client, db_manager)
         self.pykrx_master_df = None
+        self.indicator_cache = {}
         logger.info("BacktestManager 초기화 완료.")
 
+    # [신규 추가] 보조지표 사전 계산 메서드
+    def precalculate_all_indicators_for_period(self, start_date: date, end_date: date):
+        """
+        주어진 기간에 대해 모든 유니버스 종목의 보조지표를 미리 계산하여 캐시에 저장합니다.
+        '데이터 연속성' 문제를 해결하는 핵심적인 역할을 합니다.
+        """
+        logger.info(f"보조지표 사전 계산 시작 ({start_date} ~ {end_date})...")
+        
+        # settings.py에 정의된 모든 전략의 파라미터를 기반으로 필요한 SMA 기간들을 모두 수집
+        required_sma_periods = set([5, 10, 17, 20, 60]) # 기본값
+        for config in STRATEGY_CONFIGS.values():
+            for param, value in config.get('default_params', {}).items():
+                if 'period' in param:
+                    required_sma_periods.add(value)
+            for param, p_config in config.get('optimization_params', {}).items():
+                 if 'period' in param:
+                    required_sma_periods.add(p_config['min'])
+                    required_sma_periods.add(p_config['max'])
+        
+        logger.info(f"필요한 SMA 기간: {sorted(list(required_sma_periods))}")
+        
+        # 지표 계산에 필요한 최대 기간만큼 과거 데이터를 더 불러옴
+        max_lookback = max(required_sma_periods) if required_sma_periods else 200
+        data_start_date = start_date - timedelta(days=max_lookback * 1.5) # 여유분 확보
+        
+        all_trading_dates_set = set(self.get_all_trading_days(data_start_date, end_date))
+        universe_codes = self.get_universe_codes()
 
+        for code in universe_codes:
+            # 연속된 전체 기간의 데이터를 불러옴
+            daily_df = self.cache_daily_ohlcv(code, data_start_date, end_date, all_trading_dates_set)
+            if daily_df.empty:
+                continue
+
+            # 필요한 모든 SMA 지표 계산
+            for period in required_sma_periods:
+                daily_df[f'sma_{period}'] = daily_df['close'].rolling(window=period).mean()
+                daily_df[f'volume_sma_{period}'] = daily_df['volume'].rolling(window=period).mean()
+
+            # 계산된 데이터프레임을 캐시에 저장
+            self.indicator_cache[code] = daily_df
+        
+        logger.info(f"총 {len(self.indicator_cache)}개 종목의 보조지표 사전 계산 완료.")
+
+    def get_precalculated_data(self, stock_code: str) -> pd.DataFrame:
+        """캐시된 보조지표 데이터를 반환합니다."""
+        return self.indicator_cache.get(stock_code, pd.DataFrame())
+    
     def _fetch_and_store_daily_range(self, stock_code: str, start_date: date, end_date: date) -> pd.DataFrame:
         """[오버라이딩] API 사용이 가능할 때만 부모 클래스의 API 호출 로직을 사용합니다."""
         if self.api_client and self.api_client.is_connected():
