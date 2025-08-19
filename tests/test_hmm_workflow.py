@@ -3,7 +3,7 @@
 import unittest
 import pandas as pd
 import numpy as np
-from datetime import date
+from datetime import date, timedelta
 import sys
 import os
 from unittest.mock import patch, MagicMock
@@ -39,7 +39,7 @@ class TestHmmWorkflow(unittest.TestCase):
     def test_01_get_market_data_for_hmm(self):
         """Phase 1: HMM 학습용 시장 데이터 생성 기능 검증"""
         print("\n--- Phase 1: HMM 입력 데이터 고도화 테스트 시작 ---")
-        df = self.backtest_manager.get_market_data_for_hmm(days=100)
+        df = self.backtest_manager.get_market_data_for_hmm(date.today() - timedelta(days=100), date.today())
         self.assertIsInstance(df, pd.DataFrame)
         self.assertFalse(df.empty)
         

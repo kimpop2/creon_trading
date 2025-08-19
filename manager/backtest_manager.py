@@ -14,7 +14,7 @@ if project_root not in sys.path:
 from manager.data_manager import DataManager
 from api.creon_api import CreonAPIClient
 from manager.db_manager import DBManager
-from config.settings import STRATEGY_CONFIGS
+from config.settings import STRATEGY_CONFIGS, FETCH_DAILY_PERIOD, FETCH_MINUTE_PERIOD, COMMON_PARAMS
 logger = logging.getLogger(__name__)
 
 class BacktestManager(DataManager):
@@ -26,6 +26,43 @@ class BacktestManager(DataManager):
         self.pykrx_master_df = None
         self.indicator_cache = {}
         logger.info("BacktestManager 초기화 완료.")
+
+    # --- ▼ [신규 추가] 데이터 로딩을 총괄하는 메서드 ▼ ---
+    def prepare_data_for_backtest(self, start_date: date, end_date: date) -> dict:
+        """
+        백테스팅 전체 기간에 필요한 모든 종목의 가격 데이터를 미리 로딩하여
+        data_store 딕셔너리 형태로 반환합니다.
+        """
+        logging.info(f"--- 백테스트 데이터 사전 로딩 시작 ({start_date} ~ {end_date}) ---")
+        
+        data_store = {'daily': {}, 'minute': {}}
+        
+        # 1. 유니버스 종목 코드 결정
+        universe_codes = set(self.get_universe_codes())
+        if COMMON_PARAMS.get('market_index_code'):
+            universe_codes.add(COMMON_PARAMS['market_index_code'])
+        if COMMON_PARAMS.get('safe_asset_code'):
+            universe_codes.add(COMMON_PARAMS['safe_asset_code'])
+
+        # 2. 전체 기간 데이터 사전 로딩
+        daily_start = start_date - timedelta(days=FETCH_DAILY_PERIOD)
+        minute_start = start_date - timedelta(days=FETCH_MINUTE_PERIOD)
+        
+        all_trading_dates_set = set(self.get_all_trading_days(daily_start, end_date))
+        
+        for code in list(universe_codes):
+            logging.info(f"데이터 로딩: {code} 일봉: ({daily_start} ~ {end_date})")
+            daily_df = self.cache_daily_ohlcv(code, daily_start, end_date, all_trading_dates_set)
+            if not daily_df.empty:
+                data_store['daily'][code] = daily_df
+            
+            # 분봉 데이터는 필요할 경우에만 로드 (PassMinute가 아닐 때)
+            # 여기서는 최적화를 위해 일봉만 로드하는 것으로 단순화할 수 있습니다.
+            # minute_df = self.cache_minute_ohlcv(...)
+            # if not minute_df.empty: ...
+
+        logging.info(f"--- 모든 데이터 준비 완료 ---")
+        return data_store
 
     # [신규 추가] 보조지표 사전 계산 메서드
     def precalculate_all_indicators_for_period(self, start_date: date, end_date: date):

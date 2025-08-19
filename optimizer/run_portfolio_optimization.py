@@ -67,7 +67,7 @@ if __name__ == '__main__':
     backtest_manager.prepare_pykrx_data_for_period(start_date, end_date)
 
     optimal_policy = run_portfolio_optimization(
-        model_name='wf_model_202508',
+        model_name='EKLMNO_4s_2208-2408',
         start_date=start_date,
         end_date=end_date,
         backtest_manager=backtest_manager

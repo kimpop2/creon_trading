@@ -72,6 +72,8 @@ COMMON_PARAMS = {
 STRATEGY_CONFIGS = {
     "SMADaily": {
         "description": "단순 이동평균 골든/데드크로스 전략",
+        "strategy_status": True,
+        "strategy_weight": 0.22,
         "default_params": {
             "short_sma_period": 5,
             "long_sma_period": 17,
@@ -92,6 +94,8 @@ STRATEGY_CONFIGS = {
 
     "DualMomentumDaily": {
         "description": "듀얼 모멘텀 전략",
+        "strategy_status": True,
+        "strategy_weight": 0.22,
         "default_params": {
             "momentum_period": 3,
             "rebalance_weekday": 0,
@@ -115,6 +119,8 @@ STRATEGY_CONFIGS = {
     # =================================================================
     "BreakoutDaily": {
         "description": "60일 신고가 돌파 및 거래량 급증 추세추종 전략",
+        "strategy_status": False,
+        "strategy_weight": 0.22,
         "default_params": {
             "box_period": 60,              # 신고가 판단 기간 (일)
             "volume_period": 20,           # 평균 거래량 계산 기간 (일)
@@ -139,6 +145,8 @@ STRATEGY_CONFIGS = {
     # =================================================================
     "PullbackDaily": {
         "description": "상승 추세 중 단기 조정(눌림목) 시 반등을 노리는 전략",
+        "strategy_status": False,
+        "strategy_weight": 0.22,
         "default_params": {
             "trend_sma_period": 20,       # 대추세 판단을 위한 이동평균 기간
             "pullback_sma_period": 5,     # 눌림목 판단을 위한 단기 이동평균 기간
@@ -160,6 +168,8 @@ STRATEGY_CONFIGS = {
     # =================================================================
     "ClosingBetDaily": {
         "description": "강한 마감 종목을 종가 매수 후 익일 갭 상승을 노리는 초단기 전략",
+        "strategy_status": False,
+        "strategy_weight": 0.22,
         "default_params": {
             "trend_sma_period": 5,        # 단기 추세 판단을 위한 이동평균 기간
             "close_high_ratio": 0.8,      # 종가/고가 비율로 마감 강도 판단
@@ -179,6 +189,8 @@ STRATEGY_CONFIGS = {
     # --- 분봉 전략도 일관성을 위해 이 구조에 포함 ---
     "TargetPriceMinute": {
         "description": "일봉 전략의 목표가(Target Price) 기반 분할 매매 실행",
+        "strategy_status": False,
+        "strategy_weight": 0.22,
         "default_params": {
              # 분봉 전략은 보통 자체 파라미터보다 일봉 전략의 신호를 받아 동작
         },
@@ -196,6 +208,8 @@ STRATEGY_CONFIGS = {
 
     "IntelligentMinute": {
         "description": "지능형 주문 집행 전략",
+        "strategy_status": False,
+        "strategy_weight": 0.22,
         "default_params": {
             "risk_aversion": 0.5,
             "order_flow_intensity": 1000,
@@ -210,13 +224,6 @@ STRATEGY_CONFIGS = {
 # =================================================================
 # 4. HMM 시스템 및 포트폴리오 설정
 # =================================================================
-
-# --- HMM 시스템에서 사용할 활성 전략 목록 ---
-# 시스템은 아래 리스트에 명시된 전략들을 STRATEGY_CONFIGS에서 찾아 사용합니다.
-ACTIVE_STRATEGIES_FOR_HMM = [
-    "BreakoutDaily",
-    "ClosingBetDaily"
-]
 
 # --- HMM 모델 자체와 포트폴리오 운영 정책에 대한 최적화 파라미터 ---
 HMM_OPTIMIZATION_PARAMS = {
@@ -233,4 +240,4 @@ HMM_OPTIMIZATION_PARAMS = {
 # ]
 
 # --- 실거래 환경에서 사용할 HMM 모델의 이름 ---
-LIVE_HMM_MODEL_NAME = "Production_HMM_v1"
+LIVE_HMM_MODEL_NAME = "EKLMNO_4s_2208-2508"

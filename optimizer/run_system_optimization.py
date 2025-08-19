@@ -17,7 +17,7 @@ from optimizer.system_optimizer import SystemOptimizer
 from api.creon_api import CreonAPIClient
 from manager.db_manager import DBManager
 from manager.backtest_manager import BacktestManager
-from config.settings import INITIAL_CASH, ACTIVE_STRATEGIES_FOR_HMM, STRATEGY_CONFIGS
+from config.settings import INITIAL_CASH, STRATEGY_CONFIGS
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -40,7 +40,7 @@ def convert_numpy_types(obj):
 
 def run_system_optimization(start_date: date, end_date: date, backtest_manager: BacktestManager) -> Dict[str, Dict[str, Any]]:
     """
-    settings.py의 ACTIVE_STRATEGIES_FOR_HMM에 정의된 모든 전략에 대해 최적화를 수행하고,
+    settings.py의 STRATEGIES_INFO 에 정의된 모든 전략에 대해 최적화를 수행하고,
     전략별 '챔피언 파라미터' 딕셔너리를 반환합니다.
     """
     logger.info(f"===== 시스템 전체 전략 최적화 시작: {start_date} ~ {end_date} =====")
@@ -48,14 +48,15 @@ def run_system_optimization(start_date: date, end_date: date, backtest_manager: 
     optimizer = SystemOptimizer(backtest_manager=backtest_manager, initial_cash=INITIAL_CASH)
     champion_params_all = {}
 
-    # [수정] ACTIVE_STRATEGIES_FOR_HMM 리스트를 직접 사용
-    for strategy_name in ACTIVE_STRATEGIES_FOR_HMM:
-        logger.info(f"\n--- 전략 최적화 중: {strategy_name} ---")
-        final_results = optimizer.run_hybrid_optimization(
-            strategy_name=strategy_name,
-            start_date=start_date,
-            end_date=end_date,
-        )
+    # [수정] STRATEGY_CONFIGS 리스트를 직접 사용
+    for strategy_name, config in STRATEGY_CONFIGS.items():
+        if config.get('strategy_status') is True: # 'strategy_status'가 True인 전략만
+            logger.info(f"\n--- 전략 최적화 중: {strategy_name} ---")
+            final_results = optimizer.run_hybrid_optimization(
+                strategy_name=strategy_name,
+                start_date=start_date,
+                end_date=end_date,
+            )
         
         if final_results:
             best_params = final_results.get('params', {}).get('strategy_params', {})

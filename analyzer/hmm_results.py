@@ -14,6 +14,7 @@ if project_root not in sys.path:
 from api.creon_api import CreonAPIClient
 from manager.db_manager import DBManager
 from manager.backtest_manager import BacktestManager
+from config.settings import LIVE_HMM_MODEL_NAME, INITIAL_CASH
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -150,5 +151,4 @@ def analyze_and_visualize_hmm(model_name: str):
 
 # --- 6. 스크립트 실행 ---
 if __name__ == "__main__":
-    MODEL_NAME_TO_ANALYZE = 'EKLMNO_4s_2208-2508'
-    analyze_and_visualize_hmm(MODEL_NAME_TO_ANALYZE)
+    analyze_and_visualize_hmm(LIVE_HMM_MODEL_NAME)

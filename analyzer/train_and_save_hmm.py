@@ -22,6 +22,46 @@ from config.settings import LIVE_HMM_MODEL_NAME
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# --- ▼ [신규] 특정 기간의 국면을 생성하고 저장하는 헬퍼 함수 추가 ---
+def generate_and_save_regimes_for_period(model_name: str, start_date: date, end_date: date, backtest_manager: BacktestManager) -> bool:
+    """
+    지정된 기간에 대해, 이미 학습된 HMM 모델을 로드하여 국면을 분석하고 DB에 저장합니다.
+    """
+    logger.info(f"'{model_name}' 모델을 사용하여 [{start_date} ~ {end_date}] 기간의 국면 분석을 시작합니다.")
+    
+    # 1. 학습된 모델 로드
+    model_info = backtest_manager.fetch_hmm_model_by_name(model_name)
+    if not model_info:
+        logger.error(f"모델 '{model_name}'을 찾을 수 없어 국면을 생성할 수 없습니다.")
+        return False
+    
+    model_id = model_info['model_id']
+    hmm_model = RegimeAnalysisModel.load_from_params(model_info['model_params'])
+    
+    # 2. 해당 기간의 시장 데이터(Feature) 준비
+    # get_market_data_for_hmm은 충분한 과거 데이터를 포함하여 특징을 계산함
+    features_df = backtest_manager.get_market_data_for_hmm(start_date=start_date, end_date=end_date)
+    if features_df.empty:
+        logger.error("국면 분석에 사용할 시장 데이터를 생성할 수 없습니다.")
+        return False
+        
+    # 3. 국면 예측 및 저장
+    predicted_regimes = hmm_model.predict(features_df)
+    
+    regime_data_to_save = [{
+        'date': day,
+        'model_id': model_id,
+        'regime_id': int(regime)
+    } for day, regime in zip(features_df.index, predicted_regimes)]
+    
+    if backtest_manager.db_manager.save_daily_regimes(regime_data_to_save):
+        logger.info(f"총 {len(regime_data_to_save)}개의 일별 국면 데이터를 DB에 성공적으로 저장했습니다 (Model ID: {model_id}).")
+        return True
+    else:
+        logger.error("일별 국면 데이터를 DB에 저장하는 데 실패했습니다.")
+        return False
+
 # --- 1. 국면 분석 및 정책 생성 함수 (신규 추가) ---
 def generate_policy_file(backtest_manager: BacktestManager, model_name: str, output_path: str = 'policy.json'):
     """
@@ -190,7 +230,7 @@ def run_hmm_training(model_name: str, start_date: date, end_date: date, backtest
 
 if __name__ == '__main__':
     # --- ▼ [핵심 수정] 모델명 하나만 정의하면 모든 설정이 자동으로 결정됨 ---
-    test_model_name = 'EKLMNO_4s_2208-2508'
+    test_model_name = LIVE_HMM_MODEL_NAME
 
     # --- 1. 모델명에서 학습 기간(YYMM-YYMM) 문자열 추출 ---
     # 정규표현식을 사용하여 'YYMM-YYMM' 패턴을 정확히 찾아냄
@@ -224,7 +264,7 @@ if __name__ == '__main__':
         
         backtest_manager.prepare_pykrx_data_for_period(test_start_date, test_end_date)
         
-        training_success, model_info = run_hmm_training(
+        training_success, model_info, _ = run_hmm_training(
             model_name=test_model_name,
             start_date=test_start_date,
             end_date=test_end_date,

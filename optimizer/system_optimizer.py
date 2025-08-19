@@ -97,7 +97,7 @@ class SystemOptimizer:
             # settings.py의 기본 파라미터 위에 최적화 파라미터를 덮어쓰기
             daily_strategy.strategy_params.update(strategy_params) 
 
-            _, metrics = self.backtest.reset_and_rerun(
+            _, metrics, trade_log, _ = self.backtest.reset_and_rerun(
                 daily_strategies=[daily_strategy],
                 minute_strategy=self.backtest.minute_strategy,
                 mode='strategy'

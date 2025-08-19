@@ -180,99 +180,72 @@ class DataManager:
         
         logger.info(f"마스터 데이터 로딩 완료. 총 {len(self.pykrx_master_df)}일치 데이터 저장.")
 
-    def get_market_data_for_hmm(self, start_date: date = None, end_date: date = None, days: int = 730) -> pd.DataFrame:
+    def get_market_data_for_hmm(self, start_date: date, end_date: date) -> pd.DataFrame:
         """
-        [최종 개선] 코드 효율성, 가독성, 특징 중복성을 개선한 HMM Feature Set 생성 함수입니다.
+        [최종 개선안] 지정된 기간(start_date ~ end_date)에 대한 HMM 특징 데이터를 안정적으로 생성합니다.
         """
         if self.pykrx_master_df is None:
-            raise RuntimeError("pykrx 마스터 데이터가 로드되지 않았습니다. prepare_pykrx_data_for_period()를 먼저 호출해야 합니다.")
+            raise RuntimeError("마스터 데이터가 로드되지 않았습니다. prepare_pykrx_data_for_period()를 먼저 호출해야 합니다.")
 
-        logger.debug("HMM 학습용 데이터를 마스터 데이터프레임에서 슬라이싱합니다.")
+        # 1. 지표 계산에 필요한 과거 데이터 기간 정의 (200일 이평선이 가장 긴 호흡)
+        lookback_period = 250  # 영업일 기준 약 1년
+        query_start_date = start_date - timedelta(days=lookback_period)
 
-        # --- 1. 데이터 준비 ---
-        final_end_date = end_date if end_date else date.today() - timedelta(days=1)
-        if start_date:
-            final_start_date = start_date
-        else:
-            final_start_date = final_end_date - timedelta(days=days)
-        
-        # 계산에 필요한 과거 데이터까지 포함하여 조회
-        query_start_date = final_start_date - timedelta(days=250) # 200일 이평선 계산을 위해 여유있게 조회
-        
-        df = self.pykrx_master_df.loc[query_start_date:final_end_date].copy()
+        # 2. 필요한 모든 원본 데이터를 한 번에 조회
+        df = self.pykrx_master_df.loc[query_start_date:end_date].copy()
         
         if df.empty:
-            logger.warning(f"HMM 학습용 KOSPI 데이터를 마스터 DF에서 슬라이싱할 수 없습니다.")
+            logger.warning(f"HMM 특징 생성을 위한 KOSPI 데이터를 마스터 DF에서 찾을 수 없습니다 ({query_start_date} ~ {end_date}).")
             return pd.DataFrame()
         
-        # --- 2. 기본 변수 사전 계산 ---
+        # 3. 특징(Feature) 계산 (전체 조회 기간에 대해 수행)
         daily_returns = df['종가'].pct_change()
-
-        # --- 3. Feature 계산 ---
-
-        # 3-1. 모멘텀 및 가속도 특징
-        window_20d = 20
-        sma20 = df['종가'].rolling(window=window_20d).mean()
-        sma60 = df['종가'].rolling(window=60).mean()
-        df['E_ma_divergence'] = (sma20 - sma60) / sma60 * 100
         
-        vol_short = daily_returns.rolling(window=window_20d).std()
-        vol_long = daily_returns.rolling(window=60).std()
-        df['K_volatility_ratio'] = vol_short / vol_long
-
-        sma50 = df['종가'].rolling(window=50).mean()
-        sma200 = df['종가'].rolling(window=200).mean()
-        df['L_trend_strength'] = (sma50 - sma200) / sma200 * 100
-
-        # 3-4. 시장 참여도 특징
-        # [개선] .apply(axis=1) 대신 where를 사용하여 성능 최적화
+        # 모멘텀 및 가속도
+        df['E_ma_divergence'] = (df['종가'].rolling(20).mean() - df['종가'].rolling(60).mean()) / df['종가'].rolling(60).mean() * 100
+        df['K_volatility_ratio'] = daily_returns.rolling(20).std() / daily_returns.rolling(60).std()
+        df['L_trend_strength'] = (df['종가'].rolling(50).mean() - df['종가'].rolling(200).mean()) / df['종가'].rolling(200).mean() * 100
+        
+        # 시장 참여도
         up_day_volume = df['거래대금'].where(daily_returns > 0, 0)
         down_day_volume = df['거래대금'].where(daily_returns < 0, 0)
-        up_flow = up_day_volume.rolling(window_20d).sum()
-        down_flow = down_day_volume.rolling(window_20d).sum()
+        up_flow = up_day_volume.rolling(20).sum()
+        down_flow = down_day_volume.rolling(20).sum()
         df['M_market_breadth_ratio'] = up_flow / (up_flow + down_flow)
 
-        ema_12 = df['종가'].ewm(span=12, adjust=False).mean()
-        ema_26 = df['종가'].ewm(span=26, adjust=False).mean()
+        ema_12, ema_26 = df['종가'].ewm(span=12, adjust=False).mean(), df['종가'].ewm(span=26, adjust=False).mean()
         macd_line = ema_12 - ema_26
-        signal_line = macd_line.ewm(span=9, adjust=False).mean()
-        df['N_macd_histogram'] = macd_line - signal_line
+        df['N_macd_histogram'] = macd_line - macd_line.ewm(span=9, adjust=False).mean()
 
-        # 2-3. 위기 감지 특징 (VKOSPI 대체 로직)
-        high_low = df['고가'] - df['저가']
-        high_close = np.abs(df['고가'] - df['종가'].shift())
-        low_close = np.abs(df['저가'] - df['종가'].shift())
-        true_range = pd.DataFrame({'hl': high_low, 'hc': high_close, 'lc': low_close}).max(axis=1)
-        atr = true_range.rolling(window=14).mean()
-        drawdown_pct = (df['종가'] - df['고가'].rolling(window=20).max()) / df['고가'].rolling(window=20).max()
+        # 위기 감지
+        true_range = pd.concat([df['고가'] - df['저가'], abs(df['고가'] - df['종가'].shift()), abs(df['저가'] - df['종가'].shift())], axis=1).max(axis=1)
+        atr = true_range.rolling(14).mean()
+        drawdown_pct = (df['종가'] - df['고가'].rolling(20).max()) / df['고가'].rolling(20).max()
         df['O_crisis_index'] = np.abs(drawdown_pct) * (atr / df['종가'])
 
-        # --- 4. 최종 데이터 정리 ---
-        final_features_df = df[[
-            'E_ma_divergence',
-            'K_volatility_ratio',
-            'L_trend_strength',       # 장기 추세 방향 (Bull/Bear)  
-            'M_market_breadth_ratio', # 상대적 변동성 (Low/High Vol)
-            'N_macd_histogram',       # 추세 모멘텀 (Bull/Bear)
-            'O_crisis_index'          # 위기 수준 변동성 (Crisis)
-        ]].copy()
-        
-        # 날짜 필터링 및 결측치 처리
-        final_features_df = final_features_df.loc[final_start_date:final_end_date]
-        final_features_df.replace([np.inf, -np.inf], 0, inplace=True) # NaN 대신 0으로 채워 데이터 손실 최소화
-        final_features_df.fillna(0, inplace=True)
+        # 4. 최종적으로 필요한 기간과 컬럼만 선택
+        feature_cols = [
+            'E_ma_divergence', 'K_volatility_ratio', 'L_trend_strength', 
+            'M_market_breadth_ratio', 'N_macd_histogram', 'O_crisis_index'
+        ]
+        final_features_df = df.loc[start_date:end_date, feature_cols].copy()
 
-        # --- 5. 스케일링 ---
+        # 5. 결측치 및 이상치 처리
+        final_features_df.replace([np.inf, -np.inf], np.nan, inplace=True)
+        final_features_df.fillna(method='ffill', inplace=True) # 앞 데이터로 채우기
+        final_features_df.fillna(0, inplace=True) # 그럼에도 남은 NaN은 0으로 채우기
+        
         if final_features_df.empty:
             return pd.DataFrame()
-            
+
+        # 6. 스케일링 후 반환
         scaler = StandardScaler()
         scaled_features = pd.DataFrame(
-            scaler.fit_transform(final_features_df), 
-            index=final_features_df.index, 
+            scaler.fit_transform(final_features_df),
+            index=final_features_df.index,
             columns=final_features_df.columns
         )
-        logger.debug(f"HMM 학습용 데이터 스케일링 완료. 최종 {len(scaled_features)}일치 데이터")
+        logger.debug(f"HMM 특징 데이터 생성 완료: {len(scaled_features)}일 ({start_date} ~ {end_date})")
         
         return scaled_features
 
