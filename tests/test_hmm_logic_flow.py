@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 import sys
 import os
-
+from datetime import date, timedelta
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
@@ -29,7 +29,7 @@ class TestHmmLogicFlow(unittest.TestCase):
     def test_1_verify_full_model_instability(self):
         """[가설 검증] 'full' 타입 모델은 우리 데이터로 학습 시 불안정하여 에러가 발생함을 확인합니다."""
         print("\n--- [Test 1] 'full' 타입 모델 학습 불안정성 테스트 ---")
-        training_data = self.backtest_manager.get_market_data_for_hmm(days=100)
+        training_data = self.backtest_manager.get_market_data_for_hmm(date.today() - timedelta(days=100), date.today())
         
         # 'full' 타입 모델 학습 시 ValueError가 발생하는 것을 기대함
         with self.assertRaises(ValueError) as context:

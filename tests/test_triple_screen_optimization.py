@@ -70,7 +70,7 @@ def test_triple_screen_grid_search():
         logger.info(f"  RSI: {first_combo['triple_screen_params']['momentum_rsi_period']}일")
         logger.info(f"  RSI 범위: {first_combo['triple_screen_params']['momentum_rsi_oversold']}-{first_combo['triple_screen_params']['momentum_rsi_overbought']}")
         logger.info(f"  거래량MA: {first_combo['triple_screen_params']['volume_ma_period']}일")
-        logger.info(f"  종목수: {first_combo['triple_screen_params']['num_top_stocks']}개")
+        logger.info(f"  종목수: {first_combo['triple_screen_params']['max_position_count']}개")
         logger.info(f"  최소추세강도: {first_combo['triple_screen_params']['min_trend_strength']}")
     
     # 제한된 조합으로 테스트 실행
@@ -159,7 +159,7 @@ def test_triple_screen_progressive_optimization():
                 logger.info(f"  RSI: {params['triple_screen_params']['momentum_rsi_period']}일")
                 logger.info(f"  RSI 범위: {params['triple_screen_params']['momentum_rsi_oversold']}-{params['triple_screen_params']['momentum_rsi_overbought']}")
                 logger.info(f"  거래량MA: {params['triple_screen_params']['volume_ma_period']}일")
-                logger.info(f"  종목수: {params['triple_screen_params']['num_top_stocks']}개")
+                logger.info(f"  종목수: {params['triple_screen_params']['max_position_count']}개")
                 logger.info(f"  최소추세강도: {params['triple_screen_params']['min_trend_strength']}")
 
 if __name__ == "__main__":

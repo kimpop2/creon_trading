@@ -25,7 +25,7 @@ class TripleScreenDaily(DailyStrategy):
         """전략 파라미터 검증"""
         required_params = [
             'trend_ma_period', 'momentum_rsi_period', 'momentum_rsi_oversold', 
-            'momentum_rsi_overbought', 'num_top_stocks', 'min_trend_strength'
+            'momentum_rsi_overbought', 'max_position_count', 'min_trend_strength'
         ]
         for param in required_params:
             if param not in self.strategy_params:

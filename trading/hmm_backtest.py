@@ -40,7 +40,6 @@ from config.settings import (
     MARKET_OPEN_TIME, MARKET_CLOSE_TIME,
     INITIAL_CASH, COMMON_PARAMS,
     STRATEGY_CONFIGS,               # [수정] 통합 설정 임포트
-    ACTIVE_STRATEGIES_FOR_HMM,      # [수정] 활성 전략 리스트 임포트
     STOP_LOSS_PARAMS,
     PRINCIPAL_RATIO,
     LIVE_HMM_MODEL_NAME
@@ -66,11 +65,11 @@ class HMMBacktest:
         self.end_date = end_date
         self.daily_strategies: List[DailyStrategy] = []
         self.minute_strategy: MinuteStrategy = None
-        self.portfolio_values = [] # self.broker.get_portfolio_value #########
-        
         self.data_store = {'daily': {}, 'minute': {}} 
-        
         self.save_to_db = save_to_db
+
+        self.portfolio_values = [] # self.broker.get_portfolio_value #########
+        self.custom_universe: Optional[List[str]] = None
 
         self.market_open_time = dt.strptime(MARKET_OPEN_TIME, '%H:%M:%S').time()
         self.market_close_time = dt.strptime(MARKET_CLOSE_TIME, '%H:%M:%S').time()
@@ -94,6 +93,16 @@ class HMMBacktest:
         daily_strategy_names = ', '.join([s.__class__.__name__ for s in self.daily_strategies])
         logger.info(f"전략 설정 완료: Daily(s)='{daily_strategy_names}', Minute='{self.minute_strategy.__class__.__name__}'")
 
+    # --- ▼ [2. 추가] 사용자 정의 유니버스를 설정하는 세터(setter) 메서드 ---
+    def set_custom_universe(self, universe_codes: Optional[List[str]]):
+        """
+        최적화 등 특정 목적을 위해 사용할 사용자 정의 유니버스를 설정합니다.
+        """
+        self.custom_universe = universe_codes
+        if universe_codes:
+            logger.info(f"사용자 정의 유니버스({len(universe_codes)}개 종목)가 설정되었습니다.")
+    # --- ▲ 추가 완료 ---
+
     def prepare_for_system(self) -> bool:
         """백테스팅 기간내 일봉 분봉 데이터를 미리 data_store 에 저장 합니다."""
         start_date = self.start_date
@@ -102,12 +111,15 @@ class HMMBacktest:
         
         # 1. 유니버스 종목 코드 결정 (모든 전략이 필요로 하는 종목 총망라)
         universe_codes = set()
-        for strategy in self.daily_strategies:
-            # 각 전략의 파라미터에서 유니버스 관련 정보를 가져오는 로직 (필요시 구현)
-            # 여기서는 모든 종목을 로드한다고 가정
-            pass 
-        # 임시로 trading_manager와 유사하게 전체 유니버스 로드
-        universe_codes.update(self.manager.get_universe_codes())
+        # --- ▼ [3. 수정] 유니버스 결정 로직 변경 ---
+        # 1. 사용할 유니버스 종목 코드 결정
+        if self.custom_universe is not None:
+            logger.info("사용자 정의 유니버스를 사용하여 데이터를 준비합니다.")
+            universe_codes = set(self.custom_universe)
+        else:
+            logger.info("기본 전체 유니버스를 사용하여 데이터를 준비합니다.")
+            universe_codes = set(self.manager.get_universe_codes())
+        # --- ▲ 수정 완료 ---
         
         # COMMON_PARAMS의 필수 코드 추가
         market_code = COMMON_PARAMS.get('market_index_code')
@@ -165,7 +177,9 @@ class HMMBacktest:
             self.model_id = model_info['model_id']
             hmm_model = RegimeAnalysisModel.load_from_params(model_info['model_params'])
             self.inference_service = RegimeInferenceService(hmm_model)
-            
+            # --- ▼ [1. 핵심 수정] HMM 모델에서 전이 행렬을 추출합니다. ---
+            transition_matrix = hmm_model.model.transmat_
+
             profiles_df = self.manager.fetch_strategy_profiles_by_model(self.model_id)
             profiles_for_pm = {}
             if not profiles_df.empty:
@@ -193,19 +207,23 @@ class HMMBacktest:
                 policy_path = os.path.join(project_root, 'config', 'policy.json')
                 self.policy_map.load_rules(policy_path)
 
-            # PortfolioManager를 HMM 두뇌 모듈과 함께 초기화
-            # settings.py에서 활성 전략 목록을 가져와 portfolio_configs를 구성
-            portfolio_configs_for_pm = [
-                {"name": name, "weight": STRATEGY_CONFIGS.get(name, {}).get("portfolio_params", {}).get("weight", 0)}
-                for name in ACTIVE_STRATEGIES_FOR_HMM
-            ]
-
+            # [수정] STRATEGY_CONFIGS를 스캔하여 활성화된 전략 목록을 동적으로 생성
+            active_strategies_for_pm = []
+            for name, config in STRATEGY_CONFIGS.items():
+                if config.get("strategy_status") is True:
+                    active_strategies_for_pm.append({
+                        "name": name,
+                        "weight": config.get("strategy_weight", 0)
+                    })
+            
+            # --- ▼ [2. 핵심 수정] PortfolioManager 생성자에 transition_matrix를 전달합니다. ---
             self.capital_manager = PortfolioManager(
                 broker=self.broker,
-                portfolio_configs=portfolio_configs_for_pm, # <--- 수정된 부분
+                portfolio_configs=active_strategies_for_pm,
                 inference_service=self.inference_service,
                 policy_map=self.policy_map,
-                strategy_profiles=profiles_for_pm
+                strategy_profiles=profiles_for_pm,
+                transition_matrix=transition_matrix # <-- 이 인자를 추가
             )
             # --- ▲ [핵심 수정] 종료 ▲ ---
 
@@ -225,6 +243,13 @@ class HMMBacktest:
         end_date = self.end_date      
         market_calendar_df = self.manager.fetch_market_calendar(start_date, end_date)
         trading_dates = market_calendar_df[market_calendar_df['is_holiday'] == 0]['date'].dt.date.tolist()
+        # --- ▼ [핵심 추가] 매매 제외 대상 종목 리스트를 미리 정의 ---
+        non_tradeable_codes = {
+            COMMON_PARAMS.get('market_index_code'),
+            COMMON_PARAMS.get('safe_asset_code')
+        }
+        non_tradeable_codes.discard(None) # 설정 파일에 값이 없는 경우를 대비해 None 제거
+        # --- ▲ 추가 완료 ---
 
         for i, current_date in enumerate(trading_dates):
             prev_date = trading_dates[i - 1] if i > 0 else self.start_date - timedelta(days=1)
@@ -253,7 +278,14 @@ class HMMBacktest:
                     strategy_capital = self.capital_manager.get_strategy_capital(strategy.strategy_name, total_principal)
 
                 strategy.run_daily_logic(current_date, strategy_capital)
-                signals_from_all.append(strategy.signals)
+
+                # --- ▼ [핵심 수정] 생성된 신호에서 매매 제외 대상을 필터링 ---
+                filtered_signals = {
+                    code: signal for code, signal in strategy.signals.items()
+                    if code not in non_tradeable_codes
+                }
+                signals_from_all.append(filtered_signals)
+                # --- ▲ 수정 완료 ---                
             
             final_signals = self._aggregate_signals(signals_from_all)
             self.minute_strategy.update_signals(final_signals)
@@ -297,7 +329,38 @@ class HMMBacktest:
 
         # calculate_performance_metrics 함수가 외부에 있다고 가정
         final_metrics = calculate_performance_metrics(portfolio_value_series)
-        return portfolio_value_series, final_metrics
+        trade_log = self.broker.transaction_log # Broker로부터 거래 로그를 가져옴
+        run_id = None # run_id 초기화
+
+        # --- ▼ [핵심 추가] save_to_db가 True일 때만 DB에 저장하고 run_id를 받아옴 ---
+        if self.save_to_db and not portfolio_value_series.empty:
+            storage = BacktestDB(self.manager.get_db_manager())
+            reporter = ReportGenerator(storage_strategy=storage)
+
+            daily_strategy_names = ', '.join([s.__class__.__name__ for s in self.daily_strategies])
+            daily_strategy_params = {s.__class__.__name__: s.strategy_params for s in self.daily_strategies}
+
+            run_id = reporter.generate(
+                start_date=self.start_date,
+                end_date=self.end_date,
+                initial_cash=self.initial_cash,
+                portfolio_value_series=portfolio_value_series,
+                transaction_log=trade_log,
+                strategy_info={
+                    'strategy_daily': daily_strategy_names,
+                    'strategy_minute': self.minute_strategy.__class__.__name__,
+                    'params_json_daily': daily_strategy_params,
+                    'params_json_minute': self.minute_strategy.strategy_params,
+                    'model_id': self.model_id if hasattr(self, 'model_id') else None # 모델 ID 추가
+                }
+            )
+        elif portfolio_value_series.empty:
+             logger.warning("포트폴리오 가치 데이터가 비어 있어 DB에 결과를 저장하지 않습니다.")
+        else:
+             logger.info("save_to_db=False로 설정되어 DB에 결과를 저장하지 않습니다.")
+        
+        # --- ▼ [핵심 수정] run_id를 함께 반환하도록 변경 ---
+        return portfolio_value_series, final_metrics, trade_log, run_id
 
     def run(self):
         start_date = self.start_date
@@ -488,157 +551,165 @@ class HMMBacktest:
             self.manager.close()
         logger.info("Backtest 시스템 cleanup 완료.") 
 
-    def run_profiling(self, run_id: int):
-        """
-        특정 run_id에 대한 프로파일링을 수행하는 헬퍼 함수.
-        """
-        logger.info(f"\n{'='*20} run_id: {run_id} 프로파일링 시작 {'='*20}")
+#     def run_profiling(self, run_id: int):
+#         """
+#         특정 run_id에 대한 프로파일링을 수행하는 헬퍼 함수.
+#         """
+#         logger.info(f"\n{'='*20} run_id: {run_id} 프로파일링 시작 {'='*20}")
         
-        try:
-            model_info = self.manager.fetch_hmm_model_by_name(LIVE_HMM_MODEL_NAME)
-            if not model_info:
-                logger.error(f"'{LIVE_HMM_MODEL_NAME}' 모델이 DB에 없어 프로파일링을 중단합니다.")
-                return
+#         try:
+#             model_info = self.manager.fetch_hmm_model_by_name(LIVE_HMM_MODEL_NAME)
+#             if not model_info:
+#                 logger.error(f"'{LIVE_HMM_MODEL_NAME}' 모델이 DB에 없어 프로파일링을 중단합니다.")
+#                 return
 
-            model_id = model_info['model_id']
-            run_info_df = self.manager.fetch_backtest_run(run_id=run_id)
-            performance_df = self.manager.fetch_backtest_performance(run_id=run_id)
-            regime_data_df = self.manager.fetch_daily_regimes(model_id=model_id)
-            # DB에서 Decimal 타입으로 가져온 데이터를 시스템 표준인 float으로 변환합니다.
-            if 'daily_return' in performance_df.columns:
-                performance_df['daily_return'] = performance_df['daily_return'].astype(float)
+#             model_id = model_info['model_id']
+#             run_info_df = self.manager.fetch_backtest_run(run_id=run_id)
+#             performance_df = self.manager.fetch_backtest_performance(run_id=run_id)
+#             regime_data_df = self.manager.fetch_daily_regimes(model_id=model_id)
+#             # DB에서 Decimal 타입으로 가져온 데이터를 시스템 표준인 float으로 변환합니다.
+#             if 'daily_return' in performance_df.columns:
+#                 performance_df['daily_return'] = performance_df['daily_return'].astype(float)
 
-            if run_info_df.empty or performance_df.empty or regime_data_df.empty:
-                logger.error("프로파일링에 필요한 데이터가 부족합니다.")
-                return
+#             if run_info_df.empty or performance_df.empty or regime_data_df.empty:
+#                 logger.error("프로파일링에 필요한 데이터가 부족합니다.")
+#                 return
 
-            profiler = StrategyProfiler()
-            profiles_to_save = profiler.generate_profiles(
-                performance_df, regime_data_df, run_info_df, model_id
-            )
+#             profiler = StrategyProfiler()
+#             profiles_to_save = profiler.generate_profiles(
+#                 performance_df, regime_data_df, run_info_df, model_id
+#             )
 
-            if profiles_to_save:
-                if self.manager.save_strategy_profiles(profiles_to_save):
-                    logger.info(f"✅ run_id: {run_id}에 대한 프로파일을 DB에 성공적으로 저장했습니다.")
-                else:
-                    logger.error("프로파일 DB 저장에 실패했습니다.")
-        finally:
-            self.manager.close()
-            logger.info(f"{'='*20} run_id: {run_id} 프로파일링 종료 {'='*20}")
+#             if profiles_to_save:
+#                 if self.manager.save_strategy_profiles(profiles_to_save):
+#                     logger.info(f"✅ run_id: {run_id}에 대한 프로파일을 DB에 성공적으로 저장했습니다.")
+#                 else:
+#                     logger.error("프로파일 DB 저장에 실패했습니다.")
+#         finally:
+#             self.manager.close()
+#             logger.info(f"{'='*20} run_id: {run_id} 프로파일링 종료 {'='*20}")
 
-STRATEGY_CLASSES = {
-    'SMADaily': SMADaily,
-    'DualMomentumDaily': DualMomentumDaily,
-    'BreakoutDaily': BreakoutDaily,
-    'ClosingBetDaily': ClosingBetDaily,
-    # 'TripleScreenDaily': TripleScreenDaily, # 필요시 추가
-}
-def run_backtest_and_save_to_db(strategy_name: str, strategy_params: dict, start_date: date, end_date: date, backtest_manager: BacktestManager):
-    """
-    주어진 파라미터로 단일 전략의 백테스트를 실행하고, 그 결과를 DB에 저장합니다.
-    """
-    logger.info(f"\n--- Running backtest for '{strategy_name}' and saving to DB ---")
-    logger.info(f"Period: {start_date} ~ {end_date}")
-    logger.info(f"Params: {strategy_params}")
 
-    # 1. 컴포넌트 초기화
+# def run_backtest_and_save_to_db(strategy_name: str, strategy_params: dict, start_date: date, end_date: date, backtest_manager: BacktestManager):
+#     """
+#     주어진 파라미터로 단일 전략의 백테스트를 실행하고, 그 결과를 DB에 저장합니다.
+#     """
+#     logger.info(f"\n--- Running backtest for '{strategy_name}' and saving to DB ---")
+#     logger.info(f"Period: {start_date} ~ {end_date}")
+#     logger.info(f"Params: {strategy_params}")
+
+#     # 1. 컴포넌트 초기화
     
-    # 2. Backtest 인스턴스 생성
-    backtest_system = HMMBacktest(
-        manager=backtest_manager,
-        initial_cash=INITIAL_CASH,
-        start_date=start_date,
-        end_date=end_date,
-        save_to_db=True # <-- DB 저장을 활성화
-    )
+#     # 2. Backtest 인스턴스 생성
+#     backtest_system = HMMBacktest(
+#         manager=backtest_manager,
+#         initial_cash=INITIAL_CASH,
+#         start_date=start_date,
+#         end_date=end_date,
+#         save_to_db=True # <-- DB 저장을 활성화
+#     )
+#     active_strategies = {name: config for name, config in STRATEGY_CONFIGS.items() if config.get("strategy_status")}
+#     # 3. 전략 인스턴스 생성
+#     strategy_config = STRATEGY_CONFIGS.get(strategy_name)
+#     if not strategy_config or not strategy_config.get("strategy_status"):
+#         logger.warning(f"'{strategy_name}' 전략은 현재 활성화(strategy_status=True) 상태가 아닙니다.")
+#         # 필요에 따라 여기서 return할 수 있습니다.
+#         # return 
 
-    # 3. 전략 인스턴스 생성
-    strategy_class = STRATEGY_CLASSES.get(strategy_name)
-    if not strategy_class:
-        logger.error(f"전략 클래스 '{strategy_name}'를 찾을 수 없습니다.")
-        return
+#     # 2. globals()를 사용해 strategy_name(문자열)에 해당하는 실제 '클래스 객체'를 찾습니다.
+#     strategy_class = globals().get(strategy_name)
+#     if not strategy_class:
+#         logger.error(f"전략 클래스 '{strategy_name}'를 찾을 수 없습니다. 파일 상단에 import 되었는지 확인하세요.")
+#         return
 
-    # settings.py의 기본 파라미터와 최적화된 파라미터를 결합
-    base_params = {}
-    base_params = STRATEGY_CONFIGS.get(strategy_name, {}).get('default_params', {}).copy()
-    final_strategy_params = {**base_params, **strategy_params}
+#     # settings.py의 기본 파라미터와 최적화된 파라미터를 결합
+#     base_params = {}
+#     base_params = STRATEGY_CONFIGS.get(strategy_name, {}).get('default_params', {}).copy()
+#     final_strategy_params = {**base_params, **strategy_params}
 
-    daily_strategy_instance = strategy_class(
-        broker=backtest_system.broker, 
-        data_store=backtest_system.data_store
-    )
-    # 분봉 전략은 최적화 대상이 아니므로 PassMinute 사용
-    minute_strategy_instance = PassMinute(
-        broker=backtest_system.broker,
-        data_store=backtest_system.data_store
-    )
+#     daily_strategy_instance = strategy_class(
+#         broker=backtest_system.broker, 
+#         data_store=backtest_system.data_store
+#     )
+#     # 분봉 전략은 최적화 대상이 아니므로 PassMinute 사용
+#     minute_strategy_instance = PassMinute(
+#         broker=backtest_system.broker,
+#         data_store=backtest_system.data_store
+#     )
 
-    # 4. 전략 설정 및 백테스트 실행
-    backtest_system.set_strategies(
-        daily_strategies=[daily_strategy_instance],
-        minute_strategy=minute_strategy_instance,
-        stop_loss_params=STOP_LOSS_PARAMS
-    )
+#     # 4. 전략 설정 및 백테스트 실행
+#     backtest_system.set_strategies(
+#         daily_strategies=[daily_strategy_instance],
+#         minute_strategy=minute_strategy_instance,
+#         stop_loss_params=STOP_LOSS_PARAMS
+#     )
     
-    backtest_system.prepare_for_system()
-    backtest_system.run()
-    backtest_system.cleanup()
-    logger.info(f"--- Finished backtest for '{strategy_name}' ---")
-# --- ▼ [신규] 최종 Out-of-Sample 테스트를 위한 래퍼 함수 ▼ ---
+#     backtest_system.prepare_for_system()
+#     backtest_system.run()
+#     backtest_system.cleanup()
+#     logger.info(f"--- Finished backtest for '{strategy_name}' ---")
 
-def run_final_backtest(model_name: str, start_date: date, end_date: date, policy_dict: dict, backtest_manager: BacktestManager) -> pd.Series:
-    """
-    주어진 HMM 모델과 최적화된 정책으로 Out-of-Sample 기간에 대한 최종 백테스트를 실행하고,
-    일별 포트폴리오 가치 시리즈를 반환합니다.
-    """
-    logger.info(f"\n--- Running FINAL Out-of-Sample Test for '{model_name}' ---")
-    logger.info(f"Test Period: {start_date} ~ {end_date}")
-    logger.info(f"Policy: {policy_dict}")
 
-    # 1. 컴포넌트 초기화
+# # --- ▼ [신규] 최종 Out-of-Sample 테스트를 위한 래퍼 함수 ▼ ---
 
-    # 2. Backtest 인스턴스 생성 (DB 저장은 False)
-    backtest_system = HMMBacktest(
-        manager=backtest_manager,
-        initial_cash=INITIAL_CASH,
-        start_date=start_date,
-        end_date=end_date,
-        save_to_db=False # <-- 최종 테스트 결과는 DB에 저장하지 않음
-    )
-    
-    # 3. 전략 인스턴스 리스트 생성
-    daily_strategies_list = []
-    # ACTIVE_STRATEGIES_FOR_HMM 리스트를 순회하며 전략 객체 생성
-    for strategy_name in ACTIVE_STRATEGIES_FOR_HMM:
-        strategy_class = STRATEGY_CLASSES.get(strategy_name)
-        if strategy_class:
-            instance = strategy_class(
-                broker=backtest_system.broker,
-                data_store=backtest_system.data_store
-            )
-            daily_strategies_list.append(instance)
+# def run_final_backtest(model_name: str, start_date: date, end_date: date, policy_dict: dict, backtest_manager: BacktestManager) -> pd.Series:
+#     """
+#     주어진 HMM 모델과 최적화된 정책으로 Out-of-Sample 기간에 대한 최종 백테스트를 실행하고,
+#     일별 포트폴리오 가치 시리즈를 반환합니다.
+#     """
+#     logger.info(f"\n--- Running FINAL Out-of-Sample Test for '{model_name}' ---")
+#     logger.info(f"Test Period: {start_date} ~ {end_date}")
+#     logger.info(f"Policy: {policy_dict}")
 
-    minute_strategy_instance = PassMinute(broker=backtest_system.broker, data_store=backtest_system.data_store)
-    backtest_system.set_strategies(
-        daily_strategies=daily_strategies_list,
-        minute_strategy=minute_strategy_instance
-    )
-    # 4. 데이터 준비 및 백테스트 실행
-    backtest_system.prepare_for_system()
-    
-    portfolio_series, _ = backtest_system.reset_and_rerun(
-        daily_strategies=daily_strategies_list,
-        minute_strategy=minute_strategy_instance,
-        mode='hmm',
-        model_name=model_name,
-        policy_dict=policy_dict # <-- 최적화된 정책 주입
-    )
-    
-    backtest_system.cleanup()
-    logger.info(f"--- Finished FINAL Out-of-Sample Test for '{model_name}' ---")
+#     # 1. 컴포넌트 초기화
 
-    return portfolio_series
-    
+#     # 2. Backtest 인스턴스 생성 (DB 저장은 False)
+#     backtest_system = HMMBacktest(
+#         manager=backtest_manager,
+#         initial_cash=INITIAL_CASH,
+#         start_date=start_date,
+#         end_date=end_date,
+#         save_to_db=False # <-- 최종 테스트 결과는 DB에 저장하지 않음
+#     )
+
+#     # 3. 전략 인스턴스 리스트 생성
+#     daily_strategies_list = []
+#     # STRATEGY_CONFIGS를 순회하며 'strategy_status'가 True인 전략만 객체로 생성
+#     for name, config in STRATEGY_CONFIGS.items():
+#         if config.get("strategy_status") is True:
+#             # globals()에서 이름으로 실제 클래스를 찾습니다.
+#             strategy_class = globals().get(name) 
+#             if strategy_class:
+#                 instance = strategy_class(
+#                     broker=backtest_system.broker,
+#                     data_store=backtest_system.data_store
+#                 )
+#                 daily_strategies_list.append(instance)
+#             else:
+#                 logger.warning(f"설정 파일에 있는 '{name}' 전략 클래스를 찾을 수 없어 건너뜁니다.")
+
+#     minute_strategy_instance = PassMinute(broker=backtest_system.broker, data_store=backtest_system.data_store)
+#     backtest_system.set_strategies(
+#         daily_strategies=daily_strategies_list,
+#         minute_strategy=minute_strategy_instance
+#     )
+#     # 4. 데이터 준비 및 백테스트 실행
+#     backtest_system.prepare_for_system()
+
+#     portfolio_series, _, _, _ = backtest_system.reset_and_rerun(
+#         daily_strategies=daily_strategies_list,
+#         minute_strategy=minute_strategy_instance,
+#         mode='hmm',
+#         model_name=model_name,
+#         policy_dict=policy_dict # <-- 최적화된 정책 주입
+#     )
+
+#     backtest_system.cleanup()
+#     logger.info(f"--- Finished FINAL Out-of-Sample Test for '{model_name}' ---")
+
+#     return portfolio_series
+
+
 if __name__ == "__main__":
     """
     Backtest 클래스 테스트 실행 코드
@@ -669,21 +740,7 @@ if __name__ == "__main__":
             end_date=end_date,
             save_to_db=True
         )
-        daily_strategies_to_run = []
         
-        # [핵심 3] ACTIVE_STRATEGIES_FOR_HMM 리스트를 직접 순회
-        # for strategy_name in ACTIVE_STRATEGIES_FOR_HMM:
-        #     # globals()를 사용해 문자열 이름으로 클래스 객체를 동적으로 찾음
-        #     strategy_class = globals().get(strategy_name)
-            
-        #     if strategy_class:
-        #         instance = strategy_class(
-        #             broker=backtest_system.broker,
-        #             data_store=backtest_system.data_store
-        #         )
-        #         daily_strategies_to_run.append(instance)
-        #     else:
-        #         logger.warning(f"전략 클래스 '{strategy_name}'를 찾을 수 없습니다. 임포트되었는지 확인하세요.")
         daily_strategies_to_run = [
             # BreakoutDaily(
             #     broker=backtest_system.broker,

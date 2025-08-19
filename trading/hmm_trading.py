@@ -37,7 +37,6 @@ from config.settings import (
     INITIAL_CASH, MIN_STOCK_CAPITAL, PRINCIPAL_RATIO, 
     COMMON_PARAMS, STOP_LOSS_PARAMS, 
     STRATEGY_CONFIGS,               # [수정] 통합 설정 임포트
-    ACTIVE_STRATEGIES_FOR_HMM,      # [수정] 활성 전략 리스트 임포트
     LIVE_HMM_MODEL_NAME
 ) 
 
@@ -206,7 +205,7 @@ class HMMTrading:
                         if self.portfolio_manager:
                             # HMM 동적 모드
                             account_equity = self.portfolio_manager.get_account_equity(current_prices)
-                            hmm_input_data = self.manager.get_market_data_for_hmm(end_date=now.date())
+                            hmm_input_data = self.manager.get_market_data_for_hmm(start_date=(now.date() - timedelta(days=100)), end_date=now.date())
                             total_principal, regime_probs = self.portfolio_manager.get_total_principal(account_equity, hmm_input_data)
                             strategy_capitals = self.portfolio_manager.get_strategy_capitals(total_principal, regime_probs)
                         else:
@@ -510,12 +509,14 @@ if __name__ == "__main__":
         daily_strategies_to_run = []
         
         # --- ▼ [수정] HMM 작전 계획에 따른 Manager 분기 처리 ▼ ---
-        directive_path = os.path.join(project_root, 'trading', 'daily_directive.json')
+        today_str = datetime.now().strftime('%Y%m%d')
+        file_name = f"{today_str}_directive.json"
+        directive_path = os.path.join(project_root, 'trading', file_name)
         if os.path.exists(directive_path):
-            logger.info("HMM 작전 계획 파일('daily_directive.json') 발견. HMM 동적 모드로 실행.")
+            logger.info(f"오늘의 HMM 작전 계획 파일('{file_name}') 발견. HMM 동적 모드로 실행.")
             with open(directive_path, 'r', encoding='utf-8') as f:
                 directive = json.load(f)
-            
+
             # HMM 두뇌를 생성하여 필요한 구성요소(추론기, 정책, 프로파일)를 가져옴
             brain = HMMBrain(db_manager, trading_manager)
             # PortfolioManager를 생성하고 trading_system에 장착
@@ -537,7 +538,8 @@ if __name__ == "__main__":
                 portfolio_configs=directive['portfolio'],
                 inference_service=brain.inference_service,
                 policy_map=brain.policy_map,
-                strategy_profiles=profiles_dict # 가공된 딕셔너리를 전달
+                strategy_profiles=profiles_dict, # 가공된 딕셔너리를 전달
+                transition_matrix=brain.inference_service.hmm_model.model.transmat_
             )
             
             # 작전 파일에 명시된 전략과 파라미터 로드
@@ -551,19 +553,23 @@ if __name__ == "__main__":
                     strategy_instance.strategy_params = item['params']
                     daily_strategies_to_run.append(strategy_instance)
         else:
-            logger.info("HMM 작전 계획 파일 없음. 설정 파일(settings.py) 기반의 정적 모드로 실행.")
+            logger.info(f"오늘의 HMM 작전 계획 파일 없음. 설정 파일(settings.py) 기반의 정적 모드로 실행.")
             # CapitalManager를 생성하고 trading_system에 장착
             trading_system.capital_manager = CapitalManager(trading_system.broker)
-            
-            # settings.py에 정의된 활성 전략 로드
-            for strategy_name in ACTIVE_STRATEGIES_FOR_HMM:
-                strategy_class = globals().get(strategy_name)
-                if strategy_class:
-                     daily_strategies_to_run.append(strategy_class(
-                        broker=trading_system.broker,
-                        data_store=trading_system.data_store
-                    ))
-        # --- ▲ [수정] 종료 ▲ ---
+            # settings.py에 정의된 활성 전략을 동적으로 로드
+            for name, config in STRATEGY_CONFIGS.items():
+                if config.get("strategy_status") is True:
+                    # globals()를 사용해 문자열 이름으로 클래스 객체를 동적으로 찾음
+                    strategy_class = globals().get(name)
+                    if strategy_class:
+                        instance = strategy_class(
+                            broker=trading_system.broker,
+                            data_store=trading_system.data_store
+                        )
+                        daily_strategies_to_run.append(instance)
+                    else:
+                        logger.warning(f"전략 클래스 '{name}'를 찾을 수 없습니다. 임포트되었는지 확인하세요.")            
+ 
 
         # --- (이하 공통 실행 로직은 동일) ---
         minute_strategy = TargetPriceMinute(trading_system.broker, trading_system.data_store)

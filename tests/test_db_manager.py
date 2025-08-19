@@ -101,7 +101,7 @@ class TestDBManager(unittest.TestCase):
             'max_drawdown': 0.05,
             'strategy_daily': 'DualMomentumDaily',
             'strategy_minute': 'RSIMinute',
-            'params_json_daily': {'lookback_period': 12, 'num_top_stocks': 5},
+            'params_json_daily': {'lookback_period': 12, 'max_position_count': 5},
             'params_json_minute': {'rsi_period': 14, 'buy_signal': 30, 'sell_signal': 70}
         }
         

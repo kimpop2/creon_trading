@@ -116,7 +116,7 @@ class DualMomentumDaily(DailyStrategy): # DailyStrategy 상속
         buy_candidates = set()
         
         for rank, (stock_code, score) in enumerate(sorted_stocks, 1):
-            if rank <= self.strategy_params['num_top_stocks'] and score > safe_asset_momentum:
+            if rank <= self.strategy_params['max_position_count'] and score > safe_asset_momentum:
                 buy_candidates.add(stock_code)
 
         return buy_candidates, sorted_stocks

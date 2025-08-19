@@ -1,7 +1,7 @@
 # manager/capital_manager.py
 
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import sys
 import os
 # trading.abstract_broker에서 AbstractBroker를 임포트하여 타입 힌팅에 사용합니다.
@@ -11,7 +11,7 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, project_root)
 if TYPE_CHECKING:
     from trading.abstract_broker import AbstractBroker
-from config.settings import STRATEGY_CONFIGS, ACTIVE_STRATEGIES_FOR_HMM
+from config.settings import STRATEGY_CONFIGS
 from trading.abstract_broker import AbstractBroker
 logger = logging.getLogger(__name__)
 
@@ -20,23 +20,30 @@ class CapitalManager:
     """
     정적 자금 배분을 담당하며, settings.py에서 직접 포트폴리오 설정을 로드합니다.
     """
-    def __init__(self, broker: AbstractBroker):
-        # [핵심 2] 생성자에서 portfolio_configs 인자 제거
+    def __init__(self, broker: AbstractBroker, active_strategies: Optional[List[str]] = None):
         if not hasattr(broker, 'get_current_cash_balance'):
             raise TypeError("제공된 broker 객체가 AbstractBroker의 인터페이스를 따르지 않습니다.")
         
         self.broker = broker
-        
-        # [핵심 3] settings.py 정보를 기반으로 내부 설정 자동 구성
         self.strategy_configs = {}
-        for strategy_name in ACTIVE_STRATEGIES_FOR_HMM:
-            if strategy_name in STRATEGY_CONFIGS:
-                config = STRATEGY_CONFIGS[strategy_name]
-                # 'name'과 'portfolio_params' 안의 'weight'를 추출
-                self.strategy_configs[strategy_name] = {
-                    "name": strategy_name,
-                    "weight": config.get("portfolio_params", {}).get("weight", 0)
-                }
+        
+        if active_strategies is not None:
+            # 옵티마이저 모드: 전달받은 전략 목록으로 설정 (단일 전략 시 가중치 100%)
+            is_single_strategy = len(active_strategies) == 1
+            for strategy_name in active_strategies:
+                if strategy_name in STRATEGY_CONFIGS:
+                    self.strategy_configs[strategy_name] = {
+                        "name": strategy_name,
+                        "weight": 1.0 if is_single_strategy else STRATEGY_CONFIGS[strategy_name].get('strategy_weight', 0)
+                    }
+        else:
+            # 일반/HMM 포트폴리오 모드: settings.py 전체를 스캔하여 활성화된 전략만 로드
+            for strategy_name, config in STRATEGY_CONFIGS.items():
+                if config.get('strategy_status') is True: # 'strategy_status'가 True인 전략만
+                    self.strategy_configs[strategy_name] = {
+                        "name": strategy_name,
+                        "weight": config.get('strategy_weight', 0) # 'strategy_weight' 사용
+                    }
         
         logger.info(f"CapitalManager 초기화 완료. {len(self.strategy_configs)}개 활성 전략의 가중치 로드.")
 

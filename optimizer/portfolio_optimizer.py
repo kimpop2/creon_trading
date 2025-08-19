@@ -32,7 +32,6 @@ from strategies.pass_minute import PassMinute
 
 from config.settings import (
     HMM_OPTIMIZATION_PARAMS, 
-    ACTIVE_STRATEGIES_FOR_HMM,
     STRATEGY_CONFIGS  # [추가] STRATEGY_CONFIGS 임포트
 )
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -96,10 +95,10 @@ class PortfolioOptimizer:
             hmm_params_for_run = params.get('hmm_params', {})
             
             daily_strategies_list = []
-            # [수정] settings.py의 ACTIVE_STRATEGIES_FOR_HMM 리스트를 사용
-            for strategy_name in ACTIVE_STRATEGIES_FOR_HMM:
-                # [수정] globals()를 사용해 문자열 이름으로 클래스 객체를 동적으로 찾음
-                strategy_class = globals().get(strategy_name)
+            for strategy_name, config in STRATEGY_CONFIGS.items():
+                if config.get('strategy_status') is True: # 'strategy_status'가 True인 전략만
+                    # [수정] globals()를 사용해 문자열 이름으로 클래스 객체를 동적으로 찾음
+                    strategy_class = globals().get(strategy_name)
                 
                 if strategy_class:
                     instance = strategy_class(
@@ -117,7 +116,7 @@ class PortfolioOptimizer:
                 else:
                     logger.warning(f"전략 클래스 '{strategy_name}'를 찾을 수 없습니다. 임포트되었는지 확인하세요.")
 
-            _, metrics = self.backtest.reset_and_rerun(
+            _, metrics, _, _ = self.backtest.reset_and_rerun(
                 daily_strategies=daily_strategies_list,
                 minute_strategy=self.backtest.minute_strategy,
                 mode='hmm',

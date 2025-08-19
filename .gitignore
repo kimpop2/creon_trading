@@ -34,6 +34,7 @@ optimization_results/
 logs/
 temp/
 trade/
+reports/
 test_data/
 examples/
 setup/datas/
