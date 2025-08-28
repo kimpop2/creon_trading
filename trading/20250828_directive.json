@@ -3,7 +3,7 @@
     "portfolio": [
         {
             "name": "DualMomentumDaily",
-            "weight": 0.5004881753179459,
+            "weight": 0.5,
             "params": {
                 "momentum_period": 2,
                 "max_position_count": 6
@@ -11,7 +11,7 @@
         },
         {
             "name": "SMADaily",
-            "weight": 0.4995118246820541,
+            "weight": 0.5,
             "params": {
                 "short_sma_period": 2,
                 "long_sma_period": 30,

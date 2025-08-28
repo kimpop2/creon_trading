@@ -146,8 +146,8 @@ class Trading:
 
         logger.info("과거 데이터 로드 완료.")
 
-        self.broker._restore_positions_state(self.data_store)
-        logger.info("4. 보유 포지션 상태(최고가 등) 복원 완료.")
+        # self.broker._restore_positions_state(self.data_store)
+        # logger.info("4. 보유 포지션 상태(최고가 등) 복원 완료.")
         
         logger.info(f"--- {trading_date} 모든 준비 완료. 장 시작 대기 ---")
         self.notifier.send_message(f"--- {trading_date} 모든 준비 완료. ---")

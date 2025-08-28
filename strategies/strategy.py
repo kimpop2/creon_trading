@@ -177,24 +177,26 @@ class DailyStrategy(BaseStrategy):
     
     def _generate_signals(self, current_daily_date: date, buy_candidates: set, sell_candidates: set, signal_attributes: dict, strategy_capital: float):
         """
-        통합된 signal_attributes를 사용하여 최종 매매 신호를 생성합니다.
-        - 점수 기반으로 매수 후보 정렬 및 상위 N개 선택
-        - 종목별 최소 투자금 규칙에 따라 예산을 소진하며 매수 신호 생성
-        - 매도/홀드 신호 생성
+        [수정] Brokerage로부터 '완전한' 상태 정보를 받아 전략별 보유 종목 수를 정확히 계산합니다.
         """
-        # [수정] 메서드 시작 시점에 broker로부터 dictionary 형태의 포지션 정보를 가져옵니다.
-        current_positions_dict = self.broker.get_current_positions()
-        current_positions = set(current_positions_dict.keys())
+        # --- ▼ [핵심 수정] 전략별 보유 종목 수 계산 로직 변경 ▼ ---
+        
+        # 1. Brokerage로부터 모든 정보가 포함된 전체 포지션을 가져옵니다.
+        all_positions = self.broker.get_current_positions()
         unfilled_order_codes = self.broker.get_unfilled_stock_codes()
+        
+        # 2. '현재 실행 중인 이 전략'이 보유한 종목만 필터링합니다.
+        my_positions = {code: pos for code, pos in all_positions.items() if pos.get('strategy_name') == self.strategy_name}
+        num_current_positions_for_this_strategy = len(my_positions)
+        
+        # 3. 전략별 한도와 '이 전략의' 보유 종목 수를 올바르게 비교합니다.
+        max_position_count = self.strategy_params.get('max_position_count', len(buy_candidates) + len(all_positions))
+        slots_available = max_position_count - num_current_positions_for_this_strategy
+        
+        # --- ▲ [핵심 수정] 완료 ▲ ---
+
         new_signals = {}
-        
-        # --- 1. 매수 신호 생성 (최대 보유 종목 수 규칙 적용) ---
         remaining_capital = strategy_capital
-        
-        # [추가] max_position_count 파라미터를 가져오고, 현재 보유 종목 수를 고려하여 신규 매수 가능 슬롯 계산
-        max_position_count = self.strategy_params.get('max_position_count', len(buy_candidates) + len(current_positions))
-        num_current_positions = len(current_positions)
-        slots_available = max_position_count - num_current_positions
         
         # 점수가 높은 순서대로 매수 후보 정렬
         sorted_buy_candidates = sorted(
@@ -203,15 +205,14 @@ class DailyStrategy(BaseStrategy):
             reverse=True
         )
         
-        # [수정] 실제 매수할 후보는 '매수 가능 슬롯' 만큼만 선택
         buy_candidates_to_process = sorted_buy_candidates[:slots_available] if slots_available > 0 else []
 
         if slots_available <= 0:
-            logging.info(f"[{self.strategy_name}] 현재 보유 종목({num_current_positions}개)이 최대치({max_position_count}개)에 도달하여 신규 매수를 진행하지 않습니다.")
+            logger.info(f"[{self.strategy_name}] 현재 보유 종목({num_current_positions_for_this_strategy}개)이 최대치({max_position_count}개)에 도달하여 신규 매수를 진행하지 않습니다.")
 
         for stock_code in buy_candidates_to_process:
-            # 이미 보유 중이거나 미체결 주문이 있으면 매수 신호를 생성하지 않습니다.
-            if stock_code in current_positions or stock_code in unfilled_order_codes:
+            # 전체 보유 종목(all_positions)에 있는지 확인하는 것은 그대로 유지
+            if stock_code in all_positions or stock_code in unfilled_order_codes:
                 continue
 
             if remaining_capital < MIN_STOCK_CAPITAL:
@@ -224,9 +225,6 @@ class DailyStrategy(BaseStrategy):
                 continue
 
             target_price = attributes.get('target_price')
-            if not target_price or target_price <= 0:
-                continue
-
             if not target_price or target_price <= 0:
                 logging.warning(f"[{stock_code}] 유효한 목표가격이 없어 매수 신호를 생성할 수 없습니다.")
                 continue
@@ -252,9 +250,9 @@ class DailyStrategy(BaseStrategy):
                              f"수량 {target_quantity}주 (사용한 예산: {actual_cost:,.0f}원 / 남은 예산: {remaining_capital:,.0f}원)")
         
         # --- 2. 매도 및 홀드 신호 생성 ---
-        stocks_to_process_for_sell_hold = sell_candidates | current_positions
+        # 매도/홀드 대상은 전체 보유 종목(all_positions)과 매도 후보의 합집합
+        stocks_to_process_for_sell_hold = sell_candidates | set(all_positions.keys())
         
-        # [추가] min_position_period 파라미터 가져오기
         min_position_period = self.strategy_params.get('min_position_period', 0)
 
         for stock_code in stocks_to_process_for_sell_hold:
@@ -263,10 +261,13 @@ class DailyStrategy(BaseStrategy):
 
             signal_type = 'sell' if stock_code in sell_candidates else 'hold'
             stock_name = self.get_stock_name(stock_code)
-            # [추가] 매도 신호일 경우, 최소 보유기간 체크
+            
+            # min_position_period 검사는 이제 all_positions의 정확한 entry_date 덕분에 항상 올바르게 동작합니다.
             if signal_type == 'sell' and min_position_period > 0:
-                pos_info = current_positions_dict.get(stock_code)
-                if pos_info and 'entry_date' in pos_info:
+                pos_info = all_positions.get(stock_code)
+                # 이 종목이 현재 전략의 소유일 때만 최소보유기간을 적용할지, 아니면 전체에 적용할지 정책 결정 필요.
+                # 여기서는 일단 전체 보유 종목에 대해 체크하도록 유지.
+                if pos_info and pos_info.get('entry_date'):
                     holding_days = (current_daily_date - pos_info['entry_date']).days
                     if holding_days < min_position_period:
                         signal_type = 'hold'  # 매도 신호를 보류(hold)로 변경
@@ -291,7 +292,7 @@ class DailyStrategy(BaseStrategy):
                              f"수량 {signal_info['target_quantity']}주")
 
         self.signals = new_signals
-        return current_positions
+        return set(all_positions.keys())
     
     def get_stock_name(self, stock_code: str) -> str:
         """브로커의 매니저를 통해 종목명을 조회하는 과정을 캡슐화합니다."""

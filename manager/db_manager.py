@@ -1864,15 +1864,17 @@ class DBManager:
 
     def save_current_position(self, position_data: Dict[str, Any]) -> bool:
         """
-        현재 보유 종목 정보를 current_positions 테이블에 저장/업데이트합니다.
-        stock_code가 이미 존재하면 업데이트합니다.
+        [최종 수정] 현재 보유 종목 정보를 current_positions 테이블에 저장/업데이트합니다.
+        strategy_name과 highest_price 필드를 포함하여 완전한 정보를 저장합니다.
         """
+        # --- ▼▼▼ [핵심 수정] SQL 쿼리에 누락된 필드 추가 ▼▼▼
         sql = """
             INSERT INTO current_positions (
                 stock_code, stock_name, quantity, sell_avail_qty, avg_price,
-                eval_profit_loss, eval_return_rate, entry_date
+                eval_profit_loss, eval_return_rate, entry_date, 
+                strategy_name, highest_price
             ) VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
             )
             ON DUPLICATE KEY UPDATE
                 stock_name = VALUES(stock_name),
@@ -1882,18 +1884,27 @@ class DBManager:
                 eval_profit_loss = VALUES(eval_profit_loss),
                 eval_return_rate = VALUES(eval_return_rate),
                 entry_date = VALUES(entry_date),
+                strategy_name = VALUES(strategy_name),
+                highest_price = VALUES(highest_price),
                 last_update = CURRENT_TIMESTAMP
         """
+        # --- ▲▲▲ SQL 수정 완료 ▲▲▲
+
+        # --- ▼▼▼ [핵심 수정] 파라미터 튜플에 누락된 값 추가 ▼▼▼
         params = (
             position_data.get('stock_code'),
             position_data.get('stock_name'),
             position_data.get('quantity'),
-            position_data.get('sell_avail_qty', 0), # None 대신 0을 기본값으로 사용
+            position_data.get('sell_avail_qty', 0),
             position_data.get('avg_price'),
             position_data.get('eval_profit_loss'),
             position_data.get('eval_return_rate'),
-            position_data.get('entry_date')
+            position_data.get('entry_date'),
+            position_data.get('strategy_name'),
+            position_data.get('highest_price')
         )
+        # --- ▲▲▲ 파라미터 수정 완료 ▲▲▲
+
         cursor = self.execute_sql(sql, params)
         if cursor:
             logger.info(f"현재 보유 종목 저장/업데이트 성공: {position_data.get('stock_code')}")
@@ -1931,7 +1942,7 @@ class DBManager:
                 # --- [수정] 반환 전 리스트의 모든 딕셔너리에서 숫자 타입을 float으로 변환
                 numeric_keys = [
                     'quantity', 'sell_avail_qty', 'avg_price',
-                    'eval_profit_loss', 'eval_return_rate'
+                    'eval_profit_loss', 'eval_return_rate', 'highest_price'
                 ]
                 for row in results:
                     for key in numeric_keys:
@@ -2267,6 +2278,29 @@ class DBManager:
             return df
         return pd.DataFrame()
 
+
+    def fetch_last_buy_trade_for_stock(self, stock_code: str) -> Optional[Dict[str, Any]]:
+        """
+        trading_trade 테이블에서 특정 종목의 가장 최근 'BUY' 거래 기록을 조회합니다.
+        strategy_name과 trade_date(entry_date)를 복원하는 데 사용됩니다.
+        """
+        sql = """
+            SELECT strategy_name, trade_date
+            FROM trading_trade
+            WHERE stock_code = %s AND trade_type = 'BUY'
+            ORDER BY trade_datetime DESC
+            LIMIT 1
+        """
+        try:
+            cursor = self.execute_sql(sql, (stock_code,))
+            if cursor:
+                result = cursor.fetchone()
+                return result if result else None
+            return None
+        except Exception as e:
+            logger.error(f"종목({stock_code})의 최근 매수 기록 조회 중 오류 발생: {e}", exc_info=True)
+            return None
+        
     def fetch_latest_buy_trade_date(self, stock_code: str) -> Optional[date]:
         """
         trading_trade 테이블에서 특정 종목의 가장 최근 'BUY' 거래의 날짜를 조회합니다.
@@ -2285,6 +2319,13 @@ class DBManager:
         except Exception as e:
             logger.error(f"종목({stock_code})의 최근 매수일자 조회 중 오류 발생: {e}", exc_info=True)
             return None
+
+
+
+
+
+
+
     # ----------------------------------------------------------------------------
     # Feed 관련 테이블 메서드 (db_feed.py에서 성공적으로 테스트된 기능들)
     # ----------------------------------------------------------------------------

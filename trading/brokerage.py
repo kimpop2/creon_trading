@@ -126,8 +126,7 @@ class Brokerage(AbstractBroker):
         
     def handle_order_conclusion(self, conclusion_data: Dict[str, Any]):
         """
-        [최종 수정] '체결' 상태일 때 DB에서 직접 model_id를 조회하여
-        trading_trade 테이블에 기록하고 잔고 및 포지션을 업데이트합니다.
+        [최종 수정] 체결 시 (1)메모리 상태를 먼저 업데이트하고 (2)그 결과를 DB에 동기화합니다.
         """
         logger.info(f"체결/주문응답 수신: {conclusion_data}")
         order_status_str = conclusion_data.get('order_status')
@@ -139,148 +138,133 @@ class Brokerage(AbstractBroker):
             logger.warning(f"활성 주문 목록에 없는 주문 응답 수신: {order_id}")
             return
 
-        # [수정] 상태 문자열만 먼저 업데이트
         active_order['order_status'] = order_status_str.lower()
         
-        # '체결' 또는 '부분체결' 이벤트일 때만 실제 잔고 및 포지션을 변경합니다.
         if order_status_str in ['체결', '부분체결']:
             filled_quantity = conclusion_data.get('quantity', 0)
+            filled_price = conclusion_data.get('price', 0)
+            order_type = active_order['order_type']
+
             if filled_quantity > 0:
+                # --- (공통) 현금 잔고 및 누적 체결 수량 업데이트 ---
                 active_order['filled_quantity'] += filled_quantity
-                active_order['unfilled_quantity'] = active_order['order_quantity'] - active_order['filled_quantity']
+                active_order['unfilled_quantity'] -= filled_quantity
                 
-                logger.info(f"주문({order_id}) 상태 업데이트: {active_order['order_status']}, 누적 체결수량: {active_order['filled_quantity']}")
-
-                filled_price = conclusion_data.get('price', 0)
-                order_type = active_order['order_type']
-
-                # --- (이하 현금 및 포지션 업데이트 로직은 동일) ---
                 transaction_amount = filled_price * filled_quantity
                 commission = transaction_amount * self.commission_rate
                 tax = transaction_amount * self.tax_rate_sell if order_type == 'sell' else 0
                 net_amount = (transaction_amount - commission - tax) if order_type == 'sell' else -(transaction_amount + commission)
-                
                 self._current_cash_balance += net_amount
-                logger.info(f"[{order_type.upper()}] 현금 잔고 업데이트: {net_amount:,.0f}원 -> 현재 잔고: {self._current_cash_balance:,.0f}원")
-
+                
+                # --- ▼▼▼ [핵심] 1. 메모리(self.positions) 상태 업데이트 로직 추가 ▼▼▼ ---
+                realized_profit_loss = 0
                 if order_type == 'buy':
-                    if stock_code in self.positions:
+                    if stock_code in self.positions: # 기존 보유 종목 추가 매수 (물타기)
                         pos = self.positions[stock_code]
                         total_cost = (pos['avg_price'] * pos['quantity']) + (filled_price * filled_quantity)
                         pos['quantity'] += filled_quantity
                         pos['avg_price'] = total_cost / pos['quantity']
-                    else:
+                    else: # 신규 종목 매수
                         self.positions[stock_code] = {
-                            'stock_code': stock_code, 'stock_name': active_order.get('stock_name'),
-                            'quantity': filled_quantity, 'avg_price': filled_price,
-                            'entry_date': datetime.now().date(), 'highest_price': filled_price
+                            'stock_code': stock_code,
+                            'stock_name': active_order.get('stock_name'),
+                            'quantity': filled_quantity,
+                            'avg_price': filled_price,
+                            'entry_date': datetime.now().date(),
+                            'strategy_name': active_order.get('strategy_name'),
+                            'highest_price': filled_price
                         }
                 elif order_type == 'sell':
                     if stock_code in self.positions:
                         pos = self.positions[stock_code]
+                        realized_profit_loss = (filled_price - pos['avg_price']) * filled_quantity
                         pos['quantity'] -= filled_quantity
                         if pos['quantity'] <= 0:
                             del self.positions[stock_code]
+                # --- ▲▲▲ 메모리 업데이트 완료 ▲▲▲ ---
 
-                # ▼▼▼ [수정] DBManager를 통해 직접 model_id 조회 ▼▼▼
+                # --- ▼▼▼ 2. DB 상태 동기화 (기존 로직 보강) ▼▼▼ ---
+                if order_type == 'buy' and stock_code in self.positions:
+                    self.manager.save_current_position(self.positions[stock_code])
+                elif order_type == 'sell':
+                    if stock_code in self.positions: # 부분 매도
+                        self.manager.save_current_position(self.positions[stock_code])
+                    else: # 전량 매도
+                        self.manager.db_manager.delete_current_position(stock_code)
+                # --- ▲▲▲ DB 동기화 완료 ▲▲▲ ---
+
+                # --- 3. 거래 이력(trading_trade) 저장 ---
                 model_info = self.manager.db_manager.fetch_hmm_model_by_name(LIVE_HMM_MODEL_NAME)
-                if not model_info:
-                    logger.error(f"거래 기록 실패: 운영 모델({LIVE_HMM_MODEL_NAME})을 찾을 수 없습니다.")
-                    return
-                model_id = model_info['model_id']
-                # ▲▲▲ 수정 완료 ▲▲▲
+                model_id = model_info['model_id'] if model_info else 1 # Fallback model_id
                 
                 trade_data_to_save = {
-                    'model_id': model_id, # 조회한 model_id 사용
-                    'trade_date': datetime.now().date(),
-                    'strategy_name': active_order.get('strategy_name'),
-                    'stock_code': active_order.get('stock_code'),
-                    'trade_type': order_type.upper(),
-                    'trade_price': filled_price,
-                    'trade_quantity': filled_quantity,
-                    'trade_datetime': datetime.now(),
-                    'commission': commission,
-                    'tax': tax,
-                    'realized_profit_loss': (filled_price - self.positions.get(stock_code, {}).get('avg_price', filled_price)) * filled_quantity if order_type == 'sell' else 0
+                    'model_id': model_id, 'trade_date': datetime.now().date(),
+                    'strategy_name': active_order.get('strategy_name'), 'stock_code': stock_code,
+                    'trade_type': order_type.upper(), 'trade_price': filled_price,
+                    'trade_quantity': filled_quantity, 'trade_datetime': datetime.now(),
+                    'commission': commission, 'tax': tax, 'realized_profit_loss': realized_profit_loss
                 }
                 self.manager.save_trading_trade(trade_data_to_save)
-                # ▲▲▲ 신규 로직 종료 ▲▲▲        
-                # ▼▼▼ [개선 제안] 체결 발생 시, 변경된 포지션 정보를 즉시 DB에 저장 ▼▼▼
-                if stock_code in self.positions:
-                    # 포지션이 남아있는 경우 (매수, 부분 매도)
-                    self.manager.save_current_position(self.positions[stock_code])
-                else:
-                    # 전량 매도되어 포지션이 사라진 경우
-                    self.manager.db_manager.delete_current_position(stock_code)
 
-                # ▲▲▲ 개선 제안 완료 ▲▲▲
-        # '접수', '확인'은 최종 상태가 아니므로, ['체결', '취소', '거부']일 때만 최종 완료로 간주합니다.
-        if active_order['unfilled_quantity'] <= 0 or active_order['order_status'] in ['체결', '취소', '거부']:
-            logger.info(f"주문({order_id}) 최종 완료({active_order['order_status']}). 활성 주문 목록에서 제거합니다.")
-            del self._active_orders[order_id]
+        # 주문 최종 완료 시 활성 주문 목록에서 제거
+        if active_order.get('unfilled_quantity', 1) <= 0 or order_status_str in ['체결', '취소', '거부']:
+            logger.info(f"주문({order_id}) 최종 완료({order_status_str}). 활성 주문 목록에서 제거합니다.")
+            if order_id in self._active_orders:
+                del self._active_orders[order_id]
 
-
-
-    # [신규] DB에 저장하지 않는 상태(highest_price)를 복원하는 메서드
-    def _restore_positions_state(self, data_store: Dict[str, Any]):
-        """
-        프로그램 시작 시, 메모리상의 포지션 정보에 DB에 없는 상태값(예: 최고가)을
-        과거 데이터를 기반으로 계산하여 복원합니다.
-        """
-        logger.info("보유 포지션의 상태(최고가) 복원을 시작합니다.")
-        today = datetime.now().date()
-
-        for code, pos_info in self.positions.items():
-            entry_date = pos_info.get('entry_date')
-            if not entry_date:
-                pos_info['highest_price'] = pos_info.get('avg_price', 0)
-                continue
-
-            # 1. 매수일 ~ 어제까지의 일봉 데이터에서 최고가 찾기
-            daily_df = data_store['daily'].get(code)
-            historical_high = 0
-            if daily_df is not None:
-                historical_df = daily_df[(daily_df.index.date >= entry_date) & (daily_df.index.date < today)]
-                if not historical_df.empty:
-                    historical_high = historical_df['high'].max()
-
-            # 2. 오늘의 분봉 데이터에서 최고가 찾기
-            today_high = 0
-            if code in data_store['minute'] and today in data_store['minute'][code]:
-                today_minute_df = data_store['minute'][code][today]
-                if not today_minute_df.empty:
-                    today_high = today_minute_df['high'].max()
-            
-            # 3. 두 기간의 최고가와 평균 매수가 중 가장 높은 값을 최종 highest_price로 설정
-            restored_highest_price = max(historical_high, today_high, pos_info.get('avg_price', 0))
-            pos_info['highest_price'] = restored_highest_price
-            
-            logger.debug(f"[{code}] 최고가 복원 완료: {restored_highest_price:,.0f}원")
 
     def sync_account_status(self):
         """
-        [수정] API와 내부 상태의 '양방향 동기화'를 수행합니다.
-        API에 없는 내부 미체결 주문은 제거하여 '유령 주문'을 방지합니다.
+        [전면 수정] API와 DB 정보를 조합하여 '완전한' 포지션 상태를 재구성하고,
+        이를 메모리와 DB 양쪽에 모두 동기화하는 마스터 메서드입니다.
         """
-        logger.info("계좌 상태 양방향 동기화 시작...")
+        logger.info("계좌 상태 마스터 동기화 시작 (API + DB)...")
 
-        # 1. API에서 실시간 잔고(수량, 평단가 등)를 가져옵니다.
+        # 1. API와 DB의 현재 종목 코드 리스트를 각각 가져옵니다.
         positions_from_api = {pos['stock_code']: pos for pos in self.api_client.get_portfolio_positions()}
+        api_stock_codes = set(positions_from_api.keys())
         
-        # 2. DB에서 영구 데이터('entry_date' 등)를 가져옵니다.
-        positions_from_db = {pos['stock_code']: pos for pos in self.manager.db_manager.fetch_current_positions()}
+        positions_from_db = self.manager.db_manager.fetch_current_positions()
+        db_stock_codes = {pos['stock_code'] for pos in positions_from_db}
 
-        # 3. API 정보를 기준으로, DB의 'entry_date'를 병합하여 최종 포지션을 재구성합니다.
+        # 2. DB에는 있지만 API에는 없는 종목(유령 포지션)을 찾습니다.
+        codes_to_delete = db_stock_codes - api_stock_codes
+        if codes_to_delete:
+            logger.info(f"API 잔고에 없는 {len(codes_to_delete)}개의 유령 포지션을 DB에서 삭제합니다: {codes_to_delete}")
+            for code in codes_to_delete:
+                self.manager.db_manager.delete_current_position(code)
+
+        # 3. API 잔고를 기준으로, DB 정보를 병합하여 최종 포지션을 재구성합니다.
+        #    (positions_from_db 대신 이미 조회한 positions_from_db_state 사용)
+        positions_from_db_state = {pos['stock_code']: pos for pos in positions_from_db}
         synced_positions = {}
         for stock_code, api_pos in positions_from_api.items():
-            db_pos = positions_from_db.get(stock_code, {})
+            last_buy_info = self.manager.db_manager.fetch_last_buy_trade_for_stock(stock_code)
+            db_state = positions_from_db_state.get(stock_code, {})
+
+            api_pos['strategy_name'] = last_buy_info.get('strategy_name', 'MANUAL') if last_buy_info else 'MANUAL'
+            api_pos['entry_date'] = last_buy_info.get('trade_date') if last_buy_info else date.today()
+            api_pos['highest_price'] = db_state.get('highest_price', api_pos.get('avg_price', 0))
             
-            # API의 실시간 잔고를 기준으로 DB의 entry_date를 추가합니다.
-            api_pos['entry_date'] = db_pos.get('entry_date') 
+            eval_pl = api_pos.get('eval_profit_loss', 0)
+            avg_price = api_pos.get('avg_price', 0)
+            quantity = api_pos.get('quantity', 0)
+            
+            if avg_price > 0 and quantity > 0:
+                cost_basis = avg_price * quantity
+                api_pos['eval_return_rate'] = (eval_pl / cost_basis) * 100
+            else:
+                api_pos['eval_return_rate'] = 0.0
+
             synced_positions[stock_code] = api_pos
 
+        # 4. 메모리(self.positions)와 DB(current_positions 테이블)에 최종 상태를 업데이트합니다.
         self.positions = synced_positions
-        logger.info(f"보유 종목 동기화 완료: 총 {len(self.positions)}건 ('entry_date' 포함)")
+        if self.positions:
+            logger.info(f"총 {len(self.positions)}건의 보유 종목 최종 상태 업데이트 및 DB 저장 시작...")
+            for pos_data in self.positions.values():
+                self.manager.save_current_position(pos_data) # save_current_position은 UPSERT 기능
+
 
         # 4. 현금 잔고 동기화
         balance_info = self.api_client.get_account_balance()

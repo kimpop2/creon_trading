@@ -14,7 +14,7 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, project_root)
 
 # 리팩토링된 CreonAPIClient 및 관련 Enum 임포트
-from api.creon_api2 import CreonAPIClient, OrderType, OrderStatus
+from api.creon_api import CreonAPIClient, OrderType, OrderStatus
 
 # 로깅 설정
 logging.basicConfig(
@@ -98,7 +98,7 @@ class TestCreonAPIScenario(unittest.TestCase):
     def _conclusion_callback(cls, data: Dict[str, Any]):
         """실시간 주문 체결/응답 콜백 핸들러"""
         with cls._callback_lock:
-            logger.info(f"[CpEvent] 주문 체결/응답 수신: {data.get('flag')} {data.get('buy_sell')} 종목:{data.get('code')} 가격:{data.get('price'):,.0f} 수량:{data.get('amount')} 주문번호:{data.get('order_num')} 잔고:{data.get('balance')}")
+            logger.info(f"[CpEvent] 주문 체결/응답 수신: {data.get('flag')} {data.get('buy_sell')} 종목:{data.get('code')} 가격:{data.get('price'):,.0f} 수량:{data.get('quantity')} 주문번호:{data.get('order_id')} 잔고:{data.get('balance')}")
             cls._conclusion_events_queue.put(data) # 큐에 이벤트 추가
 
     @classmethod
@@ -115,7 +115,7 @@ class TestCreonAPIScenario(unittest.TestCase):
                 cls._price_event_received.set() # 이벤트 발생 신호 (필요시)
 
     @classmethod
-    def _bid_update_callback(cls, stock_code: str, offer_prices: List[int], bid_prices: List[int], offer_amounts: List[int], bid_amounts: List[int]):
+    def _bid_update_callback(cls, stock_code: str, offer_prices: List[int], bid_prices: List[int], offer_quantitys: List[int], bid_quantitys: List[int]):
         """실시간 10차 호가 업데이트 콜백 핸들러 (현재는 로깅만)"""
         logger.debug(f"실시간 호가 수신: 종목={stock_code}, 1차 매도={offer_prices[0]}, 1차 매수={bid_prices[0]}")
 
@@ -132,7 +132,7 @@ class TestCreonAPIScenario(unittest.TestCase):
                 
                 with TestCreonAPIScenario._callback_lock:
                     # 해당 주문 ID에 대한 이벤트인지 확인
-                    if data.get('order_num') == target_order_id:
+                    if data.get('order_id') == target_order_id:
                         if data.get('flag') in expected_flags:
                             logger.info(f"대상 체결/응답 이벤트 수신: {data}")
                             TestCreonAPIScenario._conclusion_events_queue.task_done() # 처리 완료
@@ -169,7 +169,7 @@ class TestCreonAPIScenario(unittest.TestCase):
         매수 -> 정정 -> 취소 -> 시장가 매수 -> 정정 -> 시장가 매도 시나리오 테스트
         """
         api = self.cls_api
-        test_stock_code = 'A008970' # 동양철관 (테스트용)
+        test_stock_code = 'A032820' # 동양철관 (테스트용)
         order_quantity = 1 # 테스트용 최소 수량
 
         try: # 전체 테스트 메서드에 try-except 블록 추가
@@ -215,11 +215,11 @@ class TestCreonAPIScenario(unittest.TestCase):
             buy_order_result = api.send_order(
                 stock_code=test_stock_code,
                 order_type=OrderType.BUY,
-                amount=order_quantity,
+                quantity=order_quantity,
                 price=initial_buy_price,
                 order_unit="01" # 보통가
             )
-            current_order_id = buy_order_result['order_num']
+            current_order_id = buy_order_result['order_id']
             current_buy_order_price = initial_buy_price # 현재 주문 가격 추적
 
             # --- NEW: 초기 매수 주문 실패 시 처리 로직 ---
@@ -258,7 +258,7 @@ class TestCreonAPIScenario(unittest.TestCase):
                 conclusion_data = self._wait_for_conclusion_event(target_order_id=current_order_id, expected_flags=['체결', '확인'], timeout=5)
                 
                 if conclusion_data and conclusion_data['flag'] == '체결':
-                    executed_buy_qty += conclusion_data['amount']
+                    executed_buy_qty += conclusion_data['quantity']
                     logger.info(f"매수 주문 ({current_order_id}) 부분 체결 발생. 현재 체결 수량: {executed_buy_qty}")
                     if executed_buy_qty >= order_quantity:
                         logger.info(f"매수 주문 ({current_order_id}) 전량 체결 완료.")
@@ -289,9 +289,9 @@ class TestCreonAPIScenario(unittest.TestCase):
                         modify_result = api.send_order(
                             stock_code=test_stock_code,
                             order_type=OrderType.MODIFY,
-                            amount=0, # 잔량 정정
+                            quantity=0, # 잔량 정정
                             price=next_bid_price,
-                            org_order_num=current_order_id
+                            origin_order_id=current_order_id
                         )
                         # --- NEW: 정정 주문 실패 시 체결 여부 확인 로직 추가 ---
                         if modify_result['status'] != 'success':
@@ -323,7 +323,7 @@ class TestCreonAPIScenario(unittest.TestCase):
                                 self.fail(f"매수 정정 주문 실패: {modify_result['message']}")
                         # --- NEW: 정정 주문 실패 시 체결 여부 확인 로직 추가 끝 ---
                         else: # 정정 주문 성공 시
-                            current_order_id = modify_result['order_num'] # 정정 시 새 주문번호 받을 수 있음
+                            current_order_id = modify_result['order_id'] # 정정 시 새 주문번호 받을 수 있음
                             current_buy_order_price = next_bid_price # 정정 성공 시 가격 업데이트
                             logger.info(f"매수 정정 주문 성공. 새 주문번호: {current_order_id}")
                     else: # 1차 호가까지 정정 후에도 미체결 -> 취소
@@ -331,8 +331,8 @@ class TestCreonAPIScenario(unittest.TestCase):
                         cancel_result = api.send_order(
                             stock_code=test_stock_code,
                             order_type=OrderType.CANCEL,
-                            amount=0, # 잔량 취소
-                            org_order_num=current_order_id
+                            quantity=0, # 잔량 취소
+                            origin_order_id=current_order_id
                         )
                         # --- NEW: 취소 주문 실패 시 처리 로직 ---
                         if cancel_result['status'] != 'success':
@@ -386,11 +386,11 @@ class TestCreonAPIScenario(unittest.TestCase):
                 market_buy_result = api.send_order(
                     stock_code=test_stock_code,
                     order_type=OrderType.BUY,
-                    amount=order_quantity,
+                    quantity=order_quantity,
                     price=0, # 시장가
                     order_unit="03" # 시장가 주문
                 )
-                current_order_id = market_buy_result['order_num']
+                current_order_id = market_buy_result['order_id']
                 # --- NEW: 시장가 매수 주문 실패 시 처리 로직 ---
                 if market_buy_result['status'] != 'success':
                     logger.error(f"시장가 매수 주문 실패: {market_buy_result['message']}")
@@ -468,11 +468,11 @@ class TestCreonAPIScenario(unittest.TestCase):
             sell_order_result = api.send_order(
                 stock_code=test_stock_code,
                 order_type=OrderType.SELL,
-                amount=order_quantity,
+                quantity=order_quantity,
                 price=initial_sell_price,
                 order_unit="01" # 보통가
             )
-            current_sell_order_id = sell_order_result['order_num']
+            current_sell_order_id = sell_order_result['order_id']
             current_sell_order_price = initial_sell_price # 현재 주문 가격 추적
 
             # --- NEW: 초기 매도 주문 실패 시 처리 로직 ---
@@ -512,7 +512,7 @@ class TestCreonAPIScenario(unittest.TestCase):
                 conclusion_data = self._wait_for_conclusion_event(target_order_id=current_sell_order_id, expected_flags=['체결', '확인'], timeout=5)
                 
                 if conclusion_data and conclusion_data['flag'] == '체결':
-                    executed_sell_qty += conclusion_data['amount']
+                    executed_sell_qty += conclusion_data['quantity']
                     logger.info(f"매도 주문 ({current_sell_order_id}) 부분 체결 발생. 현재 체결 수량: {executed_sell_qty}")
                     if executed_sell_qty >= order_quantity:
                         logger.info(f"매도 주문 ({current_sell_order_id}) 전량 체결 완료.")
@@ -543,9 +543,9 @@ class TestCreonAPIScenario(unittest.TestCase):
                         modify_result_sell = api.send_order(
                             stock_code=test_stock_code,
                             order_type=OrderType.MODIFY,
-                            amount=0, # 잔량 정정
+                            quantity=0, # 잔량 정정
                             price=next_offer_price,
-                            org_order_num=current_sell_order_id
+                            origin_order_id=current_sell_order_id
                         )
                         # --- NEW: 정정 주문 실패 시 체결 여부 확인 로직 추가 ---
                         if modify_result_sell['status'] != 'success':
@@ -577,7 +577,7 @@ class TestCreonAPIScenario(unittest.TestCase):
                                 self.fail(f"매도 정정 주문 실패: {modify_result_sell['message']}")
                         # --- NEW: 정정 주문 실패 시 체결 여부 확인 로직 추가 끝 ---
                         else: # 정정 주문 성공 시
-                            current_sell_order_id = modify_result_sell['order_num'] # 정정 시 새 주문번호 받을 수 있음
+                            current_sell_order_id = modify_result_sell['order_id'] # 정정 시 새 주문번호 받을 수 있음
                             current_sell_order_price = next_offer_price # 정정 성공 시 가격 업데이트
                             logger.info(f"매도 정정 주문 성공. 새 주문번호: {current_sell_order_id}")
                     else: # 1차 호가까지 정정 후에도 미체결 -> 취소
@@ -585,8 +585,8 @@ class TestCreonAPIScenario(unittest.TestCase):
                         cancel_result = api.send_order(
                             stock_code=test_stock_code,
                             order_type=OrderType.CANCEL,
-                            amount=0, # 잔량 취소
-                            org_order_num=current_sell_order_id
+                            quantity=0, # 잔량 취소
+                            origin_order_id=current_sell_order_id
                         )
                         # --- NEW: 취소 주문 실패 시 처리 로직 ---
                         if cancel_result['status'] != 'success':
@@ -656,11 +656,11 @@ class TestCreonAPIScenario(unittest.TestCase):
                     market_sell_result = api.send_order(
                         stock_code=test_stock_code,
                         order_type=OrderType.SELL,
-                        amount=market_sell_quantity, # 모든 잔량 매도
+                        quantity=market_sell_quantity, # 모든 잔량 매도
                         price=0, # 시장가
                         order_unit="03" # 시장가 주문
                     )
-                    current_sell_order_id = market_sell_result['order_num']
+                    current_sell_order_id = market_sell_result['order_id']
                     # --- NEW: 시장가 매도 주문 실패 시 처리 로직 ---
                     if market_sell_result['status'] != 'success':
                         logger.error(f"시장가 매도 주문 실패: {market_sell_result['message']}")

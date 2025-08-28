@@ -153,23 +153,7 @@ class TradingManager(DataManager):
 
     def save_current_position(self, position_data: Dict[str, Any]) -> bool:
         """
-        [최종 수정] 현재 보유 종목 정보를 저장/업데이트합니다.
-        entry_date가 없으면 trading_trade 테이블에서 조회하여 채웁니다.
+        [최종 수정] Brokerage로부터 받은 완전한 포지션 정보를 DB에 저장하는 래퍼(wrapper) 메서드입니다.
+        모든 데이터 가공 로직은 Brokerage가 책임집니다.
         """
-        if not position_data.get('entry_date'):
-            stock_code = position_data.get('stock_code')
-            if stock_code:
-                # DB에서 가장 최근의 'BUY' 거래 날짜를 조회합니다.
-                latest_buy_date = self.db_manager.fetch_latest_buy_trade_date(stock_code)
-                
-                if latest_buy_date:
-                    # 매수 기록이 있으면 해당 날짜로 entry_date를 설정합니다.
-                    position_data['entry_date'] = latest_buy_date
-                    logger.info(f"[{stock_code}]의 누락된 entry_date를 DB 기록({latest_buy_date})으로 복원했습니다.")
-                else:
-                    # 매수 기록이 없으면 (예: 시스템 도입 전 보유 종목), 오늘 날짜로 설정합니다.
-                    position_data['entry_date'] = date.today()
-        # ▲▲▲ 로직 적용 완료 ▲▲▲
-        
-        # 최종적으로 완성된 position_data를 DB에 저장합니다.
         return self.db_manager.save_current_position(position_data)

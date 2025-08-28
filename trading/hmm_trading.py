@@ -104,7 +104,7 @@ class HMMTrading:
         initial_prices_data = self.manager.api_client.get_current_prices_bulk(initial_universe_codes)
         
         final_universe_codes = [code for code in initial_universe_codes if code.startswith('U')]
-        print('final_universe_codes:', final_universe_codes)
+        
         for code in initial_universe_codes:
             if not code.startswith('A'): continue
             
@@ -121,9 +121,9 @@ class HMMTrading:
         logger.info(f"사전 필터링 완료. 유니버스 종목 수: {len(initial_universe_codes)}개 -> {len(final_universe_codes)}개")
 
         current_positions = self.broker.get_current_positions().keys()
-        print('current_positions:', current_positions)
+        
         required_codes_for_data = set(final_universe_codes) | set(current_positions)
-        print('required_codes_for_data:', required_codes_for_data)
+        
         # 지수인텍스 코드 market_index_code 추가
         market_code = COMMON_PARAMS.get('market_index_code')
         required_codes_for_data.add(market_code)
@@ -176,8 +176,8 @@ class HMMTrading:
 
         logger.info("과거 데이터 로드 완료.")
 
-        self.broker._restore_positions_state(self.data_store)
-        logger.info("4. 보유 포지션 상태(최고가 등) 복원 완료.")
+        # self.broker._restore_positions_state(self.data_store)
+        # logger.info("4. 보유 포지션 상태(최고가 등) 복원 완료.")
         
         logger.info(f"--- {trading_date} 모든 준비 완료. 장 시작 대기 ---")
         self.notifier.send_message(f"--- {trading_date} 모든 준비 완료. ---")
