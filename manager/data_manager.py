@@ -120,6 +120,53 @@ class DataManager:
         return final_df[~final_df.index.duplicated(keep='last')]
 
 
+    def cache_daily_data(self, stock_code: str, from_date: date, to_date: date, all_trading_dates: Optional[Set] = None) -> pd.DataFrame:
+        """
+        [신규 구현] DB에서 일봉 OHLCV 데이터와 팩터 데이터를 조회하여 병합 후,
+        
+        :param stock_code: 조회할 종목 코드 리스트
+        :param from_date: 조회 시작일
+        :param to_date: 조회 종료일
+        """
+        logger.info(f"일일 데이터 캐싱 시작 (종목: {stock_code}, 기간: {from_date} ~ {to_date})")
+        # 1. DB에서 데이터 조회
+        df_price = self.cache_daily_ohlcv(stock_code, from_date, to_date, all_trading_dates)
+        df_factors = self.cache_daily_factors(stock_code, from_date, to_date, all_trading_dates)
+
+        if df_price.empty:
+            logger.warning(f"[{stock_code}] DB에서 OHLCV 데이터를 찾을 수 없습니다.")
+            # OHLCV가 없으면 의미가 없으므로 건너뜁니다.
+            return pd.DataFrame()
+        
+        if df_factors.empty:
+            logger.warning(f"[{stock_code}] DB에서 팩터 데이터를 찾을 수 없습니다. OHLCV 데이터만 저장합니다.")
+            # 팩터가 없으면 가격 데이터만 인덱스를 'date'로 설정하여 저장
+            df_price.index.name = 'date'
+            return df_price
+        
+        # 2. 데이터 병합 (날짜 인덱스 기준)
+        # fetch_daily_price는 이미 'date'를 인덱스로 사용하지만,
+        # fetch_daily_factors는 'date'를 컬럼으로 가지고 있으므로 인덱스로 설정해줍니다.
+        if 'date' in df_factors.columns:
+            df_factors.set_index('date', inplace=True)
+            df_factors.index = pd.to_datetime(df_factors.index).normalize()
+
+        # [추가] 병합 전, df_factors에서 중복될 수 있는 컬럼들 제거
+        cols_to_drop = ['stock_code', 'trading_value']
+        df_factors = df_factors.drop(columns=[col for col in cols_to_drop if col in df_factors.columns])
+
+        # how='left'를 사용하여 가격 데이터(df_price)를 기준으로 병합합니다.
+        merged_df = pd.merge(
+            df_price,
+            df_factors,
+            left_index=True,
+            right_index=True,
+            how='left'
+        )        
+        
+        logger.info(f"[{stock_code}] 데이터 병합 및 캐싱 완료. 최종 {merged_df.shape[0]} 행.")
+        return merged_df
+    
     def cache_minute_ohlcv(self, stock_code: str, from_date: date, to_date: date, all_trading_dates: Optional[Set] = None) -> pd.DataFrame:
         """분봉 데이터를 캐싱하고 반환합니다. DB에 없는 데이터는 API를 통해 가져옵니다."""
         db_df = self.db_manager.fetch_minute_price(stock_code, from_date, to_date)
@@ -394,83 +441,8 @@ class DataManager:
         final_df.fillna(0, inplace=True)
         return final_df[final_columns]
 
-    # def get_daily_factors(self, start_date: date, end_date: date, stock_code: str) -> pd.DataFrame:
-    #     """
-    #     pykrx를 사용하여 특정 기간의 일별 팩터 데이터를 조회하고 계산합니다. (진짜 최종 수정본)
-    #     """
-    #     logger.info(f"[{stock_code}] pykrx에서 팩터 데이터 조회 시작: {start_date} ~ {end_date}")
 
-    #     pykrx_stock_code = stock_code.replace('A', '')
-    #     start_date_str = start_date.strftime('%Y%m%d')
-    #     end_date_str = end_date.strftime('%Y%m%d')
-    #     lookback_start_date = (start_date - timedelta(days=365 + 100)).strftime('%Y%m%d')
-
-    #     df_ohlcv = stock.get_market_ohlcv(lookback_start_date, end_date_str, pykrx_stock_code)
-    #     if df_ohlcv.empty:
-    #         return pd.DataFrame()
-    #     if '거래대금' not in df_ohlcv.columns:
-    #         df_ohlcv['거래대금'] = df_ohlcv['종가'] * df_ohlcv['거래량']
-            
-    #     df_fundamental = stock.get_market_fundamental(start_date_str, end_date_str, pykrx_stock_code)
-    #     df_trading = stock.get_market_trading_volume_by_date(start_date_str, end_date_str, pykrx_stock_code)
-    #     df_short = stock.get_shorting_status_by_date(start_date_str, end_date_str, pykrx_stock_code)
-    #     df_kospi = stock.get_index_ohlcv(lookback_start_date, end_date_str, "1001")
-        
-    #     df_ohlcv.rename(columns={'시가':'open', '고가':'high', '저가':'low', '종가':'close', '거래량':'volume', '거래대금': 'trading_value'}, inplace=True)
-    #     final_df = df_ohlcv.copy()
-
-    #     df_fundamental.rename(columns={'PER':'per', 'PBR':'pbr', 'DIV':'dividend_yield'}, inplace=True)
-    #     final_df = pd.merge(final_df, df_fundamental[['per', 'pbr', 'dividend_yield']], left_index=True, right_index=True, how='left')
-
-    #     df_trading.rename(columns={'외국인합계':'foreigner_net_buy', '기관합계':'institution_net_buy'}, inplace=True)
-    #     final_df = pd.merge(final_df, df_trading[['foreigner_net_buy', 'institution_net_buy']], left_index=True, right_index=True, how='left')
-
-    #     if not df_short.empty and '공매도' in df_short.columns:
-    #         df_short.rename(columns={'공매도':'short_volume'}, inplace=True)
-    #         final_df = pd.merge(final_df, df_short[['short_volume']], left_index=True, right_index=True, how='left')
-        
-    #     final_df['ma20'] = final_df['close'].rolling(window=20).mean()
-    #     final_df['dist_from_ma20'] = (final_df['close'] / final_df['ma20'] - 1) * 100
-    #     daily_returns = final_df['close'].pct_change()
-    #     final_df['historical_volatility_20d'] = daily_returns.rolling(window=20).std() * np.sqrt(252)
-    #     market_returns = df_kospi['종가'].pct_change()
-    #     market_returns.name = 'market_return'
-    #     combined_returns = pd.merge(daily_returns, market_returns, left_index=True, right_index=True, how='left')
-    #     final_df['relative_strength'] = (combined_returns['close'] - combined_returns['market_return']) * 100
-    #     rolling_cov = combined_returns['close'].rolling(window=60).cov(combined_returns['market_return'])
-    #     rolling_var = combined_returns['market_return'].rolling(window=60).var()
-    #     final_df['beta_coefficient'] = rolling_cov / rolling_var
-    #     final_df['high_52w'] = final_df['high'].rolling(window=52*5, min_periods=1).max()
-    #     is_new_high = final_df['high'] >= final_df['high_52w'].shift(1)
-    #     new_high_dates = pd.Series(final_df.index, index=final_df.index).where(is_new_high).ffill()
-    #     final_df['days_since_52w_high'] = (final_df.index - new_high_dates).dt.days
-
-    #     final_df['stock_code'] = stock_code
-    #     final_df = final_df.loc[start_date:end_date]
-        
-    #     final_df.reset_index(inplace=True)
-        
-    #     # ✨ [핵심 수정] pykrx가 인덱스를 '날짜'로 반환하는 경우에 대비해 컬럼명을 'date'로 강제 변경
-    #     if '날짜' in final_df.columns:
-    #         final_df.rename(columns={'날짜': 'date'}, inplace=True)
-        
-    #     final_df.drop_duplicates(subset=['date'], keep='first', inplace=True)
-        
-    #     final_columns = [
-    #         'date', 'stock_code', 'foreigner_net_buy', 'institution_net_buy', 'program_net_buy',
-    #         'trading_intensity', 'credit_ratio', 'short_volume', 'trading_value', 'per', 'pbr',
-    #         'psr', 'dividend_yield', 'relative_strength', 'beta_coefficient',
-    #         'days_since_52w_high', 'dist_from_ma20', 'historical_volatility_20d',
-    #         'q_revenue_growth_rate', 'q_op_income_growth_rate'
-    #     ]
-        
-    #     for col in final_columns:
-    #         if col not in final_df.columns:
-    #             final_df[col] = np.nan
-        
-    #     return final_df[final_columns]
-        
-    def _fetch_and_store_factors(self, start_date: date, end_date: date, stock_code: str) -> pd.DataFrame:
+    def _fetch_and_store_factors(self, stock_code: str, start_date: date, end_date: date) -> pd.DataFrame:
         """
         pykrx에서 팩터 데이터를 가져와 DB에 저장하고, 그 결과를 반환합니다.
         """
@@ -488,17 +460,17 @@ class DataManager:
         
         return krx_df
 
-    def cache_factors(self, start_date: date, end_date: date, stock_code: str) -> pd.DataFrame:
+    def cache_daily_factors(self, stock_code: str, from_date: date, to_date: date, all_trading_dates: Optional[Set] = None) -> pd.DataFrame:
         """
         [수정 완료] 캐시(DB)를 우선 확인하고, 없는 데이터만 pykrx에서 가져와 채운 후 최종 데이터를 반환합니다.
         """
-        logger.info(f"[{stock_code}] 일별 팩터 데이터 캐싱 요청: {start_date} ~ {end_date}")
-        
-        db_df = self.db_manager.fetch_daily_factors(start_date, end_date, stock_code)
+        logger.info(f"[{stock_code}] 일별 팩터 데이터 캐싱 요청: {from_date} ~ {to_date}")
+        if all_trading_dates is None:
+            all_trading_dates = set(self.db_manager.get_all_trading_days(from_date, to_date))
+
+        db_df = self.db_manager.fetch_daily_factors(stock_code, from_date, to_date)
         
         db_existing_dates = set(pd.to_datetime(db_df['date']).dt.normalize()) if not db_df.empty else set()
-
-        all_trading_dates = set(self.db_manager.get_all_trading_days(start_date, end_date))
         missing_dates = sorted(list(all_trading_dates - db_existing_dates))
 
         if not missing_dates:
@@ -512,7 +484,7 @@ class DataManager:
             start_range = missing_dates[0].date()
             end_range = missing_dates[-1].date()
             try:
-                api_df = self._fetch_and_store_factors(start_range, end_range, stock_code)
+                api_df = self._fetch_and_store_factors(stock_code, start_range, end_range)
             except Exception as e:
                 logger.error(f"API로부터 팩터 데이터 가져오기 실패: {stock_code} - {str(e)}")
 
@@ -523,7 +495,47 @@ class DataManager:
             return final_df.reset_index(drop=True)
         else:
             return db_df
-            
+
+    def update_today_data(self, existing_df: pd.DataFrame, live_data: dict) -> pd.DataFrame:
+        """
+        [구현 완료] Creon API (MarketEye)를 통해 받은 실시간 데이터를
+        기존 데이터프레임의 오늘 날짜 행에 업데이트하여 반환합니다.
+
+        :param existing_df: 업데이트할 기준이 되는 데이터프레임 (OHLCV+팩터)
+        :param live_data: Creon API로 받은 실시간 데이터 딕셔너리
+        :return: 실시간 데이터가 업데이트된 새로운 데이터프레임
+        """
+        if existing_df.empty:
+            logger.warning("기준 데이터프레임이 비어있어 실시간 업데이트를 건너뜁니다.")
+            return pd.DataFrame()
+
+        # 1. 원본 데이터프레임 복사 (Side Effect 방지)
+        df = existing_df.copy()
+        
+        # 2. 오늘 날짜에 해당하는 인덱스 확인
+        today_dt = pd.to_datetime(date.today()) # 시간 정보가 없는 자정 기준 Timestamp
+
+        # 3. 오늘 날짜의 행이 없는 경우, 마지막 행을 복사하여 새로 추가 (장 시작 직후 등)
+        if today_dt not in df.index:
+            logger.info(f"'{live_data.get('stock_code')}' 데이터에 오늘 날짜({today_dt.date()}) 행이 없어 새로 추가합니다.")
+            last_row = df.iloc[-1:].copy()
+            last_row.index = [today_dt]
+            df = pd.concat([df, last_row])
+            # 새로 추가된 행의 일부 값 초기화 (거래량, 등락률 등)
+            df.loc[today_dt, ['volume', 'change_rate', 'trading_value']] = 0 
+        
+        # 4. live_data 딕셔너리의 값으로 오늘 날짜 행을 업데이트
+        #    - live_data의 키와 df의 컬럼명이 일치하는 항목에 대해 업데이트
+        #    - live_data의 값이 유효한 경우(None이나 NaN이 아닌 경우)에만 업데이트
+        update_count = 0
+        for key, value in live_data.items():
+            if key in df.columns and pd.notna(value):
+                df.loc[today_dt, key] = value
+                update_count += 1
+        
+        logger.info(f"'{live_data.get('stock_code')}'의 오늘 데이터를 {update_count}개 필드로 업데이트했습니다.")
+
+        return df                    
     # def cache_factors(self, start_date: date, end_date: date, stock_code: str) -> pd.DataFrame:
     #     """
     #     [최종 수정] 캐시(DB)를 우선 확인하고, 없는 데이터만 pykrx에서 가져와 채운 후 최종 데이터를 반환합니다.

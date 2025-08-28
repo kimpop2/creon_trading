@@ -48,13 +48,13 @@ FETCH_MINUTE_PERIOD = 5
 # --- Capital & Risk Management Settings ---
 INITIAL_CASH = 5_000_000
 PRINCIPAL_RATIO = 0.5  # HMM 모드가 아닐 때 사용할 기본 투자 비중
-MIN_STOCK_CAPITAL = 300_000
+MIN_STOCK_CAPITAL = 300_000 # 종목당 이 이상의 투자금이 있어야 함
 
 STOP_LOSS_PARAMS = {
-    'stop_loss_ratio': -5.0,
-    'trailing_stop_ratio': -4.0,
+    'stop_loss_pct': -5.0,
+    'trailing_stop_pct': -4.0,
     'early_stop_loss': -3.0,
-    'take_profit_ratio': 10.0,
+    'take_profit_pct': 10.0,
     'portfolio_stop_loss': -10.0,
     'max_losing_positions': 3
 }
@@ -231,3 +231,25 @@ HMM_OPTIMIZATION_PARAMS = {
 
 # --- 실거래 환경에서 사용할 HMM 모델의 이름 ---
 LIVE_HMM_MODEL_NAME = "EKLMNO_4s_2301-2412"
+
+UNIVERSE_CONFIGS = {
+    'MOMENTUM_THEME_LEADER_V1': {
+        'description': '상승장의 주도 테마 및 모멘텀을 따르는 유니버스',
+        'min_market_cap': 1000_0000_0000, # 최소 시가총액 (억 원)
+        'min_avg_trading_value': 10_0000_0000, # 최소 20일 평균 거래대금 (억 원)
+        'min_price': 1000, # 1000원 미만 제외
+        'score_price_trend': 0.4,
+        'score_trading_volume': 0.2,
+        'score_theme_mention': 0.4,
+        'max_universe': 200,
+        'max_universe_per_theme': 20, # 테마당 최대 20종목
+    },
+    'INSTITUTIONAL_BUY_STABLE_V1': {
+        'description': '기관 수급이 강하고 변동성이 낮은 안정적인 유니버스',
+        'min_market_cap': 500_0000_0000,
+        'min_avg_trading_value': 30_0000_0000,
+        'score_price_trend': 0.2,
+        'score_volatility': -0.2, # 변동성 점수는 낮을수록 좋게 (음수 가중치)
+        'max_universe': 200,
+    }
+}

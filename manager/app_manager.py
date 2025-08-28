@@ -173,3 +173,42 @@ class AppManager:
         start_filter_dt = datetime.combine(from_date, datetime.min.time().replace(hour=9, minute=0))
         end_filter_dt = datetime.combine(trade_date, datetime.max.time().replace(hour=15, minute=30))
         return minute_df[(minute_df.index >= start_filter_dt) & (minute_df.index <= end_filter_dt)]
+    
+    def get_trading_runs(self):
+        return self.db_manager.fetch_trading_run()
+
+    def get_trading_performance(self, model_id, start_date, end_date):
+        return self.db_manager.fetch_trading_performance(model_id=model_id, start_date=start_date, end_date=end_date)
+
+    def get_trading_trades(self, start_date, end_date):
+        return self.db_manager.fetch_trading_trade(start_date=start_date, end_date=end_date)
+
+    def get_traded_stocks_summary_for_date(self, trading_date: date) -> pd.DataFrame:
+        trades_df = self.get_trading_trades(start_date=trading_date, end_date=trading_date)
+        if trades_df.empty:
+            return pd.DataFrame()
+        
+        trade_counts = trades_df.groupby('stock_code').size().reset_index(name='trade_count')
+        realized_profits = trades_df[trades_df['trade_type'] == 'SELL'].groupby('stock_code')['realized_profit_loss'].sum().reset_index(name='total_realized_profit_loss')
+        
+        buy_trades = trades_df[trades_df['trade_type'] == 'BUY'].set_index('trade_id')
+        trade_returns_list = []
+        for index, sell_trade in trades_df[trades_df['trade_type'] == 'SELL'].iterrows():
+            entry_trade_id = sell_trade.get('entry_trade_id')
+            if pd.notna(entry_trade_id) and entry_trade_id in buy_trades.index:
+                buy_trade = buy_trades.loc[entry_trade_id]
+                entry_price = float(buy_trade['trade_price'])
+                exit_price = float(sell_trade['trade_price'])
+                if entry_price > 0:
+                    trade_return = ((exit_price - entry_price) / entry_price) * 100
+                    trade_returns_list.append({'stock_code': sell_trade['stock_code'], 'trade_return': trade_return})
+        
+        avg_returns = pd.DataFrame(trade_returns_list).groupby('stock_code')['trade_return'].mean().reset_index(name='avg_return_per_trade') if trade_returns_list else pd.DataFrame(columns=['stock_code', 'avg_return_per_trade'])
+
+        summary_df = pd.merge(trade_counts, realized_profits, on='stock_code', how='left').fillna(0)
+        summary_df = pd.merge(summary_df, avg_returns, on='stock_code', how='left').fillna(0)
+        
+        stock_map = self.get_stock_info_map()
+        summary_df['stock_name'] = summary_df['stock_code'].map(stock_map).fillna(summary_df['stock_code'])
+
+        return summary_df    

@@ -90,7 +90,7 @@ class TestSetupDBManager(unittest.TestCase):
         self.assertTrue(save_result)
 
         # 2. 데이터 조회
-        fetched_df = self.db_manager.fetch_daily_factors(date(2025, 7, 25), date(2025, 7, 25), 'A005930')
+        fetched_df = self.db_manager.fetch_daily_factors('A005930', date(2025, 7, 25), date(2025, 7, 25))
         self.assertIsInstance(fetched_df, pd.DataFrame)
         self.assertEqual(len(fetched_df), 1)
         self.assertEqual(fetched_df.iloc[0]['pbr'], self.test_factor_data_1['pbr'])
@@ -101,13 +101,13 @@ class TestSetupDBManager(unittest.TestCase):
         self.assertTrue(update_result)
         
         # 4. 업데이트된 데이터 확인
-        fetched_updated_df = self.db_manager.fetch_daily_factors(date(2025, 7, 25), date(2025, 7, 25), 'A005930')
+        fetched_updated_df = self.db_manager.fetch_daily_factors('A005930', date(2025, 7, 25), date(2025, 7, 25))
         self.assertEqual(len(fetched_updated_df), 1)
         self.assertEqual(fetched_updated_df.iloc[0]['pbr'], self.test_factor_data_1_updated['pbr'])
         self.assertEqual(fetched_updated_df.iloc[0]['per'], self.test_factor_data_1_updated['per'])
 
         # 5. 없는 데이터 조회
-        fetched_empty_df = self.db_manager.fetch_daily_factors(date(2025, 7, 25), date(2025, 7, 25), 'A999999')
+        fetched_empty_df = self.db_manager.fetch_daily_factors('A005930', date(2025, 7, 25), date(2025, 7, 25))
         self.assertTrue(fetched_empty_df.empty)
 
 if __name__ == '__main__':

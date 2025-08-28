@@ -295,9 +295,23 @@ class HMMBacktest:
             stocks_to_trade = set(self.broker.get_current_positions().keys()) | set(final_signals.keys())
 
             if self.minute_strategy.strategy_name == 'PassMinute':
-                current_dt = market_open_dt + timedelta(minutes=1)
+                stocks_to_trade = set(self.broker.get_current_positions().keys()) | set(final_signals.keys())
+
+                # 1. 시가 기준 손절/익절 실행
+                market_open_dt = dt.combine(current_date, self.market_open_time) # [수정] dt.combine 사용
+                open_prices = self._get_prices_for_date(current_date, price_type='open')
+                if open_prices:
+                    self.broker.check_and_execute_stop_loss(open_prices, market_open_dt)
+
+                # 2. 일일 전략 신호에 따른 매매 실행 (종가 기준)
+                market_close_dt = dt.combine(current_date, self.market_close_time) # [수정] dt.combine 사용
                 for stock_code in list(stocks_to_trade):
-                            self.minute_strategy.run_minute_logic(current_dt, stock_code)
+                    self.minute_strategy.run_minute_logic(market_close_dt, stock_code)
+
+                # 3. 종가 기준 손절/익절 실행
+                close_prices = self._get_prices_for_date(current_date, price_type='close')
+                if close_prices:
+                    self.broker.check_and_execute_stop_loss(close_prices, market_close_dt)
                 
             else:
                 # 분봉 루프 실행
@@ -407,19 +421,39 @@ class HMMBacktest:
             market_open_dt = dt.combine(current_date, self.market_open_time)
             stocks_to_trade = set(self.broker.get_current_positions().keys()) | set(final_signals.keys())
 
-            for minute_offset in range(391): # 9:00 ~ 15:30
-                current_dt = market_open_dt + timedelta(minutes=minute_offset)
-                
-                if self.market_open_time < current_dt.time() <= self.market_close_time:
-                    if current_dt.time() < time(9, 1) or time(15, 20) < current_dt.time() < time(15, 30): 
-                        continue
+            if self.minute_strategy.strategy_name == 'PassMinute':
+                stocks_to_trade = set(self.broker.get_current_positions().keys()) | set(final_signals.keys())
 
-                    current_prices = self.get_all_current_prices(current_dt)
+                # 1. 시가 기준 손절/익절 실행
+                market_open_dt = dt.combine(current_date, self.market_open_time) # [수정] dt.combine 사용
+                open_prices = self._get_prices_for_date(current_date, price_type='open')
+                if open_prices:
+                    self.broker.check_and_execute_stop_loss(open_prices, market_open_dt)
+
+                # 2. 일일 전략 신호에 따른 매매 실행 (종가 기준)
+                market_close_dt = dt.combine(current_date, self.market_close_time) # [수정] dt.combine 사용
+                for stock_code in list(stocks_to_trade):
+                    self.minute_strategy.run_minute_logic(market_close_dt, stock_code)
+
+                # 3. 종가 기준 손절/익절 실행
+                close_prices = self._get_prices_for_date(current_date, price_type='close')
+                if close_prices:
+                    self.broker.check_and_execute_stop_loss(close_prices, market_close_dt)
+
+            else:    
+                for minute_offset in range(391): # 9:00 ~ 15:30
+                    current_dt = market_open_dt + timedelta(minutes=minute_offset)
                     
-                    self.broker.check_and_execute_stop_loss(current_prices, current_dt)
-                    
-                    for stock_code in list(stocks_to_trade):
-                        self.minute_strategy.run_minute_logic(current_dt, stock_code)
+                    if self.market_open_time < current_dt.time() <= self.market_close_time:
+                        if current_dt.time() < time(9, 1) or time(15, 20) < current_dt.time() < time(15, 30): 
+                            continue
+
+                        current_prices = self.get_all_current_prices(current_dt)
+                        
+                        self.broker.check_and_execute_stop_loss(current_prices, current_dt)
+                        
+                        for stock_code in list(stocks_to_trade):
+                            self.minute_strategy.run_minute_logic(current_dt, stock_code)
 
             # 5. 하루 종료 후 포트폴리오 가치 기록
             close_prices = self.get_all_current_prices(dt.combine(current_date, self.market_close_time))
@@ -518,18 +552,22 @@ class HMMBacktest:
         return final_signals
 
     # [신규] 특정 날짜의 종가를 가져오는 헬퍼 메서드
-    def _get_prices_for_date(self, target_date: dt.date) -> Dict[str, float]:
-        """data_store에서 특정 날짜의 모든 종목 종가를 조회합니다."""
+    # --- ▼ [수정] 반환 형식을 backtest Broker에 맞게 Dict[str, float]으로 변경 ▼ ---
+    def _get_prices_for_date(self, target_date: date, price_type: str = 'close') -> Dict[str, float]:
+        """data_store에서 특정 날짜의 지정된 가격 타입으로 딕셔너리를 만들어 반환합니다."""
         prices = {}
-        for code, df in self.data_store['daily'].items():
-            try:
-                # Timestamp로 변환하여 정확히 해당 날짜의 데이터를 찾음
-                price = df.loc[pd.Timestamp(target_date).normalize()]['close']
-                prices[code] = price
-            except KeyError:
-                # 해당 날짜에 데이터가 없는 경우 (거래정지 등)
-                continue
-        return prices    
+        codes_to_check = set(self.broker.get_current_positions().keys()) | set(self.minute_strategy.signals.keys())
+        
+        for code in codes_to_check:
+            df = self.data_store['daily'].get(code)
+            if df is not None and not df.empty:
+                try:
+                    price = df.loc[pd.Timestamp(target_date).normalize()][price_type]
+                    # backtest Broker가 기대하는 형식: {'A005930': 50000.0}
+                    prices[code] = float(price) # [수정] float으로 명시적 변환
+                except KeyError:
+                    continue
+        return prices
 
     def get_all_current_prices(self, current_dt):
         current_prices = {}
@@ -551,164 +589,6 @@ class HMMBacktest:
             self.manager.close()
         logger.info("Backtest 시스템 cleanup 완료.") 
 
-#     def run_profiling(self, run_id: int):
-#         """
-#         특정 run_id에 대한 프로파일링을 수행하는 헬퍼 함수.
-#         """
-#         logger.info(f"\n{'='*20} run_id: {run_id} 프로파일링 시작 {'='*20}")
-        
-#         try:
-#             model_info = self.manager.fetch_hmm_model_by_name(LIVE_HMM_MODEL_NAME)
-#             if not model_info:
-#                 logger.error(f"'{LIVE_HMM_MODEL_NAME}' 모델이 DB에 없어 프로파일링을 중단합니다.")
-#                 return
-
-#             model_id = model_info['model_id']
-#             run_info_df = self.manager.fetch_backtest_run(run_id=run_id)
-#             performance_df = self.manager.fetch_backtest_performance(run_id=run_id)
-#             regime_data_df = self.manager.fetch_daily_regimes(model_id=model_id)
-#             # DB에서 Decimal 타입으로 가져온 데이터를 시스템 표준인 float으로 변환합니다.
-#             if 'daily_return' in performance_df.columns:
-#                 performance_df['daily_return'] = performance_df['daily_return'].astype(float)
-
-#             if run_info_df.empty or performance_df.empty or regime_data_df.empty:
-#                 logger.error("프로파일링에 필요한 데이터가 부족합니다.")
-#                 return
-
-#             profiler = StrategyProfiler()
-#             profiles_to_save = profiler.generate_profiles(
-#                 performance_df, regime_data_df, run_info_df, model_id
-#             )
-
-#             if profiles_to_save:
-#                 if self.manager.save_strategy_profiles(profiles_to_save):
-#                     logger.info(f"✅ run_id: {run_id}에 대한 프로파일을 DB에 성공적으로 저장했습니다.")
-#                 else:
-#                     logger.error("프로파일 DB 저장에 실패했습니다.")
-#         finally:
-#             self.manager.close()
-#             logger.info(f"{'='*20} run_id: {run_id} 프로파일링 종료 {'='*20}")
-
-
-# def run_backtest_and_save_to_db(strategy_name: str, strategy_params: dict, start_date: date, end_date: date, backtest_manager: BacktestManager):
-#     """
-#     주어진 파라미터로 단일 전략의 백테스트를 실행하고, 그 결과를 DB에 저장합니다.
-#     """
-#     logger.info(f"\n--- Running backtest for '{strategy_name}' and saving to DB ---")
-#     logger.info(f"Period: {start_date} ~ {end_date}")
-#     logger.info(f"Params: {strategy_params}")
-
-#     # 1. 컴포넌트 초기화
-    
-#     # 2. Backtest 인스턴스 생성
-#     backtest_system = HMMBacktest(
-#         manager=backtest_manager,
-#         initial_cash=INITIAL_CASH,
-#         start_date=start_date,
-#         end_date=end_date,
-#         save_to_db=True # <-- DB 저장을 활성화
-#     )
-#     active_strategies = {name: config for name, config in STRATEGY_CONFIGS.items() if config.get("strategy_status")}
-#     # 3. 전략 인스턴스 생성
-#     strategy_config = STRATEGY_CONFIGS.get(strategy_name)
-#     if not strategy_config or not strategy_config.get("strategy_status"):
-#         logger.warning(f"'{strategy_name}' 전략은 현재 활성화(strategy_status=True) 상태가 아닙니다.")
-#         # 필요에 따라 여기서 return할 수 있습니다.
-#         # return 
-
-#     # 2. globals()를 사용해 strategy_name(문자열)에 해당하는 실제 '클래스 객체'를 찾습니다.
-#     strategy_class = globals().get(strategy_name)
-#     if not strategy_class:
-#         logger.error(f"전략 클래스 '{strategy_name}'를 찾을 수 없습니다. 파일 상단에 import 되었는지 확인하세요.")
-#         return
-
-#     # settings.py의 기본 파라미터와 최적화된 파라미터를 결합
-#     base_params = {}
-#     base_params = STRATEGY_CONFIGS.get(strategy_name, {}).get('default_params', {}).copy()
-#     final_strategy_params = {**base_params, **strategy_params}
-
-#     daily_strategy_instance = strategy_class(
-#         broker=backtest_system.broker, 
-#         data_store=backtest_system.data_store
-#     )
-#     # 분봉 전략은 최적화 대상이 아니므로 PassMinute 사용
-#     minute_strategy_instance = PassMinute(
-#         broker=backtest_system.broker,
-#         data_store=backtest_system.data_store
-#     )
-
-#     # 4. 전략 설정 및 백테스트 실행
-#     backtest_system.set_strategies(
-#         daily_strategies=[daily_strategy_instance],
-#         minute_strategy=minute_strategy_instance,
-#         stop_loss_params=STOP_LOSS_PARAMS
-#     )
-    
-#     backtest_system.prepare_for_system()
-#     backtest_system.run()
-#     backtest_system.cleanup()
-#     logger.info(f"--- Finished backtest for '{strategy_name}' ---")
-
-
-# # --- ▼ [신규] 최종 Out-of-Sample 테스트를 위한 래퍼 함수 ▼ ---
-
-# def run_final_backtest(model_name: str, start_date: date, end_date: date, policy_dict: dict, backtest_manager: BacktestManager) -> pd.Series:
-#     """
-#     주어진 HMM 모델과 최적화된 정책으로 Out-of-Sample 기간에 대한 최종 백테스트를 실행하고,
-#     일별 포트폴리오 가치 시리즈를 반환합니다.
-#     """
-#     logger.info(f"\n--- Running FINAL Out-of-Sample Test for '{model_name}' ---")
-#     logger.info(f"Test Period: {start_date} ~ {end_date}")
-#     logger.info(f"Policy: {policy_dict}")
-
-#     # 1. 컴포넌트 초기화
-
-#     # 2. Backtest 인스턴스 생성 (DB 저장은 False)
-#     backtest_system = HMMBacktest(
-#         manager=backtest_manager,
-#         initial_cash=INITIAL_CASH,
-#         start_date=start_date,
-#         end_date=end_date,
-#         save_to_db=False # <-- 최종 테스트 결과는 DB에 저장하지 않음
-#     )
-
-#     # 3. 전략 인스턴스 리스트 생성
-#     daily_strategies_list = []
-#     # STRATEGY_CONFIGS를 순회하며 'strategy_status'가 True인 전략만 객체로 생성
-#     for name, config in STRATEGY_CONFIGS.items():
-#         if config.get("strategy_status") is True:
-#             # globals()에서 이름으로 실제 클래스를 찾습니다.
-#             strategy_class = globals().get(name) 
-#             if strategy_class:
-#                 instance = strategy_class(
-#                     broker=backtest_system.broker,
-#                     data_store=backtest_system.data_store
-#                 )
-#                 daily_strategies_list.append(instance)
-#             else:
-#                 logger.warning(f"설정 파일에 있는 '{name}' 전략 클래스를 찾을 수 없어 건너뜁니다.")
-
-#     minute_strategy_instance = PassMinute(broker=backtest_system.broker, data_store=backtest_system.data_store)
-#     backtest_system.set_strategies(
-#         daily_strategies=daily_strategies_list,
-#         minute_strategy=minute_strategy_instance
-#     )
-#     # 4. 데이터 준비 및 백테스트 실행
-#     backtest_system.prepare_for_system()
-
-#     portfolio_series, _, _, _ = backtest_system.reset_and_rerun(
-#         daily_strategies=daily_strategies_list,
-#         minute_strategy=minute_strategy_instance,
-#         mode='hmm',
-#         model_name=model_name,
-#         policy_dict=policy_dict # <-- 최적화된 정책 주입
-#     )
-
-#     backtest_system.cleanup()
-#     logger.info(f"--- Finished FINAL Out-of-Sample Test for '{model_name}' ---")
-
-#     return portfolio_series
-
 
 if __name__ == "__main__":
     """
@@ -729,8 +609,8 @@ if __name__ == "__main__":
         start_date = date(2024, 8, 1)
         end_date = date(2025, 7, 30)
 
-        # end_date = datetime.now().date() - timedelta(days=1)
-        # start_date = datetime.now().date() - timedelta(days=90)
+        # end_date = dt.now().date() - timedelta(days=1)
+        # start_date = dt.now().date() - timedelta(days=90)
         
         # 2. Backtest 인스턴스 생성
         backtest_system = HMMBacktest(
@@ -742,18 +622,18 @@ if __name__ == "__main__":
         )
         
         daily_strategies_to_run = [
-            # BreakoutDaily(
-            #     broker=backtest_system.broker,
-            #     data_store=backtest_system.data_store
-            # ),
-            # PullbackDaily(
-            #     broker=backtest_system.broker,
-            #     data_store=backtest_system.data_store
-            # ),
-            ClosingBetDaily(
+            SMADaily(
                 broker=backtest_system.broker,
                 data_store=backtest_system.data_store
-            )
+            ),
+            DualMomentumDaily(
+                broker=backtest_system.broker,
+                data_store=backtest_system.data_store
+            ),
+            # ClosingBetDaily(
+            #     broker=backtest_system.broker,
+            #     data_store=backtest_system.data_store
+            # )
             
         ]
         # 매도 전략

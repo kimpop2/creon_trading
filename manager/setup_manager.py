@@ -4,6 +4,7 @@ import logging
 from datetime import date, datetime, timedelta
 from typing import List, Dict, Any, Optional
 import pandas as pd
+import numpy as np
 from korean_lunar_calendar import KoreanLunarCalendar
 import json
 from collections import defaultdict
@@ -17,7 +18,7 @@ if project_root not in sys.path:
 from api.creon_api import CreonAPIClient
 from manager.db_manager import DBManager
 from manager.data_manager import DataManager
-
+from config.settings import UNIVERSE_CONFIGS # UNIVERSE_CONFIGS 임포트    
 logger = logging.getLogger(__name__)
 
 class SetupManager(DataManager):
@@ -25,8 +26,12 @@ class SetupManager(DataManager):
     초기 데이터 셋업 및 일일 데이터 업데이트를 담당하는 클래스.
     DataManager를 상속받아 데이터 처리의 기본 기능을 활용합니다.
     """
+    
+
     def __init__(self, api_client: CreonAPIClient, db_manager: DBManager):
         super().__init__(api_client, db_manager)
+        self.UNIVERSE_CONFIGS = UNIVERSE_CONFIGS # 모듈의 전역 변수로 할당
+    
         logger.info("SetupManager 초기화 완료.")
 
     def update_all_stock_info(self) -> bool:
@@ -350,3 +355,249 @@ class SetupManager(DataManager):
 
         logger.info(f"유니버스 후보군 생성 완료. {len(universe_candidates)}개 테마, 총 {sum(len(t['recommended_stocks']) for t in universe_candidates)}개 종목.")
         return universe_candidates
+    
+# ============================================================
+
+    def select_universe_initial_filter(self) -> set:
+        """
+        DB에 저장된 모든 종목을 대상으로 거래에 부적합한 종목(우선주, 스팩 등)을
+        제외한 1차 후보군을 반환합니다.
+        """
+        all_stocks_df = self.db_manager.fetch_stock_info()
+        if all_stocks_df.empty:
+            logger.warning("DB에 종목 정보가 없어 초기 필터링을 진행할 수 없습니다.")
+            return set()
+
+        # 필터링 조건:
+        # 1. 우선주 제외: stock_code 마지막 자리가 '5' 이상이거나, 이름이 '우'로 끝나는 경우
+        # 2. 스팩 제외: stock_name에 '스팩'이 포함된 경우
+        initial_candidates = all_stocks_df[
+            ~all_stocks_df['stock_code'].str.endswith(('5', '6', '7', 'K', 'L', 'M')) &
+            ~all_stocks_df['stock_name'].str.endswith('우') &
+            ~all_stocks_df['stock_name'].str.contains('스팩')
+        ]
+        
+        candidate_codes = set(initial_candidates['stock_code'].tolist())
+        logger.info(f"초기 필터링 완료: 전체 {len(all_stocks_df)}개 중 {len(candidate_codes)}개 종목 선정")
+        return candidate_codes
+
+    def select_universe(self, config_name: str, universe_date: date) -> set:
+        """
+        주어진 설정에 따라 특정 날짜의 유니버스를 동적으로 생성합니다.
+        """
+        # 1. 설정 로드
+        try:
+            config = self.UNIVERSE_CONFIGS[config_name]
+        except KeyError:
+            logger.error(f"'{config_name}'에 해당하는 유니버스 설정을 찾을 수 없습니다.")
+            return set()
+        
+        # 2. 기본 필터링 (우선주, 스팩 등 제외)
+        candidate_codes = self.select_universe_initial_filter()
+        if not candidate_codes:
+            return set()
+            
+        # 3. 동적 필터링을 위한 데이터 조회
+        filter_data_df = self.db_manager.fetch_data_for_universe_filter(
+            list(candidate_codes), universe_date
+        )
+        
+        # [수정] 더 명확한 로깅
+        logger.info(f"동적 필터링 대상 종목: {len(filter_data_df)}개")
+        if filter_data_df.empty:
+            logger.warning("동적 필터링에 사용할 데이터가 없습니다.")
+            return set()
+
+        # 4. 동적 필터링 적용
+        # DataFrame의 boolean indexing을 활용하여 간결하게 처리
+        # NULL 값은 비교 연산 시 자동으로 False 처리되어 제외됨 (우리가 원했던 방식)
+        if 'min_price' in config:
+            filter_data_df = filter_data_df[filter_data_df['price'] >= config['min_price']]
+        if 'max_price' in config:
+            filter_data_df = filter_data_df[filter_data_df['price'] <= config['max_price']]
+        
+        if 'min_market_cap' in config:
+            filter_data_df = filter_data_df[filter_data_df['market_cap'] >= config['min_market_cap'] ]
+        if 'max_market_cap' in config:
+            filter_data_df = filter_data_df[filter_data_df['market_cap'] <= config['max_market_cap'] ]
+        
+        if 'min_avg_trading_value' in config:
+            # 단위: 억 원
+            filter_data_df = filter_data_df[filter_data_df['trading_value'] >= config['min_avg_trading_value'] ]
+        
+        # (필요시 다른 지표들도 위와 같은 방식으로 추가)
+        
+        if filter_data_df.empty:
+            logger.warning("동적 필터링(가격, 시총 등) 결과 유니버스 후보 종목이 없습니다.")
+            return set() # 빈 set을 반환하고 함수 종료
+
+
+        # 5. 스코어링
+        # 필터링을 통과한 데이터프레임(filter_data_df)을 스코어링 함수에 전달
+        scored_df = self._calculate_scores(filter_data_df, config)
+
+        # 6. 최종 선정
+        # stock_score가 높은 순으로 정렬
+        final_df = scored_df.sort_values(by='stock_score', ascending=False)
+        
+        # max_universe_per_theme 적용 (향후 구현)
+        
+        # max_universe 적용
+        max_stocks = config.get('max_universe', 200) # 기본값 200
+        final_df = final_df.head(max_stocks)
+        
+        final_codes = set(final_df['stock_code'].tolist())
+        logger.info(f"최종 유니버스 선정 완료: {len(final_codes)}개 종목")
+        
+        return final_codes
+
+    def _calculate_scores(self, df: pd.DataFrame, config: dict) -> pd.DataFrame:
+        """[수정] 각 스코어를 명시적으로 처리하고, 최종 가중합산 점수를 10분위 등급으로 변환합니다."""
+        if df.empty:
+            return df
+
+        scored_df = df.copy()
+        scored_df['stock_score'] = 0.0
+
+        # --- 1. 가격 추세 점수 (price_trend_score) ---
+        weight = config.get('score_price_trend', 0)
+        if weight != 0 and 'price_trend_score' in scored_df.columns:
+            median_value = scored_df['price_trend_score'].median()
+            scored_df['price_trend_score'].fillna(median_value, inplace=True)
+            scored_df['stock_score'] += scored_df['price_trend_score'] * weight
+        
+        # --- 2. 거래량 점수 (trading_volume_score) ---
+        weight = config.get('score_trading_volume', 0)
+        if weight != 0 and 'trading_volume_score' in scored_df.columns:
+            median_value = scored_df['trading_volume_score'].median()
+            scored_df['trading_volume_score'].fillna(median_value, inplace=True)
+            scored_df['stock_score'] += scored_df['trading_volume_score'] * weight
+
+        # --- 3. 변동성 점수 (volatility_score) ---
+        weight = config.get('score_volatility', 0)
+        if weight != 0 and 'volatility_score' in scored_df.columns:
+            median_value = scored_df['volatility_score'].median()
+            scored_df['volatility_score'].fillna(median_value, inplace=True)
+            scored_df['stock_score'] += scored_df['volatility_score'] * weight
+            
+        # --- 4. 테마 언급 점수 (theme_mention_score) ---
+        weight = config.get('score_theme_mention', 0)
+        if weight != 0 and 'theme_mention_score' in scored_df.columns:
+            median_value = scored_df['theme_mention_score'].median()
+            scored_df['theme_mention_score'].fillna(median_value, inplace=True)
+            scored_df['stock_score'] += scored_df['theme_mention_score'] * weight
+
+        # --- 5. 수급 점수 (supply_demand_score) ---
+        weight = config.get('score_supply_demand', 0)
+        if weight != 0 and 'supply_demand_score' in scored_df.columns:
+            median_value = scored_df['supply_demand_score'].median()
+            scored_df['supply_demand_score'].fillna(median_value, inplace=True)
+            scored_df['stock_score'] += scored_df['supply_demand_score'] * weight
+        
+        # 최종 가중합산 점수를 0~9 사이의 10분위 등급으로 변환
+        if not scored_df['stock_score'].dropna().empty and scored_df['stock_score'].nunique() > 1:
+            try:
+                scored_df['stock_score'] = pd.qcut(scored_df['stock_score'], 10, labels=False, duplicates='drop')
+            except (ValueError, IndexError):
+                scored_df['stock_score'] = pd.cut(scored_df['stock_score'].rank(method='first'), 10, labels=False)
+        else:
+            logger.warning("stock_score의 값이 모두 동일하여 10분위 등급을 매길 수 없습니다.")
+            scored_df.loc[scored_df['stock_score'].notna(), 'stock_score'] = 5
+
+        return scored_df
+
+    def update_daily_factors_scores(self, target_date: date):
+        """
+        [수정됨] 하루에 한 번, 모든 개별 팩터 점수를 일괄 계산하여
+        daily_factors 테이블에 업데이트합니다.
+
+        점수 계산 로직:
+        1. 각 팩터(factor)를 10분위로 나누어 0~9점의 등급(grade)을 부여합니다.
+        2. 개별 점수들을 가중 합산하여 최종 stock_score를 계산합니다.
+        """
+        logger.info(f"[{target_date}] 모든 팩터 스코어 일괄 계산 및 업데이트 시작.")
+
+        # 1. 스코어링에 필요한 모든 원본 데이터 조회
+        all_factors_df = self.db_manager.fetch_all_factors_for_scoring(target_date)
+        if all_factors_df.empty:
+            logger.warning("스코어링에 사용할 팩터 데이터가 없습니다.")
+            return
+
+        # 2. 각 점수(Score)를 어떤 팩터(Factor) 기준으로 계산할지 매핑
+        #    - 키: 점수를 저장할 컬럼명
+        #    - 값: 점수 계산의 기반이 될 원본 팩터 컬럼명
+        factor_to_score_map = {
+            'price_trend_score': 'dist_from_ma20',          # 가격 추세: 20일 이평선 이격도 (높을수록 좋음)
+            'trading_volume_score': 'trading_value',    # 거래량: 체결 강도 (높을수록 좋음)
+            'volatility_score': 'historical_volatility_20d',# 변동성: 20일 역사적 변동성 (낮을수록 좋음)
+            'theme_mention_score': 'theme_mention_score'    # 테마성: 테마 언급 점수 (높을수록 좋음)
+        }
+        
+        # 점수 계산 결과를 담을 DataFrame 복사
+        scored_df = all_factors_df.copy()
+
+        # 3. 각 개별 점수 일괄 계산 (0~9 등급)
+        for score_col, factor_col in factor_to_score_map.items():
+            if factor_col not in scored_df.columns:
+                logger.warning(f"'{factor_col}' 컬럼이 없어 '{score_col}'를 계산할 수 없습니다. 0점을 부여합니다.")
+                scored_df[score_col] = 0
+                continue
+
+            median_value = scored_df[factor_col].median()
+            scored_df[factor_col].fillna(median_value, inplace=True)
+            
+            # ✨ [핵심 수정] qcut 실행 전, 유효한 데이터가 있는지 확인하는 방어 코드 추가
+            if scored_df[factor_col].dropna().empty:
+                logger.warning(f"'{factor_col}'에 유효한 데이터가 없어 '{score_col}'를 건너뜁니다. 0점을 부여합니다.")
+                scored_df[score_col] = 0
+                continue
+
+            try:
+                score_grade = pd.qcut(scored_df[factor_col], 10, labels=False, duplicates='drop')
+            except ValueError:
+                score_grade = pd.cut(scored_df[factor_col].rank(method='first'), 10, labels=False)
+            # 작은 값이 점수가 높을 경우 처리
+            if score_col == 'volatility_score':
+                score_grade = 9 - score_grade
+
+            scored_df[score_col] = score_grade
+
+
+        # 4. 최종 종합 점수(stock_score) 계산 (가중치 부여)
+        weights = {
+            'price_trend_score': 0.4,       # 가격 추세 40%
+            'trading_volume_score': 0.3,    # 거래량 30%
+            'theme_mention_score': 0.2,     # 테마성 20%
+            'volatility_score': 0.1         # 변동성 10%
+        }
+        
+        # 가중합 계산 전, 점수 컬럼의 혹시 모를 NaN 값을 0으로 채움
+        scored_df['stock_score'] = (
+            scored_df['price_trend_score'].fillna(0) * weights['price_trend_score'] +
+            scored_df['trading_volume_score'].fillna(0) * weights['trading_volume_score'] +
+            scored_df['theme_mention_score'].fillna(0) * weights['theme_mention_score'] +
+            scored_df['volatility_score'].fillna(0) * weights['volatility_score']
+        )
+        
+        # 최종 점수도 0~9 사이의 등급으로 변환
+        try:
+            scored_df['stock_score'] = pd.qcut(scored_df['stock_score'], 10, labels=False, duplicates='drop')
+        except ValueError:
+            scored_df['stock_score'] = pd.cut(scored_df['stock_score'].rank(method='first'), 10, labels=False)
+
+
+        # 5. DB에 저장할 최종 데이터 포맷팅
+        cols_to_save = ['stock_code', 'stock_score', 'price_trend_score', 'trading_volume_score', 'volatility_score', 'theme_mention_score']
+        
+        final_df_to_save = scored_df[cols_to_save].copy()
+        final_df_to_save['date'] = target_date
+        # ✨ [핵심 수정] DB에 전달하기 전, 모든 NaN 값을 Python의 None으로 변환합니다.
+        final_df_to_save.replace({np.nan: None}, inplace=True)
+        update_list = final_df_to_save.to_dict('records')
+            
+        # 6. DB에 단 한 번의 호출로 일괄 저장
+        success = self.db_manager.update_daily_factors_scores(update_list)
+        if success:
+            logger.info(f"총 {len(update_list)}개 종목의 모든 팩터 스코어 업데이트 완료.")
+        else:
+            logger.error("팩터 스코어 업데이트 실패.")

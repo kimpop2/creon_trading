@@ -22,7 +22,7 @@ class SMADaily(DailyStrategy):
         pass
 
     def filter_universe(self, universe_codes: List[str], current_date: date) -> List[str]:
-        return universe_codes
+        
         """최소 거래대금 조건을 만족하는 종목만 선별합니다."""
         min_trading_value = self.strategy_params['min_trading_value']
         lookback_start_date = current_date - timedelta(days=30)

@@ -1198,28 +1198,18 @@ class DBManager:
                 logger.info(f"날짜 {target_date}의 기존 daily_universe 데이터 {cursor.rowcount}개 삭제 완료.")
 
                 # 2. 새로운 데이터 일괄 삽입
-                # daily_universe 테이블 스키마에 맞춘 INSERT 문
+                # [수정] 단순화된 INSERT 문
                 insert_sql = """
                 INSERT INTO daily_universe (
-                    date, stock_code, stock_name, theme, stock_score,
-                    price_trend_score, trading_volume_score, volatility_score,
-                    theme_mention_score, theme_id
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    date, stock_code, stock_name, theme, stock_score, theme_id
+                ) VALUES (%s, %s, %s, %s, %s, %s)
                 """
                 
-                # 딕셔너리 리스트를 SQL에 맞는 튜플 리스트로 변환
+                # [수정] 단순화된 데이터 튜플
                 insert_data = [
                     (
-                        d.get('date'),
-                        d.get('stock_code'),
-                        d.get('stock_name'),
-                        d.get('theme'),
-                        d.get('stock_score'),
-                        d.get('price_trend_score'),
-                        d.get('trading_volume_score'),
-                        d.get('volatility_score'),
-                        d.get('theme_mention_score'),
-                        d.get('theme_id')
+                        d.get('date'), d.get('stock_code'), d.get('stock_name'),
+                        d.get('theme'), d.get('stock_score'), d.get('theme_id')
                     ) for d in universe_data
                 ]
                 
@@ -1245,9 +1235,7 @@ class DBManager:
         if not conn: return pd.DataFrame()
         
         sql = """
-        SELECT date, stock_code, stock_name, stock_score, 
-               price_trend_score, trading_volume_score, volatility_score, theme_mention_score,
-               theme_id, theme
+        SELECT date, stock_code, stock_name, theme, stock_score, theme_id
         FROM daily_universe
         WHERE 1=1
         """
@@ -1627,6 +1615,57 @@ class DBManager:
         except Exception as e:
             self.conn.rollback()
             logger.error(f"daily_factors 스냅샷 업데이트 중 DB 오류 발생: {e}", exc_info=True)
+            return False
+        
+    def update_daily_factors_scores(self, factors_list: List[Dict[str, Any]]) -> bool:
+        """
+        [신규] 딕셔너리 리스트를 받아 daily_factors 테이블의 스코어 관련 컬럼들만 일괄 업데이트합니다.
+        (date, stock_code) 복합 키를 기준으로 중복 시 업데이트(UPSERT)합니다.
+        """
+        if not factors_list:
+            logger.info("업데이트할 daily_factors 스코어 데이터가 없습니다.")
+            return True
+        
+        # SQL: 기본키(date, stock_code)와 5개의 스코어 컬럼만 INSERT 대상으로 지정합니다.
+        # ON DUPLICATE KEY UPDATE: 레코드가 이미 존재할 경우, 5개의 스코어 컬럼 값만 업데이트합니다.
+        sql = """
+            UPDATE daily_factors
+            SET
+                stock_score = %s,
+                price_trend_score = %s,
+                trading_volume_score = %s,
+                volatility_score = %s,
+                theme_mention_score = %s
+            WHERE
+                date = %s AND stock_code = %s
+        """
+        
+        # executemany에 전달할 데이터의 순서를 정의합니다.
+        column_order = [
+            'date', 'stock_code', 'stock_score', 'price_trend_score',
+            'trading_volume_score', 'volatility_score', 'theme_mention_score'
+        ]
+
+        # WHERE 절 순서에 맞게 튜플 생성
+        data_tuples = [
+            (
+                d.get('stock_score'), d.get('price_trend_score'), d.get('trading_volume_score'),
+                d.get('volatility_score'), d.get('theme_mention_score'),
+                d.get('date'), d.get('stock_code')
+            ) for d in factors_list
+        ]
+
+        try:
+            conn = self.get_db_connection()
+            cursor = conn.cursor()
+            cursor.executemany(sql, data_tuples)
+            conn.commit()
+            logger.info(f"{len(data_tuples)}개 daily_factors 레코드의 스코어를 업데이트했습니다.")
+            return True
+        except Exception as e:
+            logger.error(f"daily_factors 스코어 업데이트 중 오류 발생: {e}", exc_info=True)
+            if conn:
+                conn.rollback()
             return False
     # ----------------------------------------------------------------------------
     # 자동매매 관리 테이블
@@ -2008,6 +2047,245 @@ class DBManager:
         return False
 
     # ----------------------------------------------------------------------------
+    # 자동매매 결과 관련 테이블 메서드
+    # ----------------------------------------------------------------------------
+    # ----------------------------------------------------------------------------
+    # 자동매매 결과 저장 (신규 구현)
+    # ----------------------------------------------------------------------------
+
+    def save_trading_trade(self, trade_data: Dict[str, Any]) -> bool:
+        """
+        하나의 자동매매 체결 내역을 trading_trade 테이블에 저장합니다.
+        """
+        sql = """
+            INSERT INTO trading_trade (
+                model_id, trade_date, strategy_name, stock_code, trade_type,
+                trade_price, trade_quantity, trade_datetime, commission, tax, realized_profit_loss
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """
+        params = (
+            trade_data.get('model_id'),
+            trade_data.get('trade_date'),
+            trade_data.get('strategy_name'),
+            trade_data.get('stock_code'),
+            trade_data.get('trade_type'),
+            trade_data.get('trade_price'),
+            trade_data.get('trade_quantity'),
+            trade_data.get('trade_datetime'),
+            trade_data.get('commission'),
+            trade_data.get('tax'),
+            trade_data.get('realized_profit_loss')
+        )
+        cursor = self.execute_sql(sql, params)
+        if cursor:
+            logger.info(f"자동매매 거래 기록 저장 성공: {trade_data.get('stock_code')} - {trade_data.get('trade_type')}")
+            return True
+        return False
+
+    def save_trading_run(self, run_data: Dict[str, Any]) -> bool:
+        """
+        [전면 수정] 자동매매 모델별 누적 실행 정보를 trading_run 테이블에 저장/업데이트합니다.
+        - 최초 실행 시: 새로운 레코드를 INSERT합니다. (start_date, end_date는 모두 오늘)
+        - 이후 실행 시: 기존 레코드의 end_date와 성과 지표들만 UPDATE합니다.
+        """
+        # ▼▼▼ [수정 1] save_backtest_run과 동일한 JSON 직렬화 로직 추가 ▼▼▼
+        params_daily = self.convert_numpy_types(run_data.get('params_json_daily'))
+        params_daily_json = json.dumps(params_daily) if params_daily is not None else None
+        # ▲▲▲ 수정 완료 ▲▲▲
+
+        # ▼▼▼ [수정 2] 누적 기록을 위한 SQL 및 파라미터 재구성 ▼▼▼
+        sql = """
+            INSERT INTO trading_run (
+                model_id, start_date, end_date, initial_capital, final_capital, total_profit_loss,
+                cumulative_return, max_drawdown, strategy_daily, params_json_daily
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                end_date = VALUES(end_date),
+                final_capital = VALUES(final_capital),
+                total_profit_loss = VALUES(total_profit_loss),
+                cumulative_return = VALUES(cumulative_return),
+                max_drawdown = VALUES(max_drawdown),
+                strategy_daily = VALUES(strategy_daily),
+                params_json_daily = VALUES(params_json_daily)
+        """
+        
+        trading_date = run_data.get('trading_date') # 오늘 날짜
+        params = (
+            run_data.get('model_id'),
+            trading_date,  # INSERT 시 start_date
+            trading_date,  # INSERT 시 end_date
+            run_data.get('initial_capital'),
+            run_data.get('final_capital'),
+            run_data.get('total_profit_loss'),
+            run_data.get('cumulative_return'),
+            run_data.get('max_drawdown'),
+            run_data.get('strategy_daily'),
+            params_daily_json # 직렬화된 JSON 문자열
+        )
+        # ▲▲▲ 수정 완료 ▲▲▲
+
+        cursor = self.execute_sql(sql, params)
+        if cursor:
+            logger.info(f"{run_data.get('trading_date')} 자동매매 실행 정보 저장/업데이트 성공.")
+            return True
+        return False
+
+    def save_trading_performance(self, performance_data: Dict[str, Any]) -> bool:
+        """
+        자동매매 일별 성과 스냅샷을 trading_performance 테이블에 저장/업데이트합니다.
+        """
+        sql = """
+            INSERT INTO trading_performance (
+                model_id, date, end_capital, daily_return, daily_profit_loss,
+                cumulative_return, drawdown
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                end_capital=VALUES(end_capital),
+                daily_return=VALUES(daily_return),
+                daily_profit_loss=VALUES(daily_profit_loss),
+                cumulative_return=VALUES(cumulative_return),
+                drawdown=VALUES(drawdown)
+        """
+        params = (
+            performance_data.get('model_id'),
+            performance_data.get('date'),
+            performance_data.get('end_capital'),
+            performance_data.get('daily_return'),
+            performance_data.get('daily_profit_loss'),
+            performance_data.get('cumulative_return'),
+            performance_data.get('drawdown')
+        )
+        cursor = self.execute_sql(sql, params)
+        if cursor:
+            logger.info(f"{performance_data.get('date')} 자동매매 일일 성과 저장/업데이트 성공.")
+            return True
+        return False
+
+    def fetch_trading_run(self, model_id: int = None, start_date: date = None, end_date: date = None) -> pd.DataFrame:
+        """
+        DB에서 자동매매 일일 실행 요약 정보를 조회합니다.
+        """
+        conn = self.get_db_connection()
+        if not conn: return pd.DataFrame()
+
+        sql = "SELECT * FROM trading_run WHERE 1=1"
+        params = []
+        if model_id is not None:
+            sql += " AND model_id = %s"
+            params.append(model_id)
+        if start_date:
+            sql += " AND trading_date >= %s"
+            params.append(start_date)
+        if end_date:
+            sql += " AND trading_date <= %s"
+            params.append(end_date)
+        sql += " ORDER BY trading_date DESC"
+
+        try:
+            cursor = self.execute_sql(sql, tuple(params) if params else None)
+            if cursor:
+                df = pd.DataFrame(cursor.fetchall())
+                if not df.empty:
+                    # 숫자 및 날짜 타입 변환
+                    numeric_cols = ['initial_capital', 'final_capital', 'total_profit_loss', 'cumulative_return', 'max_drawdown']
+                    for col in numeric_cols:
+                        if col in df.columns:
+                            df[col] = pd.to_numeric(df[col], errors='coerce')
+                    df['trading_date'] = pd.to_datetime(df['trading_date']).dt.date
+                return df
+            return pd.DataFrame()
+        except Exception as e:
+            logger.error(f"자동매매 실행 정보 조회 오류: {e}", exc_info=True)
+            return pd.DataFrame()
+
+    def fetch_trading_performance(self, model_id: int = None, start_date: date = None, end_date: date = None) -> pd.DataFrame:
+        """
+        DB에서 자동매매 일별 성과 스냅샷을 조회합니다.
+        """
+        conn = self.get_db_connection()
+        if not conn: return pd.DataFrame()
+
+        sql = "SELECT * FROM trading_performance WHERE 1=1"
+        params = []
+        if model_id is not None:
+            sql += " AND model_id = %s"
+            params.append(model_id)
+        if start_date:
+            sql += " AND date >= %s"
+            params.append(start_date)
+        if end_date:
+            sql += " AND date <= %s"
+            params.append(end_date)
+        sql += " ORDER BY date ASC"
+
+        try:
+            cursor = self.execute_sql(sql, tuple(params) if params else None)
+            if cursor:
+                df = pd.DataFrame(cursor.fetchall())
+                if not df.empty:
+                    # 숫자 및 날짜 타입 변환
+                    numeric_cols = ['end_capital', 'daily_return', 'daily_profit_loss', 'cumulative_return', 'drawdown']
+                    for col in numeric_cols:
+                        if col in df.columns:
+                            df[col] = pd.to_numeric(df[col], errors='coerce')
+                    df['date'] = pd.to_datetime(df['date']).dt.date
+                return df
+            return pd.DataFrame()
+        except Exception as e:
+            logger.error(f"자동매매 일별 성과 조회 오류: {e}", exc_info=True)
+            return pd.DataFrame()
+    
+    # 이 메서드는 이전 답변에서 이미 수정되었지만, 완전성을 위해 다시 포함합니다.
+    def fetch_trading_trade(self, start_date: date, end_date: date, stock_code: str = None) -> pd.DataFrame:
+        """
+        [수정] 특정 기간의 자동매매 체결 내역을 trading_trade 테이블에서 조회합니다.
+        trade_datetime을 인덱스가 아닌 일반 컬럼으로 반환합니다.
+        """
+        conn = self.get_db_connection()
+        if not conn: return pd.DataFrame()
+
+        sql = "SELECT * FROM trading_trade WHERE trade_date BETWEEN %s AND %s"
+        params = [start_date, end_date]
+        if stock_code:
+            sql += " AND stock_code = %s"
+            params.append(stock_code)
+        sql += " ORDER BY trade_datetime ASC"
+
+        cursor = self.execute_sql(sql, tuple(params))
+        if cursor:
+            df = pd.DataFrame(cursor.fetchall())
+            if not df.empty:
+                df['trade_datetime'] = pd.to_datetime(df['trade_datetime'])
+                # ▼▼▼ [수정] 아래 set_index 라인을 주석 처리하거나 삭제합니다. ▼▼▼
+                # df.set_index('trade_datetime', inplace=True)
+                # ▲▲▲ 수정 완료 ▲▲▲
+                
+                numeric_cols = ['trade_price', 'trade_quantity', 'commission', 'tax', 'realized_profit_loss']
+                for col in numeric_cols:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+            return df
+        return pd.DataFrame()
+
+    def fetch_latest_buy_trade_date(self, stock_code: str) -> Optional[date]:
+        """
+        trading_trade 테이블에서 특정 종목의 가장 최근 'BUY' 거래의 날짜를 조회합니다.
+        """
+        sql = """
+            SELECT MAX(trade_date) as latest_buy_date
+            FROM trading_trade
+            WHERE stock_code = %s AND trade_type = 'BUY'
+        """
+        try:
+            cursor = self.execute_sql(sql, (stock_code,))
+            if cursor:
+                result = cursor.fetchone()
+                return result.get('latest_buy_date') if result else None
+            return None
+        except Exception as e:
+            logger.error(f"종목({stock_code})의 최근 매수일자 조회 중 오류 발생: {e}", exc_info=True)
+            return None
+    # ----------------------------------------------------------------------------
     # Feed 관련 테이블 메서드 (db_feed.py에서 성공적으로 테스트된 기능들)
     # ----------------------------------------------------------------------------
     
@@ -2351,19 +2629,24 @@ class DBManager:
             logger.info("저장할 daily_factors 데이터가 없습니다.")
             return True
         
+        # [수정] SQL문에 새로운 스코어 컬럼들 추가
         sql = """
             INSERT INTO daily_factors (
-                `date`, `stock_code`, `foreigner_net_buy`, `institution_net_buy`, 
+                `date`, `stock_code`, `market_cap`, `foreigner_net_buy`, `institution_net_buy`, 
                 `program_net_buy`, `trading_intensity`, `credit_ratio`, `short_volume`, 
                 `trading_value`, `per`, `pbr`, `psr`, `dividend_yield`, 
                 `relative_strength`, `beta_coefficient`, `days_since_52w_high`, 
                 `dist_from_ma20`, `historical_volatility_20d`, 
-                `q_revenue_growth_rate`, `q_op_income_growth_rate`
+                `q_revenue_growth_rate`, `q_op_income_growth_rate`,
+                `stock_score`, `price_trend_score`, `trading_volume_score`,
+                `volatility_score`, `theme_mention_score`
             ) VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s 
             )
             ON DUPLICATE KEY UPDATE
+                market_cap = VALUES(market_cap),
                 foreigner_net_buy = VALUES(foreigner_net_buy),
                 institution_net_buy = VALUES(institution_net_buy),
                 program_net_buy = VALUES(program_net_buy),
@@ -2381,17 +2664,24 @@ class DBManager:
                 dist_from_ma20 = VALUES(dist_from_ma20),
                 historical_volatility_20d = VALUES(historical_volatility_20d),
                 q_revenue_growth_rate = VALUES(q_revenue_growth_rate),
-                q_op_income_growth_rate = VALUES(q_op_income_growth_rate)
+                q_op_income_growth_rate = VALUES(q_op_income_growth_rate),
+                stock_score = VALUES(stock_score),
+                price_trend_score = VALUES(price_trend_score),
+                trading_volume_score = VALUES(trading_volume_score),
+                volatility_score = VALUES(volatility_score),
+                theme_mention_score = VALUES(theme_mention_score)
         """
         
-        # SQL 쿼리에 정의된 컬럼 순서
+        # [수정] column_order 리스트에 새로운 스코어 컬럼들 추가
         column_order = [
-            'date', 'stock_code', 'foreigner_net_buy', 'institution_net_buy', 
-            'program_net_buy', 'trading_intensity', 'credit_ratio', 'short_volume', 
-            'trading_value', 'per', 'pbr', 'psr', 'dividend_yield', 
-            'relative_strength', 'beta_coefficient', 'days_since_52w_high', 
-            'dist_from_ma20', 'historical_volatility_20d', 
-            'q_revenue_growth_rate', 'q_op_income_growth_rate'
+            'date', 'stock_code', 'market_cap', 'foreigner_net_buy', 'institution_net_buy',
+            'program_net_buy', 'trading_intensity', 'credit_ratio', 'short_volume',
+            'trading_value', 'per', 'pbr', 'psr', 'dividend_yield',
+            'relative_strength', 'beta_coefficient', 'days_since_52w_high',
+            'dist_from_ma20', 'historical_volatility_20d',
+            'q_revenue_growth_rate', 'q_op_income_growth_rate',
+            'stock_score', 'price_trend_score', 'trading_volume_score',
+            'volatility_score', 'theme_mention_score'
         ]
 
         data_tuples = []
@@ -2416,7 +2706,7 @@ class DBManager:
                 conn.rollback()
             return False
 
-    def fetch_daily_factors(self, start_date: date, end_date: date, stock_code: str) -> pd.DataFrame:
+    def fetch_daily_factors(self, stock_code: str, start_date: date, end_date: date) -> pd.DataFrame:
         """
         [수정됨] DB에서 특정 종목의 일별 팩터 데이터를 조회하여 DataFrame으로 반환합니다.
         'date'는 인덱스가 아닌 일반 컬럼으로 유지합니다.
@@ -2504,7 +2794,7 @@ class DBManager:
                 return df
             return pd.DataFrame()
         except Exception as e:
-            logger.error(f"fetch_daily_factors 처리 중 예외 발생: {e}", exc_info=True)
+            logger.error(f"fetch_latest_factors_for_universe 처리 중 예외 발생: {e}", exc_info=True)
             return pd.DataFrame() 
  
     def fetch_average_trading_values(self, universe_codes: List[str], start_date: date, end_date: date) -> Dict[str, float]:
@@ -2535,6 +2825,169 @@ class DBManager:
         except Exception as e:
             logger.error(f"일평균 거래대금 조회 중 오류 발생: {e}", exc_info=True)
             return {}
+        
+
+    def fetch_theme_mention_stats(self, target_date: date, month_ago: date, week_ago: date) -> pd.DataFrame:
+        """
+        [신규] daily_theme 테이블에서 1개월/1주일간의 언급 빈도 및 평균 등락률을 집계합니다.
+        """
+        sql = """
+            SELECT
+                stock_code,
+                COUNT(*) AS count_total,
+                AVG(rate) AS avg_rate_total,
+                COUNT(CASE WHEN date >= %s THEN 1 END) AS count_1w,
+                AVG(CASE WHEN date >= %s THEN rate END) AS avg_rate_1w
+            FROM
+                daily_theme
+            WHERE
+                date >= %s
+            GROUP BY
+                stock_code
+        """
+        params = (week_ago, week_ago, month_ago)
+        try:
+            df = pd.read_sql(sql, self.get_db_connection(), params=params)
+            # 컬럼명 변경: count_total -> count_1m, avg_rate_total -> avg_rate_1m
+            df.rename(columns={'count_total': 'count_1m', 'avg_rate_total': 'avg_rate_1m'}, inplace=True)
+            return df
+        except Exception as e:
+            logger.error(f"테마 언급 통계 조회 중 오류 발생: {e}", exc_info=True)
+            return pd.DataFrame()
+
+    def fetch_all_factors_for_scoring(self, target_date: date) -> pd.DataFrame:
+        """
+        [재작성됨] 특정 날짜 기준, 모든 활성 종목에 대해 스코어링에 필요한
+        가장 최신의 모든 팩터 데이터를 한 번의 쿼리로 조회합니다.
+        """
+        logger.info(f"[{target_date}] 스코어링을 위한 전체 팩터 데이터 조회 시작.")
+        
+        # 1. 대상이 될 모든 활성 종목 코드 조회
+        stock_info_df = self.fetch_stock_info()
+        if stock_info_df.empty:
+            logger.warning("stock_info에 종목이 없어 팩터 데이터를 조회할 수 없습니다.")
+            return pd.DataFrame()
+        all_codes = stock_info_df['stock_code'].tolist()
+        
+        codes_placeholder = ','.join(['%s'] * len(all_codes))
+
+        # 2. 각 종목별로 target_date 이하의 가장 최신 팩터 데이터를 가져오는 SQL
+        #    - 윈도우 함수 ROW_NUMBER()를 사용하여 효율적으로 최신 데이터를 찾습니다.
+        sql = f"""
+            WITH LatestFactor AS (
+                SELECT
+                    *,
+                    ROW_NUMBER() OVER(PARTITION BY stock_code ORDER BY date DESC) as rn
+                FROM
+                    daily_factors
+                WHERE
+                    stock_code IN ({codes_placeholder}) AND date <= %s
+            )
+            SELECT
+                *
+            FROM
+                LatestFactor
+            WHERE
+                rn = 1;
+        """
+        
+        params = tuple(all_codes) + (target_date,)
+        
+        try:
+            df = pd.read_sql(sql, self.get_db_connection(), params=params)
+            
+            if not df.empty:
+                # 3. 숫자 타입으로 변환하여 안정성 확보
+                numeric_cols = [
+                    'market_cap', 'foreigner_net_buy', 'institution_net_buy', 'program_net_buy',
+                    'trading_intensity', 'credit_ratio', 'short_volume', 'trading_value',
+                    'per', 'pbr', 'psr', 'dividend_yield', 'relative_strength',
+                    'beta_coefficient', 'days_since_52w_high', 'dist_from_ma20',
+                    'historical_volatility_20d', 'q_revenue_growth_rate', 'q_op_income_growth_rate',
+                    #'stock_score', 'price_trend_score', 'trading_volume_score',
+                    #'volatility_score', 'theme_mention_score'
+                ]
+                for col in numeric_cols:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+                
+                logger.info(f"총 {len(df)}개 종목의 스코어링용 팩터 데이터 조회 완료.")
+                return df
+
+            logger.warning("스코어링에 사용할 팩터 데이터를 조회하지 못했습니다.")
+            return pd.DataFrame()
+
+        except Exception as e:
+            logger.error(f"스코어링용 전체 팩터 데이터 조회 중 오류 발생: {e}", exc_info=True)
+            return pd.DataFrame()
+
+    def fetch_data_for_universe_filter(self, stock_codes: list, target_date: date) -> pd.DataFrame:
+        """
+        [수정] 모든 stock_codes를 기준으로 삼아 각 테이블의 최신 데이터를 LEFT JOIN 하도록
+        쿼리 구조를 전면 수정합니다.
+        """
+        if not stock_codes:
+            return pd.DataFrame()
+
+        # 1. 기준이 될 종목코드 리스트를 임시 테이블(CTE)로 생성
+        #    pymysql은 executemany에서 CTE를 지원하지 않으므로, UNION ALL로 임시 테이블을 만듭니다.
+        stock_list_sql_parts = ["SELECT %s AS stock_code"] * len(stock_codes)
+        stock_list_sql = " UNION ALL ".join(stock_list_sql_parts)
+
+        codes_placeholder = ','.join(['%s'] * len(stock_codes))
+        
+        sql = f"""
+            WITH StockList AS (
+                {stock_list_sql}
+            ),
+            LatestPrice AS (
+                SELECT *, ROW_NUMBER() OVER(PARTITION BY stock_code ORDER BY date DESC) as rn
+                FROM daily_price
+                WHERE stock_code IN ({codes_placeholder}) AND date <= %s
+            ),
+            LatestFactor AS (
+                SELECT *, ROW_NUMBER() OVER(PARTITION BY stock_code ORDER BY date DESC) as rn
+                FROM daily_factors
+                WHERE stock_code IN ({codes_placeholder}) AND date <= %s
+            )
+            SELECT
+                sl.stock_code,
+                lp.close AS price,
+                lf.market_cap,
+                lf.trading_value,
+                lf.dist_from_ma20,
+                lf.trading_intensity,
+                lf.theme_mention_score,
+                lf.price_trend_score,
+                lf.trading_volume_score,
+                lf.volatility_score
+            FROM
+                StockList sl
+            LEFT JOIN
+                (SELECT * FROM LatestPrice WHERE rn = 1) AS lp ON sl.stock_code = lp.stock_code
+            LEFT JOIN
+                (SELECT * FROM LatestFactor WHERE rn = 1) AS lf ON sl.stock_code = lf.stock_code
+        """
+        
+        params = tuple(stock_codes) + tuple(stock_codes) + (target_date,) + tuple(stock_codes) + (target_date,)
+        
+        try:
+            df = pd.read_sql(sql, self.get_db_connection(), params=params)
+            
+            if not df.empty:
+                numeric_cols = [
+                    'price', 'market_cap', 'trading_value', 'dist_from_ma20',
+                    'trading_intensity', 'theme_mention_score', 'price_trend_score',
+                    'trading_volume_score', 'volatility_score'
+                ]
+                for col in numeric_cols:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+            return df
+        except Exception as e:
+            logger.error(f"유니버스 필터링 데이터 조회 중 오류 발생: {e}", exc_info=True)
+            return pd.DataFrame()
         
     # ----------------------------------------------------------------------------
     # HMM 모델 및 전략 프로파일 관리 (신규 추가)

@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 def main():
     """ 
     사용법 reports 폴더에 backtest_report_ 차트 이미지 파일 생성 == 최고 성능 측정
-    python analyzer/run_hmm_backtest.py --model-name EKLMNO_4s_2208-2508 --start 2025-06-01 --end 2025-08-10
+    python analyzer/run_hmm_backtest.py --model-name EKLMNO_4s_2301-2412 --start 2025-06-01 --end 2025-08-10
     """
     parser = argparse.ArgumentParser(description="전체 기간에 대한 포트폴리오 백테스트를 실행합니다.")
     parser.add_argument('--model-name', type=str, required=True, help="백테스트의 기준이 될 HMM 모델 이름")

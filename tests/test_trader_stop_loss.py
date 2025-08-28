@@ -35,8 +35,8 @@ class TestTraderStopLoss(unittest.TestCase):
         
         # 손절매 파라미터 설정
         self.stop_loss_params = {
-            'stop_loss_ratio': -3.0,  # 3% 손실 시 손절
-            'trailing_stop_ratio': -2.0,  # 최고가 대비 2% 하락 시 손절
+            'stop_loss_pct': -3.0,  # 3% 손실 시 손절
+            'trailing_stop_pct': -2.0,  # 최고가 대비 2% 하락 시 손절
             'portfolio_max_drawdown_ratio': -5.0  # 포트폴리오 5% 손실 시 전량 매도
         }
         self.brokerage.set_stop_loss_params(self.stop_loss_params)

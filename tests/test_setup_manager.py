@@ -66,7 +66,7 @@ class TestSetupManager(unittest.TestCase):
         else:
             self.fail("DB에 테스트할 종목 코드가 없습니다.")
             
-        fetched_df = self.db_manager.fetch_daily_factors(target_date, target_date, sample_code)
+        fetched_df = self.db_manager.fetch_daily_factors(sample_code, target_date, target_date)
         
         # 3. 결과 검증
         self.assertIsInstance(fetched_df, pd.DataFrame)

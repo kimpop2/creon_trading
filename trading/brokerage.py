@@ -9,7 +9,7 @@ from api.creon_api import CreonAPIClient, OrderType
 from manager.db_manager import DBManager # DBManager 직접 사용
 from manager.trading_manager import TradingManager # TradingManager에 필요한 데이터 저장 로직이 있으므로 주입
 from util.notifier import Notifier # 알림 기능 (텔레그램 등)
-
+from config.settings import LIVE_HMM_MODEL_NAME
 # --- 로거 설정 ---
 logger = logging.getLogger(__name__)
 
@@ -44,7 +44,9 @@ class Brokerage(AbstractBroker):
         self.stop_loss_params = stop_loss_params
         logging.info(f"자동매매 브로커 손절매 파라미터 설정 완료: {stop_loss_params}")
 
-    def execute_order(self, stock_code: str, order_type: str, price: float, quantity: int, order_time: datetime, order_id: Optional[str] = None) -> Optional[str]:
+    def execute_order(self, stock_code: str, order_type: str, price: float, quantity: int,
+                      order_time: datetime, order_id: Optional[str] = None,
+                      strategy_name: str = "Unknown") -> Optional[str]:
         """ 주문을 실행하고, 성공 시 주문 ID를, 실패 시 None을 반환합니다. """
         order_type_enum = OrderType.BUY if order_type.lower() == 'buy' else OrderType.SELL
         # 시장가 주문을 위해 가격이 0이면 주문 단위를 "03"으로 설정
@@ -68,6 +70,7 @@ class Brokerage(AbstractBroker):
                 'order_id': order_id,  # _active_orders[order_id] 를 구분하지만, 내부에도 있어야 함
                 'stock_code': stock_code,
                 'stock_name': self.manager.get_stock_name(stock_code),
+                'strategy_name': strategy_name, # <-- 전략 이름 저장
                 'order_type': order_type.lower(),
                 'order_status': '접수',
                 'order_price': price,
@@ -123,7 +126,8 @@ class Brokerage(AbstractBroker):
         
     def handle_order_conclusion(self, conclusion_data: Dict[str, Any]):
         """
-        [수정 필수] '체결' 상태일 때만 잔고 및 포지션을 업데이트하도록 수정한 최종 버전입니다.
+        [최종 수정] '체결' 상태일 때 DB에서 직접 model_id를 조회하여
+        trading_trade 테이블에 기록하고 잔고 및 포지션을 업데이트합니다.
         """
         logger.info(f"체결/주문응답 수신: {conclusion_data}")
         order_status_str = conclusion_data.get('order_status')
@@ -177,84 +181,44 @@ class Brokerage(AbstractBroker):
                         pos['quantity'] -= filled_quantity
                         if pos['quantity'] <= 0:
                             del self.positions[stock_code]
-        
+
+                # ▼▼▼ [수정] DBManager를 통해 직접 model_id 조회 ▼▼▼
+                model_info = self.manager.db_manager.fetch_hmm_model_by_name(LIVE_HMM_MODEL_NAME)
+                if not model_info:
+                    logger.error(f"거래 기록 실패: 운영 모델({LIVE_HMM_MODEL_NAME})을 찾을 수 없습니다.")
+                    return
+                model_id = model_info['model_id']
+                # ▲▲▲ 수정 완료 ▲▲▲
+                
+                trade_data_to_save = {
+                    'model_id': model_id, # 조회한 model_id 사용
+                    'trade_date': datetime.now().date(),
+                    'strategy_name': active_order.get('strategy_name'),
+                    'stock_code': active_order.get('stock_code'),
+                    'trade_type': order_type.upper(),
+                    'trade_price': filled_price,
+                    'trade_quantity': filled_quantity,
+                    'trade_datetime': datetime.now(),
+                    'commission': commission,
+                    'tax': tax,
+                    'realized_profit_loss': (filled_price - self.positions.get(stock_code, {}).get('avg_price', filled_price)) * filled_quantity if order_type == 'sell' else 0
+                }
+                self.manager.save_trading_trade(trade_data_to_save)
+                # ▲▲▲ 신규 로직 종료 ▲▲▲        
+                # ▼▼▼ [개선 제안] 체결 발생 시, 변경된 포지션 정보를 즉시 DB에 저장 ▼▼▼
+                if stock_code in self.positions:
+                    # 포지션이 남아있는 경우 (매수, 부분 매도)
+                    self.manager.save_current_position(self.positions[stock_code])
+                else:
+                    # 전량 매도되어 포지션이 사라진 경우
+                    self.manager.db_manager.delete_current_position(stock_code)
+
+                # ▲▲▲ 개선 제안 완료 ▲▲▲
         # '접수', '확인'은 최종 상태가 아니므로, ['체결', '취소', '거부']일 때만 최종 완료로 간주합니다.
         if active_order['unfilled_quantity'] <= 0 or active_order['order_status'] in ['체결', '취소', '거부']:
             logger.info(f"주문({order_id}) 최종 완료({active_order['order_status']}). 활성 주문 목록에서 제거합니다.")
             del self._active_orders[order_id]
 
-    # --- 실시간 체결/잔고 업데이트 콜백 핸들러 (Creon API 연동) ---
-    # def handle_order_conclusion(self, conclusion_data: Dict[str, Any]):
-    #     """
-    #     Creon API에서 실시간 체결/주문 응답이 왔을 때 호출되는 콜백 함수.
-    #     trading_log 테이블을 업데이트하고, 보유 종목 및 현금 잔고를 동기화합니다.
-    #     CreonAPIClient의 `set_conclusion_callback`에 등록됩니다.
-    #     """
-    #     logger.info(f"체결/주문응답 수신: {conclusion_data}")
-    #     order_status = conclusion_data.get('order_status') # 예: '접수', '체결', '부분체결', '거부', '확인', '정정', '취소'
-    #     order_id = conclusion_data.get('order_id')
-    #     origin_order_id = conclusion_data.get('origin_order_id')
-    #     stock_code = conclusion_data.get('stock_code')
-        
-    #     # 1. 활성 주문 목록(_active_orders)에서 해당 주문 정보 업데이트
-    #     if order_id in self._active_orders:
-    #         order_info = self._active_orders[order_id]
-            
-    #         filled_quantity = conclusion_data.get('quantity', 0)
-    #         order_info['order_status'] = order_status.lower()
-    #         order_info['filled_quantity'] += filled_quantity
-    #         order_info['unfilled_quantity'] = order_info['order_quantity'] - order_info['filled_quantity']
-
-    #         logger.info(f"주문({order_id}) 상태 업데이트: {order_info['order_status']}, 체결수량: {filled_quantity}")
-    #     else:
-    #         logger.warning(f"활성 주문 목록에 없는 주문 응답 수신: {order_id}")
-    #         # 필요시 여기서 DB 조회 후 비정상 주문 처리 로직 추가 가능
-    #         return
-
-    #      # 2. 체결 이벤트인 경우, DB에 로그 저장 및 알림
-    #     if order_status in ['체결', '부분체결'] and filled_quantity > 0:
-    #         filled_price = conclusion_data.get('price', 0)
-    #         order_type_for_log = order_info['order_type']
-
-    #         transaction_amount = filled_price * filled_quantity
-    #         commission = transaction_amount * self.commission_rate
-    #         tax = transaction_amount * self.tax_rate_sell if order_type_for_log == 'sell' else 0
-    #         net_amount = (transaction_amount - commission - tax) if order_type_for_log == 'sell' else -(transaction_amount + commission)
-    #         trade_date = datetime.now().date()
-    #         trade_time = datetime.now().time()
-    #         stock_name_for_log = order_info.get('stock_name')
-    #         original_order_id_for_log = order_info.get('original_order_id')
-            
-    #         log_data = {
-    #             # --- 주문 식별 정보 ---
-    #             'order_id': order_id,
-    #             'original_order_id': origin_order_id,
-    #             # --- 체결 기본 정보 ---
-    #             'stock_code': stock_code,
-    #             'stock_name': stock_name_for_log,
-    #             'trade_type': order_type_for_log, # 'buy' 또는 'sell'
-    #             'trading_datetime': datetime.combine(trade_date, trade_time), # 날짜와 시간을 합침
-    #             # --- 체결 결과 정보 (핵심) ---
-    #             'filled_price': filled_price,
-    #             'filled_quantity': filled_quantity,
-    #             # --- 비용 및 정산 정보 ---
-    #             'commission': commission,
-    #             'tax': tax,
-    #             'net_amount': net_amount, # 순매매금액 : 수수료+세금 포함 매매에 소요된 총비용용
-    #             'credit_type': '현금'
-    #         }
-    #         self.manager.save_trading_log(log_data)
-            
-            
-    #         self.notifier.send_message(f"🔔 {order_status}: {stock_name_for_log}({stock_code}) {order_type_for_log.upper()} {filled_quantity}주 @ {filled_price:,.0f}원")
-       
-    #     # 3. 주문이 완전히 종료되었는지 확인하고 처리
-    #     is_complete = order_info['unfilled_quantity'] <= 0 or order_status in ['취소', '거부', '체결']
-    #     if is_complete:
-    #         logger.info(f"주문({order_id}) 최종 완료. 활성 주문 목록에서 제거합니다.")
-    #         del self._active_orders[order_id]
-    #         # 주문이 완전히 종료되면, 계좌 상태를 최종 동기화하여 정확성을 보장
-    #         self.sync_account_status()
 
 
     # [신규] DB에 저장하지 않는 상태(highest_price)를 복원하는 메서드
@@ -300,31 +264,43 @@ class Brokerage(AbstractBroker):
         """
         logger.info("계좌 상태 양방향 동기화 시작...")
 
-        # 1. 현금 잔고 및 보유 종목 업데이트 (기존과 동일)
+        # 1. API에서 실시간 잔고(수량, 평단가 등)를 가져옵니다.
+        positions_from_api = {pos['stock_code']: pos for pos in self.api_client.get_portfolio_positions()}
+        
+        # 2. DB에서 영구 데이터('entry_date' 등)를 가져옵니다.
+        positions_from_db = {pos['stock_code']: pos for pos in self.manager.db_manager.fetch_current_positions()}
+
+        # 3. API 정보를 기준으로, DB의 'entry_date'를 병합하여 최종 포지션을 재구성합니다.
+        synced_positions = {}
+        for stock_code, api_pos in positions_from_api.items():
+            db_pos = positions_from_db.get(stock_code, {})
+            
+            # API의 실시간 잔고를 기준으로 DB의 entry_date를 추가합니다.
+            api_pos['entry_date'] = db_pos.get('entry_date') 
+            synced_positions[stock_code] = api_pos
+
+        self.positions = synced_positions
+        logger.info(f"보유 종목 동기화 완료: 총 {len(self.positions)}건 ('entry_date' 포함)")
+
+        # 4. 현금 잔고 동기화
         balance_info = self.api_client.get_account_balance()
         self._current_cash_balance = balance_info.get('cash_balance', 0.0) if balance_info else 0.0
-        logger.info(f"현금 잔고 업데이트: {self._current_cash_balance:,.0f}원")
+        #logger.info(f"현금 잔고 업데이트: {self._current_cash_balance:,.0f}원")
 
-        positions_list = self.api_client.get_portfolio_positions()
-        self.positions = {pos['stock_code']: pos for pos in positions_list}
-        logger.info(f"보유 종목 업데이트: 총 {len(self.positions)}건")
-
-        # --- 2. [핵심 수정] 미체결 주문 양방향 동기화 ---
-        # 실제 증권사 API에서 미체결 주문 목록을 가져옴
+        # 5. 미체결 주문 동기화
         unfilled_orders_from_api = self.api_client.get_unfilled_orders()
         api_order_ids = {order.get('order_id') for order in unfilled_orders_from_api}
 
         # 현재 시스템 내부에 기록된 미체결 주문 목록
         internal_order_ids = set(self._active_orders.keys())
-
-        # 2-1. (제거) 내부에 있지만 API에는 없는 주문 (사용자가 취소한 경우)
+        # 6. 내부에 있지만 API에는 없는 주문 제거 (사용자가 취소한 경우)
         orders_to_remove = internal_order_ids - api_order_ids
         for order_id in orders_to_remove:
             stock_code = self._active_orders[order_id].get('stock_code', 'N/A')
             del self._active_orders[order_id]
             logger.warning(f"유령 주문 제거: API에 존재하지 않는 미체결 주문({order_id}, {stock_code})을 내부 목록에서 삭제합니다.")
 
-        # 2-2. (추가) API에는 있지만 내부에 없는 주문 (시스템이 놓친 경우)
+        # 7 API에는 있지만 내부에 없는 주문
         orders_to_add = api_order_ids - internal_order_ids
         # API 응답을 기반으로 주문 정보를 구성 (기존 로직과 유사)
         api_orders_map = {order.get('order_id'): order for order in unfilled_orders_from_api}
@@ -446,7 +422,7 @@ class Brokerage(AbstractBroker):
         profit_pct = (current_price - avg_price) * 100 / avg_price if avg_price > 0 else 0
 
         # 익절
-        if profit_pct >= self.stop_loss_params.get('take_profit_ratio', float('inf')):
+        if profit_pct >= self.stop_loss_params.get('take_profit_pct', float('inf')):
             logging.info(f"[익절] {stock_code}")
             self.notifier.send_message(f"💰 익절: {stock_code} ({profit_pct:.2%})")
             return self.execute_order(stock_code, 'sell', current_price, pos_info['quantity'], current_dt)
@@ -458,14 +434,14 @@ class Brokerage(AbstractBroker):
              self.notifier.send_message(f"📉 초기 손절: {stock_code} ({profit_pct:.2%})")
              return self.execute_order(stock_code, 'sell', current_price, pos_info['quantity'], current_dt)
         # 일반 손절
-        if profit_pct <= self.stop_loss_params.get('stop_loss_ratio', -float('inf')):
+        if profit_pct <= self.stop_loss_params.get('stop_loss_pct', -float('inf')):
             logging.info(f"[손절] {stock_code}")
             self.notifier.send_message(f"🚨 손절: {stock_code} ({profit_pct:.2%})")
             return self.execute_order(stock_code, 'sell', current_price, pos_info['quantity'], current_dt)
         # 트레일링 스탑
         if highest_price > 0:
             trailing_stop_pct = (current_price - highest_price) * 100 / highest_price
-            if trailing_stop_pct <= self.stop_loss_params.get('trailing_stop_ratio', -float('inf')):
+            if trailing_stop_pct <= self.stop_loss_params.get('trailing_stop_pct', -float('inf')):
                 logging.info(f"[트레일링 스탑] {stock_code}")
                 self.notifier.send_message(f"🛑 트레일링 스탑: {stock_code}")
                 return self.execute_order(stock_code, 'sell', current_price, pos_info['quantity'], current_dt)
@@ -496,7 +472,7 @@ class Brokerage(AbstractBroker):
             return True
 
         # 동시다발적 손실 기준
-        stop_loss_pct = self.stop_loss_params.get('stop_loss_ratio', -float('inf'))
+        stop_loss_pct = self.stop_loss_params.get('stop_loss_pct', -float('inf'))
         losing_positions_count = 0
         for code, pos in positions.items():
             price_data = current_prices.get(code)

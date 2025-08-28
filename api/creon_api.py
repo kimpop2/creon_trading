@@ -350,7 +350,7 @@ class CreonAPIClient:
             processed_count = 0
             for code in all_codes:
                 code_name = self.cp_code_mgr.CodeToName(code)
-                if not code_name or self.cp_code_mgr.GetStockSectionKind(code) != 1 or \
+                if not code.startswith('A') or not code_name or self.cp_code_mgr.GetStockSectionKind(code) != 1 or \
                    self._is_spac(code_name) or self._is_preferred_stock(code) or self._is_reits(code_name):
                     continue
                 

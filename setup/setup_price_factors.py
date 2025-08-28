@@ -45,8 +45,7 @@ def update_price_for_recent_themes(days=30):
         
         for i, stock_code in enumerate(target_codes):
             logger.info(f"  - 처리 중 ({i+1}/{len(target_codes)}): {stock_code}")
-            setup_manager.cache_daily_ohlcv(stock_code, start_date, today)  # 일봉정보
-            setup_manager.cache_factors(start_date, today, stock_code)      # 팩터
+            setup_manager.cache_daily_data(stock_code, start_date, today)  # 일봉정보 팩터
         logger.info("일봉 데이터 수집 완료.")
 
     except Exception as e:

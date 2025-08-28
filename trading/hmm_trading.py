@@ -20,6 +20,7 @@ from trading.hmm_brain import HMMBrain
 from manager.trading_manager import TradingManager
 from strategies.strategy import DailyStrategy, MinuteStrategy
 from util.notifier import Notifier
+from util.indicators import calculate_performance_metrics
 from manager.capital_manager import CapitalManager
 from manager.portfolio_manager import PortfolioManager
 # --- 사용할 모든 전략 클래스를 임포트해야 함 ---
@@ -62,7 +63,6 @@ class HMMTrading:
         self.is_running = True
         self.market_open_time = datetime.strptime(MARKET_OPEN_TIME, '%H:%M:%S').time()
         self.market_close_time = datetime.strptime(MARKET_CLOSE_TIME, '%H:%M:%S').time()
-        self.last_sync_time = 0 # 주기적 동기화를 위한 타이머
         self.last_daily_run_time = None
         self._last_update_log_time: Dict[str, float] = {}
         self._last_cumulative_volume: Dict[str, int] = {}
@@ -104,8 +104,9 @@ class HMMTrading:
         initial_prices_data = self.manager.api_client.get_current_prices_bulk(initial_universe_codes)
         
         final_universe_codes = [code for code in initial_universe_codes if code.startswith('U')]
+        print('final_universe_codes:', final_universe_codes)
         for code in initial_universe_codes:
-            if code.startswith('U'): continue
+            if not code.startswith('A'): continue
             
             price_data = initial_prices_data.get(code)
             current_price = price_data.get('close', 0) if price_data else 0
@@ -120,8 +121,9 @@ class HMMTrading:
         logger.info(f"사전 필터링 완료. 유니버스 종목 수: {len(initial_universe_codes)}개 -> {len(final_universe_codes)}개")
 
         current_positions = self.broker.get_current_positions().keys()
+        print('current_positions:', current_positions)
         required_codes_for_data = set(final_universe_codes) | set(current_positions)
-
+        print('required_codes_for_data:', required_codes_for_data)
         # 지수인텍스 코드 market_index_code 추가
         market_code = COMMON_PARAMS.get('market_index_code')
         required_codes_for_data.add(market_code)
@@ -133,6 +135,13 @@ class HMMTrading:
 
         fetch_start_date = trading_date - timedelta(days=90)
         for code in required_codes_for_data:
+            if code.startswith('U'):
+                logger.info(f"일봉 데이터 로딩: 지수 코드({code})는 개별 종목 루프에서 건너뜁니다.")
+                continue
+            if not code.startswith('A'):
+                logger.info(f"일봉 데이터 로딩: 비정상 코드({code})는 개별 종목 루프에서 건너뜁니다.")
+                continue
+
             daily_df = self.manager.cache_daily_ohlcv(code, fetch_start_date, trading_date)
             if not daily_df.empty:
                 self.data_store['daily'][code] = daily_df
@@ -151,6 +160,10 @@ class HMMTrading:
             
             logger.info(f"분봉 데이터 따라잡기를 {start_fetch_date}부터 시작합니다. (최근 {N} 거래일)")
             for code in required_codes_for_data:
+                if not code.startswith('A'):
+                    logger.info(f"분봉 데이터 로딩: 비정상 코드({code})는 개별 종목 루프에서 건너뜁니다.")
+                    continue
+
                 minute_df = self.manager.cache_minute_ohlcv(code, start_fetch_date, trading_date)
                 if not minute_df.empty:
                     self.data_store['minute'].setdefault(code, {})
@@ -191,10 +204,6 @@ class HMMTrading:
                 if self.market_open_time <= current_time < self.market_close_time:
                     logger.info("="*50)
                     logger.info(f"[{now.strftime('%H:%M:%S')}] 장중 매매 루프 시작...")
-                    if pytime.time() - self.last_sync_time > 600: # 600초 = 10분
-                        logger.info("🔄 주기적인 계좌 상태 동기화를 수행합니다...")
-                        self.broker.sync_account_status()
-                        self.last_sync_time = pytime.time()
 
                     if self.last_daily_run_time is None or (now - self.last_daily_run_time) >= timedelta(minutes=5):
                         logger.info("1. 모든 일일 전략 재실행 및 자금 재배분...")
@@ -443,46 +452,108 @@ class HMMTrading:
                 logger.error(f"[{stock_code}] 분봉 데이터 따라잡기 중 오류 발생: {e}")
 
     def record_daily_performance(self, current_date: date):
-        
-        storage = TradingDB(self.manager.get_db_manager())
-        
-        reporter = ReportGenerator(storage_strategy=storage)
-        
-        end_value = self.broker.get_portfolio_value(self.manager.api_client.get_current_prices_bulk(list(self.broker.get_current_positions().keys())))
-        if end_value is None:
-            end_value = self.broker.get_current_cash_balance()
-            logger.warning(f"포트폴리오 가치(end_value)가 None이므로 현재 현금 잔고({end_value:,.0f}원)로 대체합니다.")
+        """
+        [최종 수정본] 장 마감 후, DB 데이터를 기반으로 누적 성과를 집계하여
+        trading_run, trading_performance 테이블을 업데이트합니다.
+        """
+        logger.info(f"--- {current_date} 자동매매 결과 집계 및 저장 시작 ---")
+        try:
+            # 1. 현재 운영 모델 ID 조회
+            model_info = self.manager.db_manager.fetch_hmm_model_by_name(LIVE_HMM_MODEL_NAME)
+            if not model_info:
+                logger.error(f"운영 모델({LIVE_HMM_MODEL_NAME}) 정보를 찾을 수 없어 결과 저장을 중단합니다.")
+                self.notifier.send_message(f"🚨 중요: 운영 모델({LIVE_HMM_MODEL_NAME})을 DB에서 찾을 수 없습니다!")
+                return
+            model_id = model_info['model_id']
 
-        latest_portfolio = self.manager.fetch_latest_daily_portfolio()
-        start_value = latest_portfolio.get('total_capital', self.broker.initial_cash) if latest_portfolio else self.broker.initial_cash
-        
-        if start_value is None:
-            start_value = self.broker.initial_cash
-            logger.warning(f"포트폴리오 시작 가치(start_value)가 None이므로 초기 투자금({start_value:,.0f}원)으로 대체합니다.")
+            # ▼▼▼ [수정] 누적 성과 계산을 위한 로직 변경 ▼▼▼
+            # 2. 기존 누적 'run' 정보 조회
+            existing_run_df = self.manager.db_manager.fetch_trading_run(model_id=model_id)
 
-        portfolio_series = pd.Series(
-            [float(start_value), float(end_value)], 
-            index=[pd.Timestamp(current_date - timedelta(days=1)), pd.Timestamp(current_date)]
-        )
-        transaction_log = self.manager.fetch_trading_logs(current_date, current_date)
-        
-        daily_strategy_names = ', '.join([s.__class__.__name__ for s in self.daily_strategies])
-        daily_strategy_params_json = json.dumps({s.__class__.__name__: s.strategy_params for s in self.daily_strategies}, ensure_ascii=False, indent=2)
+            # 3. 자본금 계산
+            current_prices = self.api_client.get_current_prices_bulk(list(self.broker.get_current_positions().keys()))
+            final_capital = self.broker.get_portfolio_value(current_prices)
 
-        reporter.generate(
-            start_date=current_date,
-            end_date=current_date,
-            initial_cash=start_value,
-            portfolio_value_series=portfolio_series,
-            transaction_log=transaction_log.to_dict('records') if not transaction_log.empty else [],
-            strategy_info={
+            # 4. 시작일, 최초/일일 투자금 결정
+            if not existing_run_df.empty:
+                # 기존 기록이 있는 경우: 최초 투자금과 시작일은 기존 값을 사용
+                existing_run = existing_run_df.iloc[0]
+                initial_capital_for_run = float(existing_run['initial_capital'])
+                start_date_for_run = existing_run['start_date']
+                # 어제의 최종 자본을 오늘의 시작 자본으로 사용
+                daily_initial_capital = float(existing_run['final_capital'])
+            else:
+                # 최초 실행인 경우: 모든 값을 새로 설정
+                initial_capital_for_run = self.broker.initial_cash
+                start_date_for_run = current_date
+                daily_initial_capital = self.broker.initial_cash
+
+            # 5. 일일 및 누적 성과 지표 계산
+            daily_profit_loss = final_capital - daily_initial_capital
+            daily_return = daily_profit_loss / daily_initial_capital if daily_initial_capital > 0 else 0.0
+            
+            # 누적 손익 및 수익률은 '최초 투자금' 대비 '현재 최종 자본'으로 계산
+            total_profit_loss_cumulative = final_capital - initial_capital_for_run
+            cumulative_return = total_profit_loss_cumulative / initial_capital_for_run if initial_capital_for_run > 0 else 0.0
+
+            # MDD 계산 (전체 자산 곡선 기준)
+            performance_history_df = self.manager.db_manager.fetch_trading_performance(model_id=model_id, end_date=current_date)
+            equity_curve = pd.Series(dtype=float)
+            if not performance_history_df.empty:
+                # DB에서 조회한 과거 데이터로 Series 생성
+                equity_curve = performance_history_df.set_index('date')['end_capital']
+            # 오늘의 최종 자본을 자산 곡선에 추가
+            equity_curve[pd.Timestamp(current_date).date()] = final_capital
+            
+            metrics = calculate_performance_metrics(equity_curve)
+            max_drawdown = metrics.get('mdd', 0.0)
+            
+            # 6. 사용된 전략 정보 요약
+            daily_strategy_names = ', '.join([s.__class__.__name__ for s in self.daily_strategies])
+            daily_strategy_params_json = json.dumps({s.__class__.__name__: s.strategy_params for s in self.daily_strategies})
+
+            # 7. trading_run 테이블에 저장할 '누적' 데이터 구성
+            run_data = {
+                'model_id': model_id,
+                'start_date': start_date_for_run,       # 최초 시작일
+                'end_date': current_date,               # 최종 거래일 (오늘)
+                'initial_capital': initial_capital_for_run, # 최초 투자금
+                'final_capital': final_capital,         # 현재 최종 자본
+                'total_profit_loss': total_profit_loss_cumulative, # 누적 손익
+                'cumulative_return': cumulative_return, # 누적 수익률
+                'max_drawdown': max_drawdown,
                 'strategy_daily': daily_strategy_names,
-                'strategy_minute': self.minute_strategy.__class__.__name__,
                 'params_json_daily': daily_strategy_params_json,
-                'params_json_minute': json.dumps(self.minute_strategy.strategy_params, ensure_ascii=False, indent=2)
-            },
-            cash_balance=self.broker.get_current_cash_balance()
-        )
+                'trading_date': current_date # save_trading_run 내부에서 start/end date 설정에 사용
+            }
+            # save_trading_run은 내부적으로 start_date를 업데이트하지 않음
+            self.manager.db_manager.save_trading_run(run_data)
+
+            # 8. trading_performance 테이블에 저장할 '일일' 데이터 구성
+            performance_data = {
+                'model_id': model_id,
+                'date': current_date,
+                'end_capital': final_capital,
+                'daily_return': daily_return,
+                'daily_profit_loss': daily_profit_loss,
+                'cumulative_return': cumulative_return, # 그날까지의 누적 수익률
+                'drawdown': max_drawdown # 그날까지의 MDD
+            }
+            # ▲▲▲ 수정 완료 ▲▲▲
+            self.manager.db_manager.save_trading_performance(performance_data)
+
+            logger.info(f"--- {current_date} 자동매매 결과 저장 완료 ---")
+            self.notifier.send_message(
+                f"📈 {current_date} 장 마감\n"
+                f" - 최종 자산: {final_capital:,.0f}원\n"
+                f" - 당일 손익: {daily_profit_loss:,.0f}원 ({daily_return:.2%})\n"
+                f" - 누적 수익률: {cumulative_return:.2%}\n"
+                f" - MDD: {max_drawdown:.2%}"
+            )
+
+        except Exception as e:
+            logger.error(f"일일 성과 기록 중 오류 발생: {e}", exc_info=True)
+            self.notifier.send_message("🚨 일일 성과 기록 중 심각한 오류가 발생했습니다.")
 
 if __name__ == "__main__":
 
@@ -519,6 +590,7 @@ if __name__ == "__main__":
 
             # HMM 두뇌를 생성하여 필요한 구성요소(추론기, 정책, 프로파일)를 가져옴
             brain = HMMBrain(db_manager, trading_manager)
+
             # PortfolioManager를 생성하고 trading_system에 장착
             # 1. DB에서 프로파일 데이터를 DataFrame으로 불러옵니다.
             all_profiles_df = trading_manager.fetch_strategy_profiles_by_model(brain.model_id)
@@ -550,7 +622,12 @@ if __name__ == "__main__":
                         broker=trading_system.broker,
                         data_store=trading_system.data_store
                     )
-                    strategy_instance.strategy_params = item['params']
+                    # 1. settings.py에서 기본 파라미터를 먼저 로드합니다.
+                    default_params = STRATEGY_CONFIGS.get(item['name'], {}).get('default_params', {}).copy()
+                    # 2. directive.json의 파라미터로 덮어쓰기(업데이트) 합니다.
+                    default_params.update(item['params'])
+                    # 3. 최종 병합된 파라미터를 할당합니다.
+                    strategy_instance.strategy_params = default_params
                     daily_strategies_to_run.append(strategy_instance)
         else:
             logger.info(f"오늘의 HMM 작전 계획 파일 없음. 설정 파일(settings.py) 기반의 정적 모드로 실행.")

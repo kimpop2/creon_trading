@@ -1,0 +1,22 @@
+{
+    "total_principal_ratio": 0.7,
+    "portfolio": [
+        {
+            "name": "DualMomentumDaily",
+            "weight": 0.5004881753179459,
+            "params": {
+                "momentum_period": 2,
+                "max_position_count": 6
+            }
+        },
+        {
+            "name": "SMADaily",
+            "weight": 0.4995118246820541,
+            "params": {
+                "short_sma_period": 2,
+                "long_sma_period": 30,
+                "max_position_count": 2
+            }
+        }
+    ]
+}

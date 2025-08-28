@@ -68,7 +68,7 @@ class Broker(AbstractBroker):
                         'quantity': quantity, 
                         'sell_avail_qty': quantity, # 매수 직후이므로 보유수량과 동일
                         'avg_price': price, 
-                        'entry_date': order_time, 
+                        'entry_date': order_time.date(), 
                         'highest_price': price
                     }
 
@@ -148,17 +148,18 @@ class Broker(AbstractBroker):
             return False
             
         executed_any = False
-        # [복원] 1. 개별 종목 손절/익절 로직
+        # [수정] 1. 개별 종목 손절/익절 로직
         for stock_code in list(self.positions.keys()):
-            if self._check_individual_stock_conditions(stock_code, current_prices, current_dt) == 'sucess':
+            # [수정] _check_individual_stock_conditions가 None이 아닌 값(주문 ID)을 반환했는지 확인
+            if self._check_individual_stock_conditions(stock_code, current_prices, current_dt) is not None:
                 executed_any = True
 
-        # [복원] 2. 포트폴리오 레벨 손절 로직
+        # [수정] 2. 포트폴리오 레벨 손절 로직
         if self._check_portfolio_conditions(current_prices, current_dt):
             executed_any = True
             
         return executed_any
-
+    
     # 익절/손절/보유기반 손절/트레일링 매도 
     def _check_individual_stock_conditions(self, stock_code: str, current_prices: Dict[str, float], current_dt: datetime) -> bool:
         pos_info = self.positions.get(stock_code)
@@ -175,26 +176,29 @@ class Broker(AbstractBroker):
         profit_pct = (current_price - avg_price) * 100 / avg_price if avg_price > 0 else 0
 
         # 익절
-        if profit_pct >= self.stop_loss_params.get('take_profit_ratio', float('inf')):
+        if profit_pct >= self.stop_loss_params.get('take_profit_pct', float('inf')):
             logging.info(f"[익절] {stock_code}")
             return self.execute_order(stock_code, 'sell', current_price, pos_info['quantity'], current_dt)
+            
         # 보유기간 기반 손절
-        holding_days = (current_dt.date() - pos_info['entry_date'].date()).days
+        holding_days = (current_dt.date() - pos_info['entry_date']).days
         if 1 <= holding_days <= 3 and profit_pct <= self.stop_loss_params.get('early_stop_loss', -float('inf')):
              logging.info(f"[조기손절] {stock_code}")
              return self.execute_order(stock_code, 'sell', current_price, pos_info['quantity'], current_dt)
-        # 일반 손절
-        if 1 <= holding_days and profit_pct <= self.stop_loss_params.get('stop_loss_ratio', -float('inf')):
+             
+        # [핵심 수정] 'stop_loss_p'를 'stop_loss_pct'로 변경
+        if 1 <= holding_days and profit_pct <= self.stop_loss_params.get('stop_loss_pct', -float('inf')):
             logging.info(f"[손절] {stock_code}")
             return self.execute_order(stock_code, 'sell', current_price, pos_info['quantity'], current_dt)
+            
         # 트레일링 스탑
         if highest_price > 0:
             trailing_stop_pct = (current_price - highest_price) * 100 / highest_price
-            if trailing_stop_pct <= self.stop_loss_params.get('trailing_stop_ratio', -float('inf')):
+            if trailing_stop_pct <= self.stop_loss_params.get('trailing_stop_pct', -float('inf')):
                 logging.info(f"[가상 트레일링 스탑] {stock_code}")
                 return self.execute_order(stock_code, 'sell', current_price, pos_info['quantity'], current_dt)
         
-        return False
+        return None # [수정] 조건 미충족 시 None 반환
 
     # 포트폴리오 손절 판단 
     def _check_portfolio_conditions(self, current_prices: Dict[str, float], current_dt: datetime) -> bool:
@@ -211,7 +215,7 @@ class Broker(AbstractBroker):
             return True
 
         # [복원] 동시다발적 손실 기준
-        stop_loss_pct = self.stop_loss_params.get('stop_loss_ratio', -float('inf'))
+        stop_loss_pct = self.stop_loss_params.get('stop_loss_pct', -float('inf'))
         losing_positions_count = 0
         for code, pos in self.positions.items():
             price = current_prices.get(code)
@@ -245,12 +249,12 @@ class Broker(AbstractBroker):
             return None
         
         position = self.positions.get(stock_code)
-        stop_loss_ratio = self.stop_loss_params.get('stop_loss_ratio')
+        stop_loss_pct = self.stop_loss_params.get('stop_loss_pct')
 
-        if position and stop_loss_ratio:
+        if position and stop_loss_pct:
             avg_price = position['avg_price']
             # 손절 비율은 음수이므로 (예: -5.0) 그대로 더해줍니다.
-            stop_loss_price = avg_price * (1 + stop_loss_ratio / 100.0)
+            stop_loss_price = avg_price * (1 + stop_loss_pct / 100.0)
             return stop_loss_price
         return None
 
@@ -260,11 +264,11 @@ class Broker(AbstractBroker):
             return None
 
         position = self.positions.get(stock_code)
-        take_profit_ratio = self.stop_loss_params.get('take_profit_ratio')
+        take_profit_pct = self.stop_loss_params.get('take_profit_pct')
 
-        if position and take_profit_ratio:
+        if position and take_profit_pct:
             avg_price = position['avg_price']
-            take_profit_price = avg_price * (1 + take_profit_ratio / 100.0)
+            take_profit_price = avg_price * (1 + take_profit_pct / 100.0)
             return take_profit_price
         return None
 
@@ -277,15 +281,15 @@ class Broker(AbstractBroker):
             return None
             
         position = self.positions.get(stock_code)
-        trailing_stop_ratio = self.stop_loss_params.get('trailing_stop_ratio')
+        trailing_stop_pct = self.stop_loss_params.get('trailing_stop_pct')
 
-        if position and trailing_stop_ratio:
+        if position and trailing_stop_pct:
             # 1. 포지션의 현재 최고가를 당일 고가와 비교하여 업데이트
             # check_and_execute_stop_loss 에서 이미 처리하고 있다면 이 라인은 생략 가능
             position['highest_price'] = max(position.get('highest_price', 0), current_high_price)
             
             # 2. 업데이트된 최고가 기준으로 트레일링 스탑 가격 계산
             highest_price = position['highest_price']
-            trailing_stop_price = highest_price * (1 + trailing_stop_ratio / 100.0)
+            trailing_stop_price = highest_price * (1 + trailing_stop_pct / 100.0)
             return trailing_stop_price
         return None

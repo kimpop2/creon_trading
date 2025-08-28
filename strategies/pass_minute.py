@@ -53,7 +53,7 @@ class PassMinute(MinuteStrategy):
             # 손절
             if stop_loss_price and daily_bar['low'] <= stop_loss_price:
                 entry_dt = position_info.get('entry_date')
-                if entry_dt and entry_dt.date() == current_dt.date():
+                if entry_dt and entry_dt == current_dt.date():
                     return # 또는 다른 로직으로 진입 방지                
                 
                 logging.info(f"📉 [PassMinute-손절] {stock_code} at {stop_loss_price:,.0f}")

@@ -219,7 +219,7 @@ class Backtest:
             self.minute_strategy.update_signals(final_signals)
 
             # 분봉 루프 실행
-            market_open_dt = dt.combine(current_date, self.market_open_time)
+            market_open_dt = datetime.combine(current_date, self.market_open_time)
             stocks_to_trade = set(self.broker.get_current_positions().keys()) | set(final_signals.keys())
 
             for minute_offset in range(391):
@@ -233,7 +233,7 @@ class Backtest:
                         self.minute_strategy.run_minute_logic(current_dt, stock_code)
 
             # 5. 하루 종료 후 포트폴리오 가치 기록
-            close_prices = self.get_all_current_prices(dt.combine(current_date, self.market_close_time))
+            close_prices = self.get_all_current_prices(datetime.combine(current_date, self.market_close_time))
             daily_portfolio_value = self.broker.get_portfolio_value(close_prices)
             self.portfolio_values.append((current_date, daily_portfolio_value))
             logging.info(f"[{current_date.isoformat()}] 장 마감 포트폴리오 가치: {daily_portfolio_value:,.0f}원")

@@ -62,13 +62,19 @@ class TargetPriceMinute(MinuteStrategy):
             target_quantity = signal_info.get('target_quantity', 0)
             if target_quantity > 0:
                 # 주문은 더 유리한 현재가(current_price)로 실행
-                if self.broker.execute_order(stock_code, 'buy', current_price, target_quantity, order_time=current_dt) is not None:
+                # ▼▼▼ [수정] strategy_name 인자 추가 ▼▼▼
+                if self.broker.execute_order(stock_code, 'buy', current_price, target_quantity,
+                                             order_time=current_dt,
+                                             strategy_name=signal_info.get('strategy_name')) is not None:
                     logging.info(f"✅ [유리한 가격 매수] {stock_code}: Target {target_price:,.0f}, Executed at {current_price:,.0f}, Qty {target_quantity}")
                     self.reset_signal(stock_code)
 
         # 2. 매도 로직: 현재가가 목표가보다 '같거나 높으면' 즉시 매도
         elif order_signal == 'sell' and current_position_size > 0 and current_price >= target_price:
             # 주문은 더 유리한 현재가(current_price)로 실행
-            if self.broker.execute_order(stock_code, 'sell', current_price, current_position_size, order_time=current_dt) is not None:
+            # ▼▼▼ [수정] strategy_name 인자 추가 ▼▼▼
+            if self.broker.execute_order(stock_code, 'sell', current_price, current_position_size,
+                                         order_time=current_dt,
+                                         strategy_name=signal_info.get('strategy_name')) is not None:
                 logging.info(f"✅ [유리한 가격 매도] {stock_code}: Target {target_price:,.0f}, Executed at {current_price:,.0f}, Qty {current_position_size}")
                 self.reset_signal(stock_code)
